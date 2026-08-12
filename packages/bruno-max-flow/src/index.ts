@@ -14,13 +14,11 @@ export * from './types/options';
 export * from './types/describe';
 export * from './types/capture';
 
-// Entry points, per §13.2 and 002 §11:
+export { runFlow } from './run';
+export { validateFlow } from './validate';
+
+// Still to come, per 002 §11.2:
 //
-//   runFlow(options: RunOptions): Promise<RunResult>
-//   validateFlow(options: ValidateOptions): Promise<Diagnostic[]>
 //   describeFlow(options: DescribeOptions): Promise<FlowDescription>
 //   listRuns(options: ListRunsOptions): Promise<RunIndexEntry[]>
 //   readCapture(options: ReadCaptureOptions): Promise<StepCapture>
-//
-// Not implemented yet. The conformance corpus under tests/conformance/fixtures/ is the executable
-// form of what they must do.

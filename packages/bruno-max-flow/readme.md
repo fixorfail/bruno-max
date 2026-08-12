@@ -13,22 +13,28 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 
 ## Status
 
-Types and tests. `src/types/` is 001 §13.2's engine boundary and 002 §11's read-only entries as
-real TypeScript, and `tests/conformance/` is 001-C's scenarios written against it — but no entry
-point is implemented, so **`npm test` is red by design**: every scenario fails on
-`runFlow is not a function`, and the corpus guard in `fixtures.spec.js` passes. The suite is the
-specification of what the entry points must do, and it goes green a scenario at a time as they
-land.
+`runFlow` and `validateFlow` are implemented and the conformance suite is green — F1–F4 and the
+engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
+dialect, §9's graph, datasets and slots, §11's retry and propagation, and §12's sub-flows.
 
-The surface, when it exists, is five functions:
+Not implemented: capture (§14.5) and the three read-only entries built on it, multipart and binary
+bodies (§7.5), file sources (§7.4), cookie-jar scoping (§7.6), the whole-run budget (§11.3) and the
+§5.4 document schema. `tests/conformance/fixtures/readme.md` lists the conformance rows that go with
+them.
 
-| Function | Spec |
-|---|---|
-| `runFlow` | 001 §13.2 |
-| `validateFlow` | 001 §13.2, §14.3 |
-| `describeFlow` | 002 §11.1 |
-| `listRuns` | 002 §11.2 |
-| `readCapture` | 002 §11.2 |
+The surface is five functions:
+
+| Function | Spec | |
+|---|---|---|
+| `runFlow` | 001 §13.2 | implemented |
+| `validateFlow` | 001 §13.2, §14.3 | implemented |
+| `describeFlow` | 002 §11.1 | — |
+| `listRuns` | 002 §11.2 | — |
+| `readCapture` | 002 §11.2 | — |
+
+The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5,
+`openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
+§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3.
 
 ## The engine sends no HTTP
 

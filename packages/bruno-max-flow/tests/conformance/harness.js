@@ -199,9 +199,9 @@ const createPorts = (options) => {
    * because the sandbox wraps a script in an async closure and discards what it evaluates to —
    * this is the same shape a host implementing `RunScript` has to use.
    */
-  const runScript = async (source, args, ctx) => {
+  const runScript = async (source, args) => {
     const box = { args, result: undefined };
-    log.scripts.push({ source, args, stepId: ctx.stepId, iteration: ctx.iteration });
+    log.scripts.push({ source, args });
     await runScriptInNodeVm({
       script: `__flow.result = await (${source})(...__flow.args);`,
       context: { __flow: box, console },

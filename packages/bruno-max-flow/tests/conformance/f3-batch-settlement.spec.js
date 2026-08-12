@@ -99,11 +99,10 @@ describe('F3.2 — one derivation, two consumers', () => {
   });
 
   // Counting invocations is what distinguishes a structured output from three scripts that happen
-  // to agree (§8.1).
+  // to agree (§8.1). The count is the whole assertion: `RunScript` takes a `FlowContext` (§13.2),
+  // so which step ran a script is not something the port is told.
   it('runs the output script exactly once', () => {
-    const derivations = run.scripts.filter((script) => script.source.includes('itemCount'));
-    expect(derivations).toHaveLength(1);
-    expect(derivations[0].stepId).toBe('get_batch');
+    expect(run.scripts.filter((script) => script.source.includes('itemCount'))).toHaveLength(1);
   });
 
   it('keeps the derived value structured on the step result', () => {

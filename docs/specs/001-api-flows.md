@@ -1614,6 +1614,12 @@ dataset iterations (§9.4) all draw from the same pool, so total in-flight reque
 however deeply the flow nests. One number bounds what a run does to a test environment, and it does
 not multiply out of sight.
 
+**What draws from the pool is a request, not a container.** A `uses:` step and a dataset iteration
+hold no slot of their own while the work inside them runs — only the steps that dispatch do. A
+container that held one too would deadlock a sub-flow at `concurrency: 1`: the container would take
+the only slot and its first internal step could never acquire one, which is the setting recommended
+for debugging one sentence above.
+
 ### 9.3 Conditions
 
 `when:` uses **the same expression dialect as `assert`** (§10.2) — `<expr> <op> <value>`, compiled
@@ -3743,6 +3749,7 @@ reviewed, then deleted per the convention in [README](./README.md).
 | What happens when a `script:` throws? | The step fails with `script-error`, in all three script positions | §8.2, §14.6 |
 | Where do `processEnv` and `envVarOverrides` sit in the chain? | Neither is a rank: `--env-var` merges into `environment`, `process.env` is a namespace | §7.3, §13.2 |
 | How do `!file` and `!...` reach the schema? | Resolved to a symbol and a class instance; projected by stripping the tag | §5.4, §17 |
+| Does a `uses:` step occupy a concurrency slot? | No — only its internals draw from the pool, or a sub-flow deadlocks at `concurrency: 1` | §9.2 |
 
 ### Execution semantics
 
@@ -3779,13 +3786,6 @@ as run-wide, but `failOnStatusCode`, `validateRequest`, `validateSchema`, `stric
 no stated answer — a shared login flow declaring `failOnStatusCode: false` invoked from a strict
 parent has two defensible readings. §12.3's rule does not decide it, because `config:` is
 configuration under either half of "configuration inherits, data is declared".
-
-**Does a `uses:` step occupy a concurrency slot while its internals run?** §9.2 has sub-flow
-internals draw from the run-wide pool. If the container draws one too, a sub-flow deadlocks at
-`concurrency: 1` — the container holds the only slot and its first internal step can never acquire
-one — and §9.2 recommends `concurrency: 1` for debugging in the next sentence. The dataset wording,
-"three iterations competing for five slots", implies an iteration does not consume a slot, which
-suggests a container should not either; nothing says so.
 
 **Are assertions evaluated on a step that never dispatched?** §10.1 fails a step on
 `validateRequest` *before* sending, so there is no response for a `res.*` assertion to address — but
