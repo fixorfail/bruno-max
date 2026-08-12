@@ -435,7 +435,7 @@ A node is in exactly one state, and the four terminal ones are 001 §14.6's, unr
 | `skipped` | `step:end` | muted, with the reason |
 | `cancelled` | `step:end` | muted, distinct from skipped |
 
-**The reason is on the node, not behind a click.** 001 §14.6 defines 13 of them and the distinctions
+**The reason is on the node, not behind a click.** 001 §14.6 defines 14 of them and the distinctions
 between four skip reasons are the substance of a run's outcome — `condition-false` is the flow
 working, `unresolved-dependency` is usually a real failure that 001 §11.2 deliberately reports as a
 skip. A UI that showed a uniform grey "skipped" would erase the distinction the vocabulary exists to
@@ -666,7 +666,92 @@ type ReadCaptureOptions = {
   attempt: number;
   ports: { readFile: ReadFile };
 };
+
+type StepCapture = {
+  stepId: string;                      // namespaced for sub-flow internals (001 §14.5)
+  iteration: number;
+  attempt: number;                     // 1-based, matching 001 §11.1's numbering
+  startedAt: string;
+  durationMs: number;
+  request?: CapturedRequest;           // absent when nothing was sent — see below
+  response?: CapturedResponse;         // absent on a transport error or an aborted attempt
+  assertions: StepResult['assertions'];         // 001 §13.2, as recorded for this attempt
+  validation?: StepResult['validation'];        // 001 §10.1's automatic checks
+};
+
+type CapturedRequest = {
+  method: string;
+  url: string;                         // as sent — resolved, query string included
+  headers: Record<string, string>;
+  body?: CapturedBody;
+};
+
+type CapturedResponse = {
+  status: number;
+  statusText?: string;
+  headers: Record<string, string | string[]>;
+  body?: CapturedBody;
+  responseTimeMs: number;
+};
+
+type CapturedBody =
+  | { kind: 'text';      contentType?: string; text: string }
+  | { kind: 'binary';    contentType?: string; byteLength: number; file: string }
+  | { kind: 'multipart'; parts: CapturedPart[] };
+
+type CapturedPart =
+  | { name: string; kind: 'field'; value: string; contentType?: string }
+  | { name: string; kind: 'file';  sourcePath: string; filename: string;
+      contentType: string; byteLength: number };                    // by reference (001 §7.5)
 ```
+
+**A `StepCapture` is one attempt, not one step.** `ReadCaptureOptions` already takes an `attempt`,
+and 001 §14.5 captures each retry separately because "a step that polled ten times records ten
+attempts, which is usually the only way to see what changed between them." §9's **Attempts** tab is
+a row per call to this function, and a step-shaped return would have to carry all ten payloads to
+answer a question about one.
+
+**It is self-describing, and that is what makes an interrupted run readable.** §10 opens a run with
+no `summary.json` and renders "the step directories that exist" — so for that run there is no
+step-level record anywhere, and an attempt capture carrying only a request and a response would
+render as a call with no verdict. Carrying this attempt's own `assertions` and `validation` is what
+001 §14.5 already commits to ("the assertion and schema-validation outcomes"), and it is why 001-C
+R4g2 can require that an interrupted run's existing captures parse.
+
+**The step's final outcome is not here; it is in `summary.json`.** A step's `status`, `reason` and
+declared `outputs` describe the step, not an attempt of it — a poll that settles on attempt 3 has one
+outcome and three captures, and copying the outcome into each would let the copies disagree. 001
+§14.5's `summary.json` "carries the outcome", which is `RunResult` (001 §13.2); reading it gives §10
+every node state without opening a single attempt file. This is a reading of 001 rather than an
+addition to it, and it is the reason a skipped step needs no capture at all: 001 §14.5 says such a
+step records "their status and skip reason; no request was made, so there is nothing else to store",
+and both of those fields live in the summary.
+
+**`request` and `response` are independently optional**, because 001 has three shapes that produce
+neither or only one: a step failing `validateRequest` never dispatches (§10.1), a transport error
+returns no response (§11.2), and an attempt aborted by `maxDuration` or a cancel (§11.3) has a
+request and nothing back. A type requiring both would make the engine synthesize an empty response
+for the exact cases §9's step pane most needs to describe honestly.
+
+**`CapturedBody` is the untruncated payload — the `preview` / `truncated` / `originalSize` fields in
+001 §14.5's JSON example are the *reporter's* inline copy and do not appear here.** That example sits
+under "Storage is split", and the split is precisely that reporters carry a capped preview while the
+artifact directory holds the whole thing. A reader who assumed `readCapture` returns the preview
+shape would build §9's Response tab against a truncated body and a path it would then have to resolve
+itself.
+
+Textual bodies — JSON included — are stored as `text` rather than as a parsed value, so what the pane
+shows is what crossed the wire rather than a re-serialization of it. `binary` names a sibling file
+because 001 §14.5 writes binary payloads out "with an appropriate extension" and never previews them;
+`file` is that artifact's name, resolved against the same `dir` the options carry.
+
+`CapturedPart` mirrors 001 §13.2's `MultipartPart` with one field swapped: `bytes` becomes
+`sourcePath` plus `byteLength`. That is 001 §14.5's capture-by-reference rule expressed in the type —
+an upload's content is already in the repository, and copying it in would put the fixture corpus in
+every CI artifact.
+
+**Redaction has already been applied** (001 §14.4, §14.5), so nothing reading a `StepCapture` filters
+anything, and there is no `--show-sensitive` equivalent in the app (§9).
 
 **`ListDirectory` is a new port**, added to 001 §13.2's `ExecuteRequest` / `ReadFile` / `Clock` set,
 and it exists for the same reason they do: the engine stays free of `fs`, each host keeps its own

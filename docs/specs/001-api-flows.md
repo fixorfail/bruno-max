@@ -2376,6 +2376,162 @@ is a flow semantic and hosts that answered it independently would diverge.
 are drivable in tests without global timer patching. It is the only reason a conformance run of a
 30-attempt poll costs no wall-clock time.
 
+#### The types the ports name
+
+The signatures above are the contract two hosts implement independently, so every type in them is
+part of it. A name left to each host to infer is a name the CLI and the app will infer differently —
+which is the divergence §13.1 exists to prevent, arriving through the door the port set was supposed
+to close.
+
+```ts
+type Vars = Record<string, unknown>;
+```
+
+`unknown` rather than `string`, because collection variables already hold parsed JSON and §7.3's
+whole-value typing rule (`item_count: "{{steps.x.count}}"` → a number) requires a non-string to
+survive the chain. `processEnv` is string-valued in practice; the type does not narrow it, because
+the tier it occupies is still open (§18) and a narrower type would look like an answer.
+
+```ts
+type FlowContext = {
+  runId: string;
+  flow: string;                        // absolute path of the .flow.yml being executed
+  scope: { workspaceRoot: string; collectionRoot?: string };
+  signal: AbortSignal;                 // the run's, per §11.3
+};
+
+type CookieJarHandle = { readonly id: string };
+
+type StepContext = FlowContext & {
+  stepId: string;                      // namespaced for sub-flow internals: "auth/login"
+  iteration: number;                   // 0-based; always present — see below
+  attempt: number;                     // 1-based, per §11.1
+  cookieJar: CookieJarHandle;
+  timeoutMs?: number;                  // the step's per-attempt `timeout` (§11.1)
+  signal: AbortSignal;                 // the attempt's — aborts on timeout, maxDuration, or the run's
+};
+```
+
+**The cookie jar crosses as an opaque handle, not as a jar.** §7.6 splits this deliberately — the
+engine owns *which* jar a request uses, each host owns what a jar *is* — and a handle is what
+expresses that split in a type. The engine mints an id per §7.6's scoping rules (one per run, one per
+dataset iteration, inherited by sub-flows) and never looks inside; the host maps the id to its own
+`CookieJar` and creates one on first sight. Typing the field as a jar would put one host's cookie
+implementation in the shared package and make the other one wrong.
+
+`StepContext.signal` is the **attempt's**, narrower than the run's. A per-attempt `timeout`, a step
+`maxDuration` and a run-level cancel all have to abort an in-flight request (§11.1, §11.3), and a
+host that received only the run's signal could implement none of the three.
+
+`StepContext.iteration` is **always present and is not `{{flow.iteration}}`.** It is the index the
+engine uses to scope a cookie jar and to nest a capture directory, so it exists for every run and is
+`0` when there is no dataset. Whether the *interpolated* `{{flow.iteration}}` is exposed outside a
+dataset is a separate question and still open (§18); a port context that went absent along with it
+would leave capture nesting and jar scoping undefined for the ordinary single-iteration run.
+
+```ts
+type MaterializedRequest = {
+  method: string;                      // upper-case
+  url: string;                         // absolute, resolved (§6.3), path params substituted, no query
+  query: { name: string; value: string }[];   // a list, so repeated keys survive
+  headers: Record<string, string>;
+  body: RequestBody;
+  auth: Auth;                          // the resolved profile (§6.4), in Bruno's own Auth shape
+  operation?: { api: string; operationId?: string; method: string; path: string };
+};
+
+type RequestBody =
+  | { kind: 'none' }
+  | { kind: 'json';       value: unknown }                     // serialized by the host
+  | { kind: 'text';       value: string; contentType: string }
+  | { kind: 'urlencoded'; fields: { name: string; value: string }[] }
+  | { kind: 'multipart';  parts: MultipartPart[] }             // §7.5
+  | { kind: 'binary';     file: FilePayload };                 // §7.5, raw — never interpolated
+
+type MultipartPart =
+  | { name: string; kind: 'field'; value: string; contentType?: string }
+  | { name: string; kind: 'file';  file: FilePayload };
+
+type FilePayload = {
+  bytes: Buffer;                       // already read through the ReadFile port (§7.4)
+  filename: string;                    // §7.5's basename-or-override
+  contentType: string;                 // §7.5's four-step resolution, decided by the engine
+  sourcePath: string;                  // for capture-by-reference only (§14.5) — never sent
+};
+```
+
+Four things this shape is asserting, each of which a flatter type would lose:
+
+**`url` excludes the query string and `query` is a list.** One field cannot be both the source and
+the result without the host having to guess which half already happened. A list rather than a record
+is what lets `?tag=a&tag=b` exist at all — §7.2 replaces arrays wholesale rather than merging them,
+so an array-valued query parameter is an ordinary authored value and a `Record<string, string>` would
+silently drop every entry but the last.
+
+**`body` is a tagged union, so §7.5's decision is made once — by the engine.** The media type is
+resolved from the operation, and `contentType:` disambiguates it only where the operation declares
+several. Handing hosts a bare object and a content-type header would leave each of them re-deriving
+"is this multipart?" from the body's shape, which §7.5 rejects by name. `kind` is the answer, already
+computed.
+
+**`auth` is declarative and stays Bruno's `Auth` type**, imported from `bruno-schema-types`. §6.4
+promises flows introduce no new auth mechanics, and this is where that is cashed: the engine resolves
+*which* profile applies and interpolates its fields, then hands over the same structure a request
+carries today, so OAuth2 token caching, AWS signing, digest challenge/response and the rest stay in
+each host's existing code.
+
+The type does raise a question §6.4 has not answered: **Bruno's `AuthMode` union has twelve members
+and §6.4 names eight.** `oauth1` and `akamai-edgegrid` go unmentioned, and both compute a signature
+across several request fields exactly as `awsv4`, `digest`, `ntlm` and `wsse` do — so §6.4's
+signing-mode override error should almost certainly cover six modes rather than four, and §5.4's
+schema enum needs the full list either way. `inherit` is the third: it means "take the parent
+folder's auth" for a request and has no referent at a flow's profile boundary, so §6.4 has to either
+resolve it before this point or reject it in validation. Recorded in §18 rather than decided here.
+
+**Headers are a record, and repeated request headers are therefore not expressible.** That matches
+what Bruno's request object does today rather than improving on it, and going further would mean the
+engine's type outrunning both hosts' ability to honour it. Repeated *response* headers are a
+different question, below.
+
+One rule about handling the object, rather than about its shape:
+
+**A `MaterializedRequest` carries live secrets.** Redaction (§14.4) applies to what is *reported* —
+events, captures, reporter files — and the engine applies it to copies. The object handed to
+`ExecuteRequest` is the real request, token included, because it has to be sendable. A host must not
+log it.
+
+```ts
+type ExecutedResponse = {
+  status: number;
+  statusText?: string;
+  headers: Record<string, string | string[]>;
+  body: unknown;                       // parsed when the host could parse it, else a string
+  bytes?: Buffer;                      // raw, for binary capture (§14.5) and byte assertions
+  responseTimeMs: number;
+  size?: { body: number; headers: number };
+};
+```
+
+`headers` admits `string[]` because `Set-Cookie` genuinely repeats and §7.6 depends on it. `body`
+mirrors what both hosts already produce — parsed JSON where parsing succeeded, the decoded string
+where it did not — so `res.body.data.id` means in a flow exactly what it means in a request today.
+`responseTimeMs` is what §10.2's `res.responseTime` reads.
+
+**A transport failure is a rejection, not a status.** `ExecuteRequest` rejects when no response
+arrived — connection refused, DNS failure, TLS error, a timeout the host enforced — and the engine
+maps the rejection to `transport-error` (§14.6), extracts no outputs (§11.2), and applies §11.1's
+default retry. A response *object* carrying an error field would make every consumer check two places
+for the same question, and the one thing the engine must know here is binary: did an answer arrive.
+
+```ts
+type TransportError = Error & { code?: string };   // e.g. ECONNREFUSED, ETIMEDOUT, CERT_HAS_EXPIRED
+```
+
+`code` is optional and advisory — it reaches the failure message and the capture, and nothing
+branches on it. Aborts are not transport errors: the engine owns the signal, so it already knows
+whether it cancelled the attempt and reports `max-duration-exceeded` or `cancelled` on its own
+authority rather than inferring it from a rejection it caused.
+
 #### The entry API
 
 Two entry points execute and validate. Three more are **read-only** — `describeFlow`, which returns
@@ -2411,11 +2567,25 @@ type RunOptions = {
   };
 
   params?: Vars;                       // --param, for a library flow (§12.5)
-  overrides?: { concurrency?: number; maxRunDuration?: number; dataset?: string };
+  overrides?: {
+    concurrency?: number;
+    maxRunDuration?: number;
+    dataset?: string;
+    capture?: { enabled?: boolean; dir?: string };   // --no-capture / --capture-dir (§14.5)
+  };
   signal?: AbortSignal;
   onEvent?: (event: FlowEvent) => void;
 };
 ```
+
+**Capture is an override rather than a port decision.** §14.5 gives the CLI `--no-capture` and
+`--capture-dir` and [002](./002-api-flows-ui.md) §7.2 puts the same switch in the app's run panel, so
+both hosts need a way to say it — and the engine has to be the one that hears it, because it computes
+every path (§14.5) and applies retention. A host that answered by declining to implement `WriteFile`
+would silently lose run identity and pruning along with the payloads.
+
+`dir` carries the same containment rule as every other path (§7.4): resolved relative to the scope
+root and refused if it escapes.
 
 **Variables arrive as tiers, not as a merged map.** §7.3's precedence chain is a flow semantic and
 belongs to the engine; *finding* each tier — locating `bruno.json`, resolving `--env` across
@@ -2464,7 +2634,17 @@ type StepResult = {
 };
 
 type SchemaResult = { valid: boolean; errors: { path: string; message: string; keyword?: string }[] };
+
+type StepReason =
+  | 'unexpected-status' | 'invalid-request' | 'schema-validation-failed' | 'assertion-failed'
+  | 'transport-error'   | 'retries-exhausted' | 'max-duration-exceeded'  | 'file-read-failed'
+  | 'script-error'      | 'subflow-failed'
+  | 'unmet-dependency'  | 'condition-false'  | 'unresolved-dependency'   | 'run-cancelled';
 ```
+
+`StepReason` is §14.6's table as a union, and §14.6 remains its definition — the strings are a public
+contract, so this type is a restatement for the compiler's benefit and gains a member only when that
+table does.
 
 **Schema validation reports separately from assertions.** §10.1's checks are the engine's, §10.2's
 are the author's, and a step can fail one while passing all of the other — which a single `reason`
@@ -2489,6 +2669,25 @@ for it — an engine that returned one would be encoding a CLI concern into the 
 
 `validateFlow` returns diagnostics and never dispatches; the same call backs `bru flow validate`
 (§14.3) and the app's inline authoring feedback, so the two cannot drift.
+
+```ts
+type ValidateOptions = {
+  entry: string;
+  scope: { workspaceRoot: string; collectionRoot?: string };
+  ports: { readFile: ReadFile; readSpec: ReadSpec };
+  params?: Vars;                       // --param, so a library flow's required params check (§14.3)
+};
+```
+
+**Two ports, not eight.** Validation resolves operations and reads connector files, sub-flow files
+and statically-known fixture paths — nothing else. Requiring a host to supply `executeRequest` or
+`runScript` to *validate* would mean the app could not lint a flow without standing up the machinery
+to run one, and §6 of [002](./002-api-flows-ui.md) runs this on every watcher change. `describeFlow`
+takes the same two ports for the same reason.
+
+`params` is here because §14.3 checks that every `required` param is satisfied, and a library flow
+invoked with `--param` satisfies them from outside the file. Without it, validating a library flow
+would report a missing param that the run supplies.
 
 ```ts
 type Diagnostic = {
@@ -3433,6 +3632,13 @@ whether a predicate can poll on a derived value rather than on `res` directly.
 
 **What is `flow.iteration` outside a dataset?** §7.3 lists it unconditionally; §9.4 defines it only
 as a row index. F1 interpolates it into a request body.
+
+**Which auth modes does a profile accept, and which of them are signing modes?** §6.4 names eight of
+`AuthMode`'s twelve members and lists four as signing modes. `oauth1` and `akamai-edgegrid` are
+absent from both lists and compute signatures across several request fields, so the partial-override
+error §6.4 introduces should cover them; `inherit` has no referent at a profile boundary and needs
+either a resolution rule or a validation error. §5.4's schema enum and §14.3's check list both need
+the answer. Noted at §13.2's `MaterializedRequest.auth`.
 
 ### The format
 
