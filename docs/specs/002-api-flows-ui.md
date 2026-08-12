@@ -369,7 +369,7 @@ request.
 **A workspace-scoped flow has no collection, and gets the active workspace environment and the
 workspace `.env` — nothing else.**
 
-| Tier (001 §13.2) | Collection-scoped flow | Workspace-scoped flow |
+| `variables` field (001 §13.2) | Collection-scoped flow | Workspace-scoped flow |
 |---|---|---|
 | `globalEnvironment` | active workspace/global environment | active workspace/global environment |
 | `collectionVars` | the collection's | — |

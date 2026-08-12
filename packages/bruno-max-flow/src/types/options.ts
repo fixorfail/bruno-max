@@ -10,15 +10,17 @@ export type Scope = { workspaceRoot: string; collectionRoot?: string };
  * Variables arrive as tiers, not as a merged map: §7.3's precedence is a flow semantic and belongs
  * to the engine, while *finding* each tier is host knowledge.
  *
- * NOTE: where `processEnv` and `envVarOverrides` sit in §7.3's chain is an open question (§18).
+ * Two of these five are not ranks in §7.3's chain, and the sixth rank has no field: runtime
+ * variables (`bru.setVar`) are produced during the run, so no host can supply them up front.
  */
 export type VariableTiers = {
   globalEnvironment?: Vars;
   collectionVars?: Vars;
   environment?: Vars;
-  processEnv?: Vars;
-  /** --env-var */
+  /** --env-var. Merges into `environment` and wins inside it; it does not outrank a scope (§7.3). */
   envVarOverrides?: Vars;
+  /** Populates the `process.env` namespace. Not a tier — a bare {{VAR}} never reaches it (§7.3). */
+  processEnv?: Vars;
 };
 
 export type RunOptions = {

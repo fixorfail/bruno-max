@@ -782,13 +782,57 @@ there is no flow-specific variable syntax to learn. Flow `vars:` slot in as one 
 positioned where folder variables sit for a request. Innermost wins:
 
 ```
-global environment  ->  collection vars  ->  environment  ->  flow vars:
-   ->  oauth2 credential vars  ->  runtime vars (bru.setVar)  ->  --env-var
+global environment  ->  collection vars  ->  environment (incl. --env-var)
+   ->  flow vars:  ->  oauth2 credential vars  ->  runtime vars (bru.setVar)
 ```
 
 This mirrors the order in `bruno-electron/src/ipc/network/interpolate-vars.js`, so a variable
-resolves identically whether it is read by a request or by a flow. `{{process.env.VAR}}` keeps
-working as it does today.
+resolves identically whether it is read by a request or by a flow.
+
+#### `--env-var` and `process.env` are not ranks in that chain
+
+§13.2's `RunOptions.variables` carries five fields and the chain has six ranks, which reads like a
+discrepancy and is not. Two of those fields are not tiers, and one tier is not a field:
+
+**`--env-var` overrides a variable; it does not outrank a scope.** It merges into the **environment**
+tier and wins inside it, which is exactly what `bru run` does today
+(`bruno-cli/src/commands/run.js` assigns each `--env-var` into `envVars` before the environment is
+handed on). It therefore *loses* to a flow `vars:` entry of the same name, and that is the intended
+behaviour rather than an accident of reuse:
+
+- §6.3 already settled the same question for base URLs — "`--env-var` is not a tier in this list; it
+  overrides a *variable*, so it reaches the base URL only through whatever `{{...}}` the winning tier
+  contains." A flag that outranked every scope would contradict that rule one section later.
+- The alternative fails goal 4 in the place it matters most. `--env-var currency=EUR` would change a
+  flow run and not the `bru run` beside it in the same pipeline, so the two commands would disagree
+  about a variable while §7.3 claims they cannot.
+
+A flow value meant to be overridable from CI says so, by reading a variable instead of fixing one:
+
+```yaml
+vars:
+  currency: "{{currency}}"      # --env-var currency=EUR reaches this
+  region: EU                    # a constant of the flow; --env-var will not change it
+```
+
+`envVarOverrides` stays a **separate field** rather than being pre-merged by the host, for the reason
+§13.2 keeps every tier separate: merging is precedence, precedence is a flow semantic, and a host
+that folded the two would be deciding it. Keeping them apart also preserves provenance for §14.4 —
+an environment entry can be `secret: true`, and a value typed on a command line never is.
+
+**`process.env` is a namespace, not a tier.** `interpolate-vars.js` nests it under a `process.env`
+key rather than spreading it, so `{{process.env.HOME}}` resolves and a bare `{{HOME}}` does not.
+`RunOptions.processEnv` populates that namespace and takes no position in the chain, which is why it
+cannot shadow or be shadowed by anything in it. `{{process.env.VAR}}` keeps working exactly as it
+does today.
+
+That makes **`process` a reserved root** alongside §7.3's five: a variable named `process` in any
+scope is shadowed by the namespace, and `bru flow validate` warns, as it does for the others.
+
+**Runtime variables are the tier with no field.** `bru.setVar` values are produced *during* a run, by
+the script positions of §8.2, so no host can supply them up front. The engine owns that tier as run
+state. Whether a flow `script:` may call `bru.setVar` at all is still open (§18) — the tier's rank is
+settled here either way, because it is the rank `interpolate-vars.js` already gives it.
 
 There is deliberately **no `vars.` or `env.` prefix**. A flow variable and an environment variable
 are the same kind of thing to whoever writes `{{tenantId}}`; which scope supplies it is a
@@ -810,8 +854,11 @@ variable, and because a bare name could be shadowed by a user's:
 sub-flow. Keeping them explicit means a call site shows what it passes rather than relying on
 ambient resolution.
 
-`steps`, `row`, `params`, `shared`, and `flow` are reserved at the top level. A variable in any
-scope with one of those names is shadowed, and `bru flow validate` reports it as a warning.
+`steps`, `row`, `params`, `shared`, `flow` and `process` are reserved at the top level. A variable in
+any scope with one of those names is shadowed, and `bru flow validate` reports it as a warning.
+`process` is reserved by the same mechanism but not by this table — it is Bruno's existing
+`process.env` namespace (above), shadowing a bare variable in flows exactly as it already does in
+requests.
 
 **Interpolation and expressions are different operations and use different syntax.** `{{...}}`
 *injects a value into a request* — a body field, a header, a query param. Conditions and
@@ -2628,12 +2675,12 @@ type RunOptions = {
     clock?: Clock;
   };
 
-  variables: {                         // one field per §7.3 tier — NOT a merged map
+  variables: {                         // resolved per scope by the host — NOT a merged map
     globalEnvironment?: Vars;
     collectionVars?: Vars;
     environment?: Vars;
-    processEnv?: Vars;
-    envVarOverrides?: Vars;            // --env-var
+    envVarOverrides?: Vars;            // --env-var; merges into `environment`, winning — §7.3
+    processEnv?: Vars;                 // populates the `process.env` namespace, not a tier — §7.3
   };
 
   params?: Vars;                       // --param, for a library flow (§12.5)
@@ -2662,6 +2709,11 @@ belongs to the engine; *finding* each tier — locating `bruno.json`, resolving 
 collection, workspace and global scopes (§14.1) — is host knowledge. Handing over a pre-merged map
 would move the ordering into two hosts and let them disagree about which scope wins, which is the
 one thing this package exists to prevent.
+
+Two of these five are not ranks in the chain and the sixth rank has no field here: §7.3 has the rule
+and the reasoning. The short form is that `envVarOverrides` merges into `environment`,
+`processEnv` populates a namespace, and runtime variables are produced during the run rather than
+supplied before it.
 
 **One flow per call.** Selecting flows from a directory, path ordering, and `--bail` (§14.1) are the
 CLI's, because they are about a *suite*; the engine's unit is a flow and its iterations.
@@ -3683,6 +3735,8 @@ reviewed, then deleted per the convention in [README](./README.md).
 | Where does a flow's `id` come from? | Its path, relative to the scope root | §5.2, §14.7 |
 | What is `backoff: exponential`? | `min(delay * 2^(n-1), maxDelay)`, `maxDelay` 30 s, jitter opt-in | §11.1 |
 | What happens when a `script:` throws? | The step fails with `script-error`, in all three script positions | §8.2, §14.6 |
+| Where do `processEnv` and `envVarOverrides` sit in the chain? | Neither is a rank: `--env-var` merges into `environment`, `process.env` is a namespace | §7.3, §13.2 |
+| How do `!file` and `!...` reach the schema? | Resolved to a symbol and a class instance; projected by stripping the tag | §5.4, §17 |
 
 ### Execution semantics
 
@@ -3731,12 +3785,6 @@ order and formatting survive is unstated for a format whose primary editor is a 
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
 without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and
 002 §15 defers the app's dry run on the premise that the engine already supports it.
-
-**Where does `processEnv` sit in §7.3's chain?** §13.2 says `RunOptions.variables` carries "one
-field per §7.3 tier", but the chain has no processEnv tier — §7.3 says only that
-`{{process.env.VAR}}` keeps working, and `interpolate-vars.js` nests it under a `process.env` key
-rather than flattening it. `envVarOverrides` as a distinct final tier has no upstream analogue
-either; the CLI folds `--env-var` into the environment.
 
 **What is in `ctx` for a `script:` form?** Assembled piecemeal: `ctx.env` (§8.2), `ctx.steps`
 (§9.3), `ctx.env` / `ctx.steps` / `ctx.failures` (§11.1). Whether `row`, `params`, `shared` and
