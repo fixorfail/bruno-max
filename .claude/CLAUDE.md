@@ -4,6 +4,8 @@ Bruno fork — open-source API client (Electron + React + Redux).
 
 Bruno is an API **client**, not a server: it sends requests and handles responses (auth, params, headers, bodies, environments, cookies). Judge every behavior and edge case by "what should a *client* do here?" — surface malformed or hostile responses clearly and stay robust; don't enforce server-side correctness.
 
+This repo is a **fork** of `usebruno/bruno` and merges regularly from upstream `main`. Keep custom code in fork-owned files and packages (`packages/bruno-max-*`, `@bruno-max/*`, or a `src/fork/` directory); give an upstream file at most a single delegating line, never inlined feature logic. Full rules: **Fork isolation** in `.claude/rules/architecture.md`.
+
 ## Quick Commands
 
 ```bash
@@ -66,7 +68,7 @@ Non-obvious project rules worth holding:
 ## Detailed rules & references
 
 Path-scoped rules in `.claude/rules/` auto-attach when you touch matching files:
-`architecture.md` (`@usebruno/*` dependency boundaries, manifests), `bruno-app-layout.md` (bruno-app
+`architecture.md` (fork isolation, `@usebruno/*` dependency boundaries, manifests), `bruno-app-layout.md` (bruno-app
 module layout), `electron-ipc.md` (IPC handlers + startup), `redux-store.md` (slices/middleware),
 `testing.md` (e2e patterns & gotchas), `cross-platform.md` (Windows file/process/path pitfalls),
 `dsl-changes.md` (on-disk `.bru`/`.yml` format & backward compat), `conventions.md` (readability,

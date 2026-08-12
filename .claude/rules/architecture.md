@@ -1,9 +1,10 @@
 ---
 paths:
   - "packages/**/*"
+  - "package.json"
 ---
 
-# Dependency Boundaries
+# Architecture & Fork Boundaries
 
 Internal `@usebruno/*` dependencies (from each `package.json`) form a strict DAG. **New code must
 respect it** — a cyclic or upward dependency is an architectural bug, not a convenience.
@@ -11,6 +12,43 @@ respect it** — a cyclic or upward dependency is an architectural bug, not a co
 The full monorepo map (build tools, request pipeline, sandbox, file formats, core data-model
 types, dependency versions) is the on-demand reference `.claude/reference/architecture.md` — read
 it before non-trivial cross-package or architectural work.
+
+## Fork isolation — keep custom code out of upstream files
+
+This repository is a **fork of Bruno's open-source repository** (`usebruno/bruno`) and merges
+regularly from upstream `main`. Every line of fork-authored code living inside a file upstream also
+edits becomes a merge conflict — re-paid at every merge, indefinitely. Minimizing that footprint is
+a design constraint on new work, not a cleanup task to schedule later.
+
+**Where new code goes, in order of preference:**
+
+1. **A new fork-owned package** — directory `packages/bruno-max-*`, package name `@bruno-max/*`.
+   Conflicts with nothing, and the distinct scope and prefix prevent a collision if upstream later
+   ships a package of the same name.
+2. **A new fork-owned directory inside an existing package** — e.g. `packages/bruno-app/src/fork/`.
+   Upstream will never create it, so it can never conflict.
+3. **An extension point upstream already provides.** Some seams need no upstream edit at all —
+   `bruno-cli` uses `yargs.commandDir('commands')`, so a new command file auto-registers.
+4. **A single delegating line in an upstream file** — only when there is no alternative.
+
+**When an upstream file genuinely must change:**
+
+- The line **delegates** to fork-owned code and contains no feature logic. One line calling into a
+  fork registry beats twenty lines of inlined behavior: the conflict surface becomes trivial to
+  re-apply after a merge.
+- Place it at a stable, low-churn point in the file.
+- Prefer a **registry** that later fork features can also register into, so the *second* feature
+  costs zero new upstream edits. The indirection is paid once; the saving recurs at every merge.
+- **Record it.** A feature's spec under `docs/specs/` must carry a manifest of every upstream file
+  it touches, so the list can be re-checked after each upstream merge.
+
+**Avoid upstream's shared data-model layers.** `bruno-lang`'s grammar, `bruno-filestore`'s
+serializers, and `bruno-schema`'s Yup schemas are among the files upstream changes most often. A
+new artifact type that owns its own format and validation sidesteps that entire class of conflict —
+`docs/specs/001-api-flows.md` §13.4 is a worked example, including its touchpoint manifest.
+
+A design that is slightly more awkward but confines itself to fork-owned files is usually the better
+trade here, because the alternative cost is paid again at every single merge.
 
 ## Dependency direction & ownership boundaries
 
