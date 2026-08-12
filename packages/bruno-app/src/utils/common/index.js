@@ -166,9 +166,6 @@ export const relativeDate = (dateString) => {
 };
 
 export const humanizeDate = (dateString) => {
-  // See this discussion for why .split is necessary
-  // https://stackoverflow.com/questions/7556591/is-the-javascript-date-object-always-one-day-off
-
   if (!dateString || typeof dateString !== 'string') {
     return 'Invalid Date';
   }
@@ -177,7 +174,11 @@ export const humanizeDate = (dateString) => {
     return 'Invalid Date';
   }
 
+  // Date-only strings parse as UTC midnight, so formatting in the local zone renders
+  // the previous day for anyone west of UTC.
+  // https://stackoverflow.com/questions/7556591/is-the-javascript-date-object-always-one-day-off
   return date.toLocaleDateString('en-US', {
+    timeZone: 'UTC',
     year: 'numeric',
     month: 'long',
     day: 'numeric'
