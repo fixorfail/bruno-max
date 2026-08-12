@@ -1,0 +1,86 @@
+openapi: 3.0.3
+info: { title: Auth API, version: 2.0.0 }
+servers:
+  - url: https://auth.example.com
+paths:
+  /login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      user:
+                        type: object
+                        properties:
+                          id: { type: string }
+        '401':
+          description: Bad credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+  /elevate:
+    post:
+      operationId: elevate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scope]
+              properties:
+                scope: { type: string }
+      responses:
+        '200':
+          description: Elevated token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+  /profile/{userId}:
+    parameters:
+      - { name: userId, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProfile
+      responses:
+        '200':
+          description: A profile
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      account_tier: { type: string }

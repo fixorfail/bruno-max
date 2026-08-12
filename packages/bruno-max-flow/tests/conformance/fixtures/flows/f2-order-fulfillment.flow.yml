@@ -1,0 +1,86 @@
+version: 1
+
+meta:
+  name: Order fulfillment with carrier fallback
+
+apis:
+  orders-api: ../specs/orders-v2.yml
+  carrier-a:
+    source: ../specs/carrier-a-v1.yml
+    baseUrl: "{{carrierABaseUrl}}"
+    auth: carrier-a-key
+  carrier-b:
+    source: ../specs/carrier-b-v3.yml
+    baseUrl: "{{carrierBBaseUrl}}"
+    auth: carrier-b-key
+
+config:
+  baseUrl: "{{ordersBaseUrl}}"
+  concurrency: 5
+
+authProfiles:
+  user-token:    { mode: bearer, token: "{{steps.auth.token}}" }
+  carrier-a-key: { mode: apikey, key: X-Api-Key, value: "{{carrierAApiKey}}", placement: header }
+  carrier-b-key: { mode: bearer, token: "{{carrierBToken}}" }
+
+shared: [quoteId]
+
+steps:
+  - id: auth
+    uses: ./f2-login.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+
+  - id: create_order
+    operation: orders-api#createOrder
+    auth: user-token
+    body:
+      customer_id: "{{steps.auth.userId}}"
+      items: [{ sku: WIDGET-1, qty: 2 }]
+    outputs:
+      orderId: data.id
+
+  - id: quote_primary
+    operation: carrier-a#createQuote
+    body:
+      order_ref: "{{steps.create_order.orderId}}"
+      service: ground
+    outputs:
+      quoteId: data.quote.id
+    shared: [quoteId]
+    assert:
+      - res.body.data.quote.amount gt 0
+
+  - id: quote_fallback
+    operation: carrier-b#getRates
+    depends: [{ on: quote_primary, status: [failed] }]
+    body:
+      reference: "{{steps.create_order.orderId}}"
+    outputs:
+      rateId: data.rates[0].id
+    shared:
+      quoteId: rateId
+
+  - id: book_shipment
+    operation: orders-api#bookShipment
+    auth: user-token
+    depends:
+      any:
+        - on: quote_primary
+        - on: quote_fallback
+    pathParams:
+      id: "{{steps.create_order.orderId}}"
+    body:
+      quote_id: "{{shared.quoteId}}"
+    assert:
+      - res.body.data.order_id eq steps.create_order.orderId
+
+  - id: cancel_order
+    operation: orders-api#cancelOrder
+    auth: user-token
+    depends:
+      - on: book_shipment
+        status: [success, failed, skipped, cancelled]
+    failOnUnresolved: false             # no order to cancel is a valid outcome — §11.2
+    pathParams:
+      id: "{{steps.create_order.orderId}}"

@@ -1,0 +1,82 @@
+openapi: 3.0.3
+info: { title: Orders API, version: 2.0.0 }
+servers:
+  - url: https://orders.example.com
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customer_id, items]
+              properties:
+                customer_id: { type: string }
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [sku, qty]
+                    properties:
+                      sku: { type: string }
+                      qty: { type: integer }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+  /orders/{id}/shipment:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: bookShipment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quote_id]
+              properties:
+                quote_id: { type: string }
+      responses:
+        '200':
+          description: Booked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      order_id: { type: string }
+                      tracking: { type: string }
+  /orders/{id}/cancel:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: cancelOrder
+      responses:
+        '200':
+          description: Cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      state: { type: string }

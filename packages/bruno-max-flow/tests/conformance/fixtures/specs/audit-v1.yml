@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info: { title: Audit API, version: 1.0.0 }
+servers:
+  - url: https://audit.example.com
+paths:
+  /records:
+    post:
+      operationId: createRecord
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [batch_ref, region, item_count, label]
+              properties:
+                batch_ref: { type: string }
+                region: { type: string }
+                item_count: { type: integer }
+                label: { type: string }
+                # No examples on these two: F3.1 extends the fixture to assert a boolean and an
+                # array survive whole-value interpolation, and §7.1 seeds an optional property
+                # only when it carries an example or default.
+                reconciled: { type: boolean }
+                tags:
+                  type: array
+                  items: { type: string }
+      responses:
+        '201':
+          description: Recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+  /records/premium:
+    post:
+      operationId: auditPremium
+      responses:
+        '201': { description: Recorded }

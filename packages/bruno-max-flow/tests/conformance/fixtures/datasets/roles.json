@@ -1,0 +1,5 @@
+[
+  { "email": "admin@example.com", "role": "admin", "canCreate": true },
+  { "email": "editor@example.com", "role": "editor", "canCreate": true },
+  { "email": "viewer@example.com", "role": "viewer", "canCreate": false }
+]

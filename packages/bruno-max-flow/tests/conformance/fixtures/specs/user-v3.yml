@@ -1,0 +1,79 @@
+openapi: 3.0.3
+info: { title: User API, version: 3.0.0 }
+servers:
+  - url: https://user.example.com
+paths:
+  /partnerships:
+    get:
+      operationId: listPartnerships
+      responses:
+        '200':
+          description: Partnerships for the current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      partnerships:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            status: { type: string, enum: [active, pending, closed] }
+                            role: { type: string, enum: [owner, member] }
+  /partnerships/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getPartnership
+      responses:
+        '200':
+          description: One partnership
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      partnership:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          account:
+                            type: object
+                            properties:
+                              id: { type: string }
+  /items:
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [account_id, partnership_id]
+              properties:
+                account_id: { type: string }
+                partnership_id: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      item:
+                        type: object
+                        properties:
+                          id: { type: string }

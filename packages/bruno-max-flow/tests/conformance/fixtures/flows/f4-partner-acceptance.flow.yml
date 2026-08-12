@@ -1,0 +1,84 @@
+version: 1
+
+meta:
+  name: Partner item acceptance
+
+apis:
+  user-api: ../specs/user-v3.yml
+  items-api:
+    source: ../specs/items-v2.yml
+    baseUrl: "{{itemsBaseUrl}}"
+    auth: none
+  external-api:
+    source: ../specs/external-v1.yml
+    baseUrl: "{{externalBaseUrl}}"
+    auth: none
+
+config:
+  baseUrl: "{{userBaseUrl}}"
+
+authProfiles:
+  user-token:    { mode: bearer, token: "{{steps.login.token}}" }
+  partner-token: { mode: bearer, token: "{{steps.exchange_handoff.token}}" }
+
+steps:
+  - id: login
+    uses: ./f2-login.flow.yml
+    with: { email: "{{operatorEmail}}" }
+
+  - id: partnerships
+    operation: user-api#listPartnerships
+    auth: user-token
+    outputs:
+      partnershipId:
+        script: |
+          (res, ctx) => res.body.data.partnerships
+            .find((p) => p.status === 'active' && p.role === 'owner')?.id
+    assert:
+      - steps.partnerships.partnershipId isDefined     # locating it is the requirement
+
+  - id: partnership_details
+    operation: user-api#getPartnership
+    auth: user-token
+    pathParams: { id: "{{steps.partnerships.partnershipId}}" }
+    outputs:
+      accountId: data.partnership.account.id
+
+  - id: create_item
+    operation: user-api#createItem
+    auth: user-token
+    body:
+      account_id:     "{{steps.partnership_details.accountId}}"
+      partnership_id: "{{steps.partnerships.partnershipId}}"
+    outputs:
+      itemId: data.item.id
+
+  - id: await_initiated
+    operation: items-api#getItemStatus
+    pathParams: { id: "{{steps.create_item.itemId}}" }
+    retry:
+      maxAttempts: 30
+      delay: 2000
+      shouldRetry: |
+        (res, attempt, ctx) => res.body.data.status !== 'initiated'
+    assert:
+      - res.body.data.status eq initiated
+
+  - id: handoff
+    operation: items-api#getHandoff
+    pathParams: { id: "{{steps.create_item.itemId}}" }
+    outputs:
+      handoffRef: data.handoff.ref
+
+  - id: exchange_handoff
+    operation: external-api#createSession
+    pathParams: { ref: "{{steps.handoff.handoffRef}}" }
+    outputs:
+      token: data.session_token
+
+  - id: accept_item
+    operation: items-api#acceptItem
+    auth: partner-token
+    pathParams: { id: "{{steps.create_item.itemId}}" }
+    assert:
+      - res.body.data.status eq accepted

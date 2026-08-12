@@ -1,0 +1,76 @@
+version: 1
+
+meta:
+  name: Product lifecycle by role
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+config:
+  baseUrl: "{{apiBaseUrl}}"
+
+authProfiles:
+  user-token: { mode: bearer, token: "{{steps.login.token}}" }
+
+dataset: ../datasets/roles.csv
+
+steps:
+  - id: login
+    operation: shop-api#login
+    auth: none
+    body:
+      email: "{{row.email}}"
+      password: "{{testUserPassword}}"
+    outputs:
+      token: data.access_token
+
+  - id: me
+    operation: shop-api#getMe
+    auth: user-token
+    assert:
+      - res.body.data.role eq row.role
+
+  - id: add_product
+    operation: shop-api#addProduct
+    auth: user-token
+    when: row.canCreate eq true
+    body:
+      name: "Widget {{flow.runId}}-{{flow.iteration}}"
+      price: 1299
+    outputs:
+      productId: data.id
+    assert:
+      - res.status eq 201
+
+  - id: add_product_denied
+    operation: shop-api#addProduct
+    auth: user-token
+    depends: [me]
+    when: row.canCreate eq false
+    failOnStatusCode: false
+    body:
+      name: "Widget {{flow.runId}}-{{flow.iteration}}"
+      price: 1299
+    outputs:
+      leakedProductId: data.id
+    assert:
+      - res.status eq 403
+
+  - id: get_product
+    operation: shop-api#getProduct
+    auth: user-token
+    depends: [add_product]
+    pathParams:
+      id: "{{steps.add_product.productId}}"
+    assert:
+      - res.status eq 200
+
+  - id: cleanup_leak
+    operation: shop-api#deleteProduct
+    auth: user-token
+    depends:
+      - on: add_product_denied
+        status: [success, failed, skipped, cancelled]
+    failOnUnresolved: false                # nothing leaked on a passing run — §11.2
+    pathParams:
+      id: "{{steps.add_product_denied.leakedProductId}}"

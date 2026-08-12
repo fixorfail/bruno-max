@@ -1,0 +1,31 @@
+# The shared login sub-flow invoked by F2, F3 and F4. The companion references it by path
+# (`uses: ./f2-login.flow.yml`) without giving it verbatim; its interface is fixed by what the
+# callers consume — `steps.<id>.token` and `steps.<id>.userId` — and by F2.4, which stubs the
+# internal step and requires the failure to name `auth/login`.
+version: 1
+
+meta:
+  name: Login
+  library: true                          # excluded from glob runs — §12.5
+
+apis:
+  auth-api: ../specs/auth-v2.yml         # a sub-flow declares its own bindings — §12.3
+
+params:
+  email:    { required: true }
+  password: { required: false, default: "{{testUserPassword}}" }
+
+exports:
+  token:  steps.login.token
+  userId: steps.login.userId
+
+steps:
+  - id: login
+    operation: auth-api#login
+    auth: none
+    body:
+      email: "{{params.email}}"
+      password: "{{params.password}}"
+    outputs:
+      token:  data.access_token
+      userId: data.user.id

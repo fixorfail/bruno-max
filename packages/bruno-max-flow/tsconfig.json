@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node",
+    "declaration": true,
+    "declarationDir": "./dist/types",
+    "allowJs": true,
+    "checkJs": false,
+    "lib": ["ES2020", "DOM"],
+    "baseUrl": "../..",
+    "paths": {
+      "@usebruno/schema-types": ["packages/bruno-schema-types/dist/index.d.ts"],
+      "@usebruno/schema-types/*": ["packages/bruno-schema-types/dist/*"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "tests"]
+}

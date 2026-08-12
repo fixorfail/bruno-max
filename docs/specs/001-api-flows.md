@@ -2782,6 +2782,7 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | Upstream file | Edit | Lines |
 |---|---|---|
 | `package.json` (root) | add `packages/bruno-max-flow` to `workspaces` | 1 |
+| `eslint.config.js` | add the package to `mainLintFiles` | 1 |
 | `packages/bruno-cli/package.json` | add engine dependency | 1 |
 | `packages/bruno-electron/package.json` | add engine dependency | 1 |
 | `bruno-electron/src/index.js` | `require` + call `registerFlowIpc` | 2 |
@@ -2791,6 +2792,12 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `bruno-app/…/components/Sidebar/index.js` | spread fork sidebar sections | 1 |
 | `bruno-app/…/slices/tabs.js` | concat fork tab types into **two** separate constants — see below | 2 |
 | `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
+
+`eslint.config.js` earns its row by the same argument as the `workspaces` line above it: the file
+gates linting on an explicit `mainLintFiles` allowlist, so a fork package that is not named there is
+silently unlinted, and fork code held to a lower standard than the code around it is the more
+expensive mistake. It is one glob at a stable point in a list that changes only when a package is
+added, and a second fork package costs one more.
 
 `tabs.js` is the least comfortable entry and the manifest should say why. It holds two lists:
 `NON_CLOSABLE_TAB_TYPES`, a module-level export that a fork constant can be concatenated into

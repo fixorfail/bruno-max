@@ -1,0 +1,59 @@
+openapi: 3.0.3
+info: { title: Items API, version: 2.0.0 }
+servers:
+  - url: https://items.example.com
+paths:
+  /items/{id}/status:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getItemStatus
+      responses:
+        '200':
+          description: Current status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status: { type: string, enum: [pending, initiated, accepted] }
+  /items/{id}/handoff:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getHandoff
+      responses:
+        '200':
+          description: A handoff reference
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      handoff:
+                        type: object
+                        properties:
+                          ref: { type: string }
+  /items/{id}/accept:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: acceptItem
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      status: { type: string }

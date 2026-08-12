@@ -1,0 +1,34 @@
+openapi: 3.0.3
+info: { title: Carrier A, version: 1.0.0 }
+servers:
+  - url: https://carrier-a.example.com
+paths:
+  /quotes:
+    post:
+      operationId: createQuote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_ref, service]
+              properties:
+                order_ref: { type: string }
+                service: { type: string }
+      responses:
+        '200':
+          description: A quote
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      quote:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          amount: { type: integer }

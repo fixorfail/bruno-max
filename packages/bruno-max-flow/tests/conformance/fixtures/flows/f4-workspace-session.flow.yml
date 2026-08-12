@@ -1,0 +1,25 @@
+# The sub-flow half of F4.4. Referenced by f4-tenant-parent.flow.yml and specified in 001 §6.3:
+# across separate flows, a tenant host arrives as a declared param rather than by reaching into
+# the caller's step state, which is what makes the flow reusable against any workspace (§12.3).
+version: 1
+
+meta:
+  name: Workspace session
+  library: true
+
+params:
+  subdomain: { required: true }
+
+apis:
+  workspace-api:
+    source: ../specs/platform-v1.yml
+    baseUrl: "https://{{params.subdomain}}.example.com"
+
+exports:
+  timezone: steps.settings.timezone
+
+steps:
+  - id: settings
+    operation: workspace-api#getSettings
+    outputs:
+      timezone: data.settings.timezone

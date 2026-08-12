@@ -1,0 +1,26 @@
+# F4.4 — a base URL the run produces (§6.3). The companion gives this fixture without its
+# `version:`/`meta:` preamble; both are required by §5.2.
+version: 1
+
+meta:
+  name: Per-tenant subdomains
+
+apis:
+  signup-api: ../specs/platform-v1.yml
+  workspace-api:
+    source: ../specs/platform-v1.yml     # the same document, a tenant host
+    baseUrl: "https://{{steps.create_workspace.subdomain}}.example.com"
+
+steps:
+  - id: create_workspace
+    operation: signup-api#createWorkspace
+    outputs:
+      subdomain: data.workspace.subdomain
+
+  - id: workspace_settings
+    operation: workspace-api#getSettings
+
+  - id: session
+    uses: ./f4-workspace-session.flow.yml
+    with:
+      subdomain: "{{steps.create_workspace.subdomain}}"

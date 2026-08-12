@@ -1,0 +1,121 @@
+openapi: 3.0.3
+info: { title: Billing API, version: 4.0.0 }
+servers:
+  - url: https://billing.example.com
+paths:
+  /batches/open:
+    get:
+      operationId: getOpenBatch
+      responses:
+        '200':
+          description: The open batch
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      batch:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          ref: { type: string }
+                          items:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                id: { type: string }
+                                amount: { type: integer }
+  /batches/{id}/settlement:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: submitSettlement
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [region, sequence]
+              properties:
+                region: { type: string }
+                sequence: { type: string }
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      state: { type: string }
+  /invoices:
+    post:
+      operationId: createInvoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: integer, minimum: 0 }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+        '400':
+          description: Rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+  /invoices/{id}/document:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: uploadInvoice
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document]
+              properties:
+                document: { type: string, format: binary }
+                description: { type: string }
+                metadata:
+                  type: object
+                  properties:
+                    tenant: { type: string }
+                attachments:
+                  type: array
+                  items: { type: string, format: binary }
+            encoding:
+              document:
+                contentType: application/x-pdf
+      responses:
+        '201': { description: Stored }

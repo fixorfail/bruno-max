@@ -1,0 +1,22 @@
+openapi: 3.0.3
+info: { title: External Partner API, version: 1.0.0 }
+servers:
+  - url: https://external.example.com
+paths:
+  /sessions/{ref}:
+    parameters:
+      - { name: ref, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: createSession
+      responses:
+        '200':
+          description: A partner session
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      session_token: { type: string }

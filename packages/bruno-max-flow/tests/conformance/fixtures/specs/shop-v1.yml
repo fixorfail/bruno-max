@@ -1,0 +1,105 @@
+openapi: 3.0.3
+info: { title: Shop API, version: 1.0.0 }
+servers:
+  - url: https://shop.example.com
+paths:
+  /auth/login:
+    post:
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+  /me:
+    get:
+      operationId: getMe
+      responses:
+        '200':
+          description: The current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      role: { type: string, enum: [admin, editor, viewer] }
+  /products:
+    post:
+      operationId: addProduct
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price]
+              properties:
+                name: { type: string }
+                price: { type: integer }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+  /products/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getProduct
+      responses:
+        '200':
+          description: A product
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      price: { type: integer }
+    delete:
+      operationId: deleteProduct
+      responses:
+        '204': { description: Deleted }

@@ -1,0 +1,4 @@
+email,role,canCreate
+admin@example.com,admin,true
+editor@example.com,editor,true
+viewer@example.com,viewer,false

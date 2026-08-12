@@ -1,0 +1,35 @@
+openapi: 3.0.3
+info: { title: Carrier B, version: 3.0.0 }
+servers:
+  - url: https://carrier-b.example.com
+paths:
+  /rates:
+    post:
+      operationId: getRates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference]
+              properties:
+                reference: { type: string }
+      responses:
+        '200':
+          description: Available rates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      rates:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id: { type: string }
+                            amount: { type: integer }

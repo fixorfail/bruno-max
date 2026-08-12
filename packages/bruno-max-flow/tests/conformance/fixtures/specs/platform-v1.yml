@@ -1,0 +1,44 @@
+openapi: 3.0.3
+info: { title: Platform API, version: 1.0.0 }
+# F4.4 asserts createWorkspace is dispatched to this URL, while the workspace-api binding
+# overrides it with a host the run produces — so servers[0] is load-bearing here (§6.3).
+servers:
+  - url: https://api.example.com
+paths:
+  /workspaces:
+    post:
+      operationId: createWorkspace
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      workspace:
+                        type: object
+                        properties:
+                          id: { type: string }
+                          subdomain: { type: string }
+  /settings:
+    get:
+      operationId: getSettings
+      responses:
+        '200':
+          description: Workspace settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      settings:
+                        type: object
+                        properties:
+                          timezone: { type: string }

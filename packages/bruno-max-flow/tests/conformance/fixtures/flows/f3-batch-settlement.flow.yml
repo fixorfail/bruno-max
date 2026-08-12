@@ -1,0 +1,66 @@
+version: 1
+
+meta:
+  name: Batch settlement with privilege escalation
+
+apis:
+  auth-api:    ../specs/auth-v2.yml
+  billing-api: ../specs/billing-v4.yml
+  audit-api:
+    source: ../specs/audit-v1.yml
+    baseUrl: "{{auditBaseUrl}}"
+
+config:
+  baseUrl: "{{billingBaseUrl}}"
+
+authProfiles:
+  user-token:     { mode: bearer, token: "{{steps.auth.token}}" }
+  elevated-token: { mode: bearer, token: "{{steps.elevate.token}}" }
+
+steps:
+  - id: auth
+    uses: ./f2-login.flow.yml
+    with:
+      email: "{{operatorEmail}}"
+
+  - id: get_batch
+    operation: billing-api#getOpenBatch
+    auth: user-token
+    outputs:
+      batchId: data.batch.id
+      batch:
+        script: |
+          (res, ctx) => {
+            const [, region, sequence] = res.body.data.batch.ref.split('/');
+            return { region, sequence, itemCount: res.body.data.batch.items.length };
+          }
+
+  - id: elevate
+    operation: auth-api#elevate
+    auth: user-token
+    body:
+      scope: settlement:write
+    outputs:
+      token: data.access_token
+
+  - id: submit_settlement
+    operation: billing-api#submitSettlement
+    auth: elevated-token
+    depends: [get_batch, elevate]
+    pathParams:
+      id: "{{steps.get_batch.batchId}}"
+    body:
+      region:   "{{steps.get_batch.batch.region}}"
+      sequence: "{{steps.get_batch.batch.sequence}}"
+    assert:
+      - res.status eq 202
+
+  - id: create_audit_record
+    operation: audit-api#createRecord
+    auth: user-token
+    depends: [get_batch]
+    body:
+      batch_ref:  "{{steps.get_batch.batchId}}"
+      region:     "{{steps.get_batch.batch.region}}"
+      item_count: "{{steps.get_batch.batch.itemCount}}"
+      label:      "batch {{steps.get_batch.batchId}} ({{steps.get_batch.batch.region}})"
