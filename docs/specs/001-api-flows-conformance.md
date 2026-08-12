@@ -1077,8 +1077,9 @@ buffers until the run ends.
 | a `uses:` step carrying `retry:`, `timeout:`, `body:`, `validateSchema:` or `auth:` | schema violation, one per field — not a silent no-op |
 | `with:` naming a param the sub-flow does not declare | `unknown-param`, with a did-you-mean suggestion |
 | an `outputs:` entry set to `!...` | valid — suppresses an inherited connector entry (§8.5) |
-| an `outputs:` entry set to `null` | schema violation; `null` is not the removal token |
-| a document containing `!file` and `!...` | validates — the schema describes the **tag-resolved** model |
+| an `outputs:` entry set to `null` | **passes** the schema, which cannot tell it from a projected `!...`; `bru flow validate` errors — `null` is not the removal token (§5.4, §8.5) |
+| a document containing `!file` and `!...` | validates — the schema describes the **projected** model, in which a tag is stripped to the node beneath it (§5.4) |
+| a `body:` value that is literally `{ $file: ./x.pdf }` or `{ $drop: true }` | ordinary data: sent as an object, never read as a tag. §5.4 resolves the tags to a symbol and a class instance precisely so a hostile body cannot forge one |
 | a v1 fixture from §15's golden set | validates against the v1 schema |
 
 Two negative controls, because they define the schema's boundary: a flow whose `operation:` does not

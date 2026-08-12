@@ -340,9 +340,79 @@ next run.
 #### Local tags and the data model
 
 JSON Schema validates a parsed data model, and this format uses two YAML local tags — `!...` (§7.2)
-and `!file` (§7.4) — that have no JSON equivalent. The schema therefore describes the document
-**after tag resolution**, where each tag has become a known marker value the schema can name in a
-`oneOf` beside the ordinary types a field accepts.
+and `!file` (§7.4) — that have no JSON equivalent. Three forms of the document therefore exist, and
+naming them is what keeps the schema, the engine and the editor from disagreeing about a file none of
+them reads quite the same way:
+
+| Form | What it is | Read by |
+|---|---|---|
+| **Authored** | the YAML on disk, tags intact | a human, and the YAML language server |
+| **Resolved** | what the flow parser produces — each tag becomes an engine value with *identity* | the engine, §7's pipeline, the semantic half of `bru flow validate` |
+| **Projected** | the resolved form with each tag value replaced by the node the tag was applied to | ajv, and nothing else |
+
+##### The resolved form
+
+```ts
+/** §7.2's removal tag. A symbol, so no authored document can produce a value equal to it. */
+export const DROP: unique symbol;
+
+/** §7.4's file reference, from either the scalar or the mapping form. */
+export class FileRef {
+  readonly path: string;
+  readonly filename?: string;      // multipart only — §7.5
+  readonly contentType?: string;   // multipart only — §7.5
+}
+```
+
+**Identity, not shape, is what makes these unambiguous.** §17 rejects a `{ file: ... }` mapping
+because in a value position it cannot be told apart from a literal object carrying a `file` key, and
+resolving the tag *to* a marker object would reintroduce exactly that ambiguity one layer down: a
+request body legitimately containing `{"$file": {...}}` would be read as a file reference and
+uploaded. YAML cannot produce a symbol at all, and no mapping parses to a class instance, so the
+collision cannot occur however hostile the body.
+
+A `!file` mapping carrying a key other than `path`, `filename` or `contentType` is a parse error
+rather than an ignored one — the tag has three options and a fourth is a typo.
+
+##### The projected form: strip the tag, keep the node
+
+```
+!file ./fixtures/catalog.json           ->  "./fixtures/catalog.json"
+!file { path: ./c.pdf, filename: x }    ->  { path: "./c.pdf", filename: "x" }
+!...                                    ->  null
+```
+
+That rule is chosen for one property: **it is exactly what a tag-unaware reader already sees.** Given
+`yaml.customTags`, the YAML language server permits each tag and reads the node beneath it — so the
+projection and the editor converge on the same document, and a single schema serves both without
+either being told that tags exist.
+
+Projecting to a marker object instead would make the schema name a shape the editor never produces,
+and the `yaml.schemas` mapping below would then flag every valid `!file` in the file. A schema whose
+purpose is catching the mistake you make while typing cannot be one that red-squiggles the format's
+own syntax.
+
+##### What the schema therefore cannot decide
+
+Stripping a tag discards it, so wherever a tag is legal the schema accepts the underlying node
+whether or not the tag was written:
+
+| Written | Projects to | Schema | `bru flow validate` |
+|---|---|---|---|
+| `state: !...` | `null` | valid | valid — drops the inherited connector entry (§8.5) |
+| `state: null` | `null` | valid | **error** — `null` is not the removal token (§8.5) |
+| `document: !file ./x.pdf` | `"./x.pdf"` | valid | valid |
+| `document: "./x.pdf"` | `"./x.pdf"` | valid | **error** where the part is `format: binary` (§7.5) |
+
+The right-hand column works on the resolved form and has the identity the projection dropped. This is
+the division of labor the table at the top of §5.4 already draws, applied to the one case where the
+two halves see the same characters and must reach different verdicts — and it is why the schema is
+*the structural half* rather than a smaller copy of validation.
+
+The cost is that a key left empty by accident — `state:` with nothing after it — projects to `null`
+and passes the schema at any tag-legal position. It fails at `bru flow validate`, one command later,
+naming the field. Paying that is what buys an editor that never lies about the format's own tags,
+and §14.3's check list is where the rule is enforced either way.
 
 Editors need the tags registered or they will flag valid files. For the YAML language server that is
 a one-time workspace setting, which `bru flow schema --editor` emits alongside the schema:
@@ -3509,6 +3579,8 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | Explicit `Authorization` disabling the whole profile | Only ever worked for bearer-style modes; `apikey` can sit in a query param and signing modes touch several fields. Per-field override plus `auth: none` is mode-agnostic. |
 | Cancelled runs reusing exit code 1 | A CI job could not distinguish a timeout or interrupt from a genuine regression without parsing output. |
 | `vars.` and `env.` interpolation prefixes | A flow variable and an environment variable are the same kind of thing to whoever writes `{{tenantId}}`; which scope supplies it is a resolution detail, exactly as in a collection. |
+| Resolving `!file` / `!...` to marker objects (`{"$file": …}`) in the data model | Reintroduces the ambiguity §17 rejected the `{ file: ... }` mapping to avoid, one layer down: a request body legitimately containing that key would be read as a file reference and uploaded. A symbol and a class instance cannot be forged by any document (§5.4). |
+| A schema written against marker objects rather than the stripped node | Names a shape the YAML language server never produces, so the `yaml.schemas` mapping the format ships would flag every valid `!file` in the file — a schema that red-squiggles the format's own syntax (§5.4). |
 | A `!!`-shorthand tag for deletion | `!!` expands to `tag:yaml.org,2002:`, reserved by the YAML spec for its own types; a tag there resolves to plain null and is indistinguishable from `null` after parsing. |
 | An interpolation coalesce operator, `{{a ?? b}}` | Puts branch selection inside a string template, where it is invisible to the graph, and adds a second expression dialect to `{{}}` after §7.3 kept it a pure substitution. A named slot makes the same choice a declared edge. |
 | Shared slots resolved by completion time | The join barrier orders writes against the read but not against each other, so concurrent branches would decide the value by network timing — the same flow yielding different results on a loaded CI machine than on a laptop. |

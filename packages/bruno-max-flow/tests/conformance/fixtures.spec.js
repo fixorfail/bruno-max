@@ -16,11 +16,22 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const FLOWS = path.join(FIXTURES, 'flows');
 const SPECS = path.join(FIXTURES, 'specs');
 
-/** §7.2's `!...` and §7.4's `!file` are local tags; the schema resolves them to markers. */
+/**
+ * §5.4's resolved form: the local tags become values with identity, never marker objects — a body
+ * may legitimately contain any key, so shape cannot be what distinguishes a tag from data.
+ */
+const DROP = Symbol('bruno.flow.drop');
+
+class FileRef {
+  constructor(data) {
+    Object.assign(this, typeof data === 'string' ? { path: data } : data);
+  }
+}
+
 const SCHEMA = yaml.DEFAULT_SCHEMA.extend([
-  new yaml.Type('!file', { kind: 'scalar', construct: (data) => ({ $file: data }) }),
-  new yaml.Type('!file', { kind: 'mapping', construct: (data) => ({ $file: data }) }),
-  new yaml.Type('!...', { kind: 'scalar', construct: () => ({ $delete: true }) })
+  new yaml.Type('!file', { kind: 'scalar', construct: (data) => new FileRef(data) }),
+  new yaml.Type('!file', { kind: 'mapping', construct: (data) => new FileRef(data) }),
+  new yaml.Type('!...', { kind: 'scalar', construct: () => DROP })
 ]);
 
 const load = (file) => yaml.load(fs.readFileSync(file, 'utf8'), { schema: SCHEMA });
