@@ -627,6 +627,23 @@ failure message names the `state eq initiated` assertion, and every downstream s
 Assert the attempt count precisely — an off-by-one in the `maxAttempts` cap is invisible at any
 other count, and §11.1 makes the cap a hard guarantee rather than a hint.
 
+Then the delay sequence, against the same stub with the `Clock` port's `sleep` recorded. `n`
+attempts means `n - 1` sleeps, and the values are exact — jitter is off by default, so there is
+nothing to bound rather than assert:
+
+| Retry block | `sleep` receives |
+|---|---|
+| `maxAttempts: 4, delay: 1000` (default `fixed`) | `1000, 1000, 1000` |
+| `maxAttempts: 6, delay: 1000, backoff: exponential` | `1000, 2000, 4000, 8000, 16000` |
+| the same with `maxDelay: 5000` | `1000, 2000, 4000, 5000, 5000` |
+| `maxAttempts: 12, delay: 5000, backoff: exponential`, no `maxDelay` | every value ≤ `30000`, the default cap |
+| `maxAttempts: 1` | `sleep` is never called |
+| `backoff: exponential, jitter: full, delay: 1000` | each value within `[0, 2 ** (n - 1) * 1000]` — the only row asserted as a range |
+| any of the above | total wall-clock time is zero; the `Clock` port is never allowed to really sleep |
+
+The `maxAttempts: 1` row is worth its line: a delay applied *before* the first attempt rather than
+before each retry is a bug that never changes an outcome, only every run's duration.
+
 ### F4.4 Per-tenant subdomains
 
 A separate pair of fixture flows for §6.3's step-produced base URL:
@@ -780,6 +797,54 @@ Supply fixtures through a stubbed `ReadFile` port, never on disk.
 The containment row asserts on the port, not on the outcome — a run that reads the file and then
 rejects it has already read it.
 
+### R4c2 — How a bare operand resolves
+
+**Pins:** §10.2, §9.3. One step, one stubbed response, one assertion per row — the rule governs
+every `assert:` and every `when:` in the format, so it is asserted directly rather than inferred
+from flows that happen to exercise it.
+
+Against a response body of `{ "data": { "state": "settled", "role": "admin", "count": 0,
+"active": true } }`, a dataset row of `{ "role": "admin" }`, and a flow var `status: "pending"`:
+
+| Assertion | Resolves to | Outcome |
+|---|---|---|
+| `res.body.data.state eq settled` | the string `settled` | passes |
+| `res.body.data.count eq 0` | the number `0` | passes |
+| `res.body.data.active eq true` | the boolean `true` | passes |
+| `res.body.data.role eq row.role` | a reference — `row` is a reserved root | passes |
+| `res.body.data.state eq status` | the string `status`, **not** the flow var | **fails**, actual `settled` |
+| `res.body.data.state eq {{status}}` | the flow var `pending` | fails, and names `pending` as expected |
+| `res.body.data.state eq "settled"` | the quoted string | passes |
+| `res.body.data.role eq steps.login.role` where `login` is an ancestor with that output | a reference | passes |
+| `res.body.data.role eq rowrole` | the string `rowrole` | fails — a root matches only as a whole first segment |
+| `when: row.canCreate eq true` on a step | the boolean, per the same rule | the row selects the step |
+
+The fifth row is the load-bearing one. An implementation that resolves any bare word against the
+variable scope passes every other row and silently turns a string comparison into a variable lookup
+— which is the failure this rule was written to make impossible to hit by accident, since `{{status}}`
+is right there for the case that wants it.
+
+### R4d2 — Dataset formats and row typing
+
+**Pins:** §9.4, §10.2's operand rule. F1's `roles.csv` is the fixture; the JSON and YAML variants
+carry the same three rows.
+
+| Case | Expected |
+|---|---|
+| the CSV, JSON and YAML datasets run against F1 unchanged | **identical** iteration outcomes — assert the three step tables match, not merely that each passes |
+| CSV cell `true` | boolean `true`; `when: row.canCreate eq true` selects the row |
+| CSV cell `1299` | number; `row.price gt 1000` holds |
+| CSV cell `02134` | number `2134` — the documented cost of inference, asserted so it is a decision and not a surprise |
+| CSV cell `"007"`, quoted | string `007`, digits intact |
+| CSV cell `null`, and an empty cell | `null` and `""` respectively — an empty cell is not the null literal |
+| JSON row `{ "canCreate": "true" }` | the **string**, which does not satisfy `eq true` — native types are not re-inferred |
+| a dataset in a sub-flow | validation error (§12.4) |
+| a `.tsv` or `.xml` dataset | validation error naming the three supported formats |
+
+The first row is the one that matters: the three formats exist to be interchangeable, and an
+implementation that types CSV by its own rule rather than §10.2's passes every other row here while
+making a converted dataset behave differently from the one it replaced.
+
 ### R4e — Multipart and binary bodies
 
 **Pins:** §7.5. Fixtures come from the stubbed `ReadFile` port; assertions inspect the
@@ -805,8 +870,25 @@ And for a `uploadScan` operation declaring `application/pdf`:
 | Case | Expected |
 |---|---|
 | `bodyFile: ./fixtures/scan.pdf` | body is the exact bytes — assert a **byte-for-byte** match against the stub's buffer |
+| `body: !file ./fixtures/scan.pdf` | **byte-identical to the previous row** — assert the two `MaterializedRequest`s match, not merely that both succeed |
+| `body: !file` carrying `filename:` or `contentType:` on a single-payload operation | validation error; the options are multipart-only |
 | the same fixture containing `{{` sequences | bytes unchanged; no interpolation ran |
 | capture for both steps | records path, filename, content type and length — and **no file content** |
+
+And for a `createOrder` operation declaring **both** `application/json` and `multipart/form-data`:
+
+| Case | Expected |
+|---|---|
+| no `contentType:` on the step | validation error `ambiguous-media-type`, listing both types; nothing dispatched |
+| `contentType: multipart/form-data` | assembled as parts, per the multipart rules above |
+| `contentType: application/json` with the same body | assembled as a JSON structure — assert the two produce **different** wire formats from one body |
+| `contentType: application/xml`, which the operation does not declare | validation error |
+| `contentType:` on `uploadScan`, which declares one type | validation error — the field is legal only where the operation is ambiguous |
+| a body whose only value is a `!file`, on the ambiguous operation, with no `contentType:` | still `ambiguous-media-type` — nothing is inferred from the body's shape |
+
+The last row is the regression test for the rejected alternative: an implementation that guesses
+multipart from the presence of a `!file` passes every other row here and silently changes a
+request's wire format when someone edits a body value.
 
 The byte-for-byte row is the one that matters most: an implementation that routes a binary body
 through the JSON path corrupts it in ways a length check alone will not catch. The `{{` row exists
@@ -846,10 +928,15 @@ declaring `status: [cancelled]`:
 
 ### R4g2 — Run identity is written before the run, not after
 
-**Pins:** §14.5. Against the capture directory rather than the run result.
+**Pins:** §14.5, §13.2's `WriteFile` / `RemoveDirectory`. Against the capture directory rather than
+the run result — which in a conformance run is the in-memory filesystem the write ports were stubbed
+with, so the layout is asserted without touching disk.
 
 | Assertion | Why |
 |---|---|
+| every path passed to `WriteFile` and `RemoveDirectory` | computed by the engine, inside the scope root, and refused before the port is called if it would escape — the host is never asked to make that judgement |
+| the same flow run twice through two different port stubs | identical path sets, so the CLI and app cannot produce different layouts |
+| `captureRetainRuns` exceeded | the oldest run directories are removed through `RemoveDirectory`, newest retained; assert *which* directories, not just the count |
 | `run.json` exists once the first step has started, carrying `runId`, the flow's path and `startedAt` | a run in progress must be attributable to its flow; the app lists it while it is still going |
 | `summary.json` does not exist until the run ends | the two files answer different questions and are written at different times |
 | after a run aborted before completion, `run.json` is present and `summary.json` absent | this is the interrupted state, and it is legible rather than corrupt |
@@ -905,7 +992,12 @@ rather than as the CLI and app behaving differently.
 | `concurrency: 5` | events from different steps interleave — consumers keyed on adjacency break, so assert only the per-`id` ordering above |
 | `RunResult` | carries no exit code field |
 | `signal` aborted mid-run vs. `maxRunDuration` elapsing | identical step tables and identical event sequences (§11.3) |
-| a `clock` port with a controlled `sleep` | a 30-attempt poll completes with no real delay, and `sleep` was called 29 times |
+| a `clock` port with a controlled `sleep` | a 30-attempt poll completes with no real delay, and `sleep` was called 29 times — with the values F4.3 pins |
+| a flow invoking a sub-flow | `IterationResult.steps` is **flat**: the `uses:` step appears with `kind: 'subflow'` and each internal step alongside it with a namespaced id — assert no `StepResult` nests another |
+| the same run's events | `step:start` and `step:end` fire for internal steps too, each inside the container's own pair; a host can therefore draw the expansion live |
+| a step failing both request-schema validation and none of its assertions | `validation.request.valid` is false with a path-keyed error list, `assertions[]` all pass, and `reason` is `invalid-request` — one outcome does not overwrite the other |
+| the same step with capture disabled | `validation` is unchanged; it travels in the result, not the capture |
+| an `apis:` entry naming an `https://` source | `ReadSpec` is called with the source string verbatim; the engine never inspects the scheme, and the graph resolves |
 
 The structured-clone row is the one that catches an otherwise invisible break: an event carrying a
 `Buffer` or a class instance works in the CLI, where the consumer is in-process, and fails only in
@@ -921,6 +1013,22 @@ are consumed by CI and cannot be renamed once shipped.
 Plus the first-failure rule: a step receiving a **500** that would *also* fail three assertions
 reports `unexpected-status` alone, with `attempts: 1`. A step reporting a list of reasons, or the
 last rather than the first, turns one problem into five in the output.
+
+**`script-error` in all three positions** (§8.2), each asserted alone against a 200 response:
+
+| Case | Expected |
+|---|---|
+| an `outputs:` script that throws | step **fails**, `reason: script-error`, message names `outputs.<name>` and carries the thrown message |
+| the same step's other declared outputs | still extracted and present on the `StepResult` |
+| a `when:` script that throws | step **fails** — assert the reason is `script-error` and **not** `condition-false`, and that no request was dispatched |
+| a `shouldRetry` that throws on attempt 2 of 10 | step fails with `script-error` at `attempts: 2`; assert it is **not** `retries-exhausted` and that no further attempt was made |
+| a throwing output on one dataset row | that iteration fails, the others pass, and the run's cleanup steps still run |
+| a step returning **500** whose output script also throws | `unexpected-status` — the earlier check in §14.6's order wins |
+| an output script returning `undefined` | unchanged from §8.1: the step **succeeds**, the output is not produced, consumers skip `unresolved-dependency` |
+
+The last two rows are the boundary. One separates a throw from an earlier failure, the other
+separates a throw from the `undefined` case it must not collapse into — an implementation that
+catches script errors and returns `undefined` passes every scenario in this file except that row.
 
 ### R4l — Console output properties
 
@@ -962,8 +1070,14 @@ buffers until the run ends.
 | `retry: { maxAttempts: 0 }` | schema violation — positive integer |
 | both `operation:` and `uses:`; both `body:` and `bodyFile:` | schema violation, without needing the graph |
 | all three `depends` shapes — list, `all:`, `any:` | all valid |
-| `id: my.step` or `id: 2fa` | schema violation on the §5.3 pattern |
+| `id: my.step`, `id: 2fa` or `id: my-step` | schema violation on the §5.3 pattern; the last reports `invalid-step-id` suggesting `my_step` |
+| `id: my_step` and `id: _internal2` | valid |
 | duplicate step ids | reported |
+| a `uses:` step carrying `assert:`, `outputs:`, `shared:`, `maxDuration` | all valid (§12.4) |
+| a `uses:` step carrying `retry:`, `timeout:`, `body:`, `validateSchema:` or `auth:` | schema violation, one per field — not a silent no-op |
+| `with:` naming a param the sub-flow does not declare | `unknown-param`, with a did-you-mean suggestion |
+| an `outputs:` entry set to `!...` | valid — suppresses an inherited connector entry (§8.5) |
+| an `outputs:` entry set to `null` | schema violation; `null` is not the removal token |
 | a document containing `!file` and `!...` | validates — the schema describes the **tag-resolved** model |
 | a v1 fixture from §15's golden set | validates against the v1 schema |
 

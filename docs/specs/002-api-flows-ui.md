@@ -1,6 +1,7 @@
 # 002 — API Flows UI (run & observe)
 
-**Status:** Draft — §14 carries four questions 001 must answer first
+**Status:** Draft — the three questions 001 owed this spec are answered; §14 carries one of its own,
+local to `readCapture`'s options
 **Owner:** Jake Campbell
 **Last revised:** 2026-08-12
 
@@ -573,12 +574,13 @@ declare function describeFlow(options: DescribeOptions): Promise<FlowDescription
 type DescribeOptions = {
   entry: string;
   scope: { workspaceRoot: string; collectionRoot?: string };
-  ports: { readFile: ReadFile };
+  ports: { readFile: ReadFile; readSpec: ReadSpec };
 };
 
 type FlowDescription = {
+  id: string;                          // path relative to the scope root (001 §5.2)
   name: string;                        // meta.name, or the filename
-  isLibrary: boolean;                  // declares params: (001 §12.5)
+  isLibrary: boolean;                  // meta.library: true (001 §12.5)
   params: { name: string; required: boolean; default?: unknown }[];
   dataset?: { source: string; parallel: number };
   nodes: FlowNode[];
@@ -818,23 +820,19 @@ The three raised in review are resolved into the body: the workspace-scoped envi
 mechanism where §5.1 described two, and §14.5 needed a `run.json` at run start or a run has no
 identity until it finishes. Both are applied; §11.4 records what moved.
 
-A later audit raised four more. Three are 001's to answer and are open in **001 §18**; they are
-listed here because this spec is what fails if they are answered the other way.
+A later audit raised four more. **Three were 001's to answer and are now answered**, all three the
+way this spec needed:
 
-**Does `StepResult` carry schema-validation outcomes?** §9's **Validation** tab and 002-C U4.10 both
-assume it does — U4.10 asserts those outcomes survive capture being disabled, which is only possible
-if they travel in the result rather than the capture. 001 §13.2's `StepResult` has `assertions[]`
-and one `reason`, which cannot express a schema failure alongside passing assertions. If 001 answers
-that captures own them, §9's tab needs a capture read and U4.10 is wrong as written.
+- **`StepResult` carries schema-validation outcomes** — 001 §13.2 gains a `validation` field
+  separate from `assertions[]`, so §9's **Validation** tab reads the result and 002-C U4.10 holds as
+  written, with the outcomes surviving capture being disabled.
+- **`step:start` / `step:end` fire for sub-flow internals**, which appear as ordinary members of a
+  flat `steps[]` with namespaced ids (001 §13.2). §5.4's inline expansion populates live rather than
+  from a capture after the run, and 002-C U1.8 stands.
+- **`describeFlow` resolves remote `apis:`** through the `ReadSpec` port added in 001 §13.2, now in
+  §11.1's signature. A flow binding an `https://` document returns a graph, not diagnostics.
 
-**Are `step:start` / `step:end` emitted for sub-flow internals?** §5.4 expands a sub-flow into its
-own graph inline, and 002-C U1.8 asserts the internals appear. If the engine reports a `uses:` step
-as one unit in the event stream, expansion can only be populated from a capture after the run — a
-materially different feature from the one §5.4 describes.
-
-**Can `describeFlow` resolve a flow whose `apis:` are remote?** §11.1 gives it `{ readFile }` alone,
-and 001 §6.2 allows `https://` sources. A flow binding a remote document would return diagnostics
-rather than a graph, and §6's "a broken flow still opens" would cover a flow that is not broken.
+One remains, and it is this spec's own:
 
 **Can `readCapture` enforce scope-root containment?** §11.2 claims containment is enforced "before
 the port is called" for history reads, but `ReadCaptureOptions` carries `dir` with no `scopeRoot`

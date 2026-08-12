@@ -37,9 +37,9 @@ to document this.
 
 | Spec | Title | Status |
 |---|---|---|
-| [001](./001-api-flows.md) | API Flows — sequenced, spec-driven request execution | Draft — §18 open questions block acceptance |
+| [001](./001-api-flows.md) | API Flows — sequenced, spec-driven request execution | Draft — contracts settled, implementation may start; §18 holds path-local questions |
 | [001-C](./001-api-flows-conformance.md) | API Flows — conformance scenarios | Draft — companion to 001 |
-| [002](./002-api-flows-ui.md) | API Flows UI — run & observe in the app | Draft — §14 waits on 001 §18 |
+| [002](./002-api-flows-ui.md) | API Flows UI — run & observe in the app | Draft — 001 has answered what it owed; one question of its own in §14 |
 | [002-C](./002-api-flows-ui-conformance.md) | API Flows UI — conformance scenarios | Draft — companion to 002 |
 
 **Start with [001's "How to read this"](./001-api-flows.md#how-to-read-this)** — it routes by what

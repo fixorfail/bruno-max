@@ -1,6 +1,8 @@
 # 001 — API Flows
 
-**Status:** Draft — open questions in §18 block acceptance
+**Status:** Draft — **contracts settled; implementation may start.** §18's remaining questions are
+each local to one execution path and none changes a signature; the ports, the engine boundary, the
+expression dialect and the document schema are decided.
 **Owner:** Jake Campbell
 **Last revised:** 2026-08-12
 
@@ -185,6 +187,7 @@ meta:
   name: Checkout happy path
   description: Creates a payment, settles it, and verifies the ledger entry.
   tags: [checkout, smoke]
+  library: false               # default false; true excludes it from glob runs — see §12.5
 
 apis:                          # alias -> OpenAPI document
   payments-api: ../../apispec/payments-v3.yml
@@ -224,12 +227,21 @@ dataset: ./fixtures/customers.csv   # optional; see §9.4
 steps:    [ ... ]              # the graph — see §9
 ```
 
-A **library flow** additionally declares `params:` and `exports:` — see §12.1. They are omitted
-here because their presence changes how a flow is discovered (§12.5), so the canonical structure
+A **library flow** additionally declares `params:` and `exports:` — see §12.1 — and marks itself
+`meta.library: true`, which is what changes how it is discovered (§12.5). The canonical structure
 above is an ordinary runnable flow.
 
 `version` is required and exists so the parser can migrate older files on read rather than
 forcing users to edit them by hand.
+
+**A flow's identity is its path**, relative to the scope root with `.flow.yml` removed:
+`flows/shared/login.flow.yml` is `flows/shared/login`. There is no `id:` field, because a second
+source of identity can disagree with the first — a file renamed without its id, or an id duplicated
+across two files — and every consumer of a flow's identity (§14.1's `--tags` filtering and
+selection, §14.7's listing, [002](./002-api-flows-ui.md) §4.1's sidebar) is already naming it by
+path. `bru flow list` and the sidebar **display** the final segment, falling back to the fuller path
+only when two flows share a stem. Nothing persists an identity across runs, so renaming a file is
+just a rename.
 
 ### 5.3 A step
 
@@ -255,6 +267,8 @@ steps:
       Idempotency-Key: "{{flow.runId}}"
     pathParams:
       tenantId: "{{tenantId}}"
+    contentType: application/json             # only when the operation declares more
+                                              #   than one request media type — see §7.5
 
     outputs:                                  # declared connectors — see §8
       paymentId: data.id
@@ -285,11 +299,20 @@ steps:
 
 A step declares **either** `operation:` or `uses:` (§12), never both.
 
-**A step `id` matches `^[a-zA-Z_][a-zA-Z0-9_-]*$`** and is unique within its flow. The constraint is
+**A step `id` matches `^[a-zA-Z_][a-zA-Z0-9_]*$`** and is unique within its flow. The constraint is
 not stylistic: an id is addressed as `{{steps.<id>.field}}`, so anything containing a dot or a space
 is unreachable, and ids become directory names under `.bruno-runs/` (§14.5), where separators and
 Windows reserved device names are hazards. Rejecting those at authoring time beats a step that runs
 but cannot be referenced.
+
+**`-` is excluded for the same reason as `.` and a space, not as a style preference.** `-` is
+subtraction in the expression dialect (§10.2) and in every `script:` form (§8.2), so
+`steps.my-step.status` is either a second addressing syntax or an expression that silently means
+something else. The alternative — allowing `-` and requiring `steps["my-step"]` — buys kebab-case
+ids at the price of a rule people get wrong exactly once per flow, in a place where the wrong
+version parses. `bru flow validate` reports `invalid-step-id` with the underscored id as a
+suggestion. Allowing `-` later is additive; retracting it later is not, which is the asymmetry that
+decides an open case.
 
 ### 5.4 The document schema
 
@@ -427,10 +450,14 @@ Paths are resolved **relative to the flow file**. This lets a flow reference the
 absolute path, and lets a flow span multiple APIs — the reason the reference is alias-qualified
 rather than a bare `operationId`.
 
-Remote sources (`https://…`) resolve through the existing `renderer:fetch-api-spec` /
-`swagger-fetch` path in the app and a direct fetch in the CLI, with an on-disk cache. Referencing
-a remote spec means a network dependency at run time; teams that want hermetic CI should vendor
-the spec into the repo.
+**Every source — local or remote — loads through the `ReadSpec` port** (§13.2). The engine hands
+over the source string as written and receives the document text; it never distinguishes a path from
+a URL, because doing so would put network policy in the shared package. Remote sources (`https://…`)
+therefore resolve through the existing `renderer:fetch-api-spec` / `swagger-fetch` path in the app
+and a direct fetch in the CLI, and **each host owns its cache** — location, TTL, invalidation and
+offline behaviour are host policy, not flow semantics, and no engine output changes with a cache
+hit. Referencing a remote spec still means a network dependency at run time; teams that want
+hermetic CI should vendor the spec into the repo.
 
 ### 6.3 Base URL
 
@@ -867,9 +894,11 @@ teammate's branch runs on your machine with your credentials, and `file: ../../.
 would be read and sent. §14.4's redaction cannot help — a file's contents have no secret-variable
 provenance to trace.
 
-**The engine does not touch `fs`.** File reads go through an injected port alongside
-`ExecuteRequest` (§13.2), so each host keeps its own path handling and conformance scenarios stub
-fixtures instead of writing them to disk.
+**The engine does not touch `fs`.** Reads go through an injected port alongside `ExecuteRequest`
+(§13.2), so each host keeps its own path handling and conformance scenarios stub fixtures instead of
+writing them to disk. The same holds for the one thing a run *writes* — capture (§14.5) goes through
+`WriteFile` and `RemoveDirectory`, with the engine computing every path and the host writing bytes,
+so the layout stays single-sourced without putting `fs` in the package.
 
 ### 7.5 Multipart and binary bodies
 
@@ -882,6 +911,30 @@ and content types off the step everywhere else.
 | `application/json`, `application/x-www-form-urlencoded`, `*+json` | the merged structure (§7.2), interpolated |
 | `multipart/form-data` | one part per key of the merged structure |
 | anything else (`application/pdf`, `application/octet-stream`, …) | the raw bytes of a single `!file` or `bodyFile:` |
+
+#### When the operation declares more than one
+
+An operation offering both `application/json` and `multipart/form-data` is ordinary, and the rule
+above has no answer for it — "the operation's declared media type" presumes there is one.
+
+**The step selects with `contentType:`, and only then.** Declaring it on an operation with a single
+request media type is a validation error, so the field cannot spread into the ordinary case and
+become a second place to look for something the spec already said. Omitting it where the operation
+is ambiguous is `ambiguous-media-type`, which lists the declared types.
+
+```yaml
+  - id: create_order
+    operation: orders-api#createOrder         # declares json and multipart
+    contentType: multipart/form-data
+    body:
+      manifest: !file ./fixtures/manifest.csv
+```
+
+Nothing is inferred from the body's shape. Deducing multipart from the presence of a `!file` would
+make the request's wire format change when someone edits a value — implicit in exactly the place
+this section set out to be explicit — and a fixed precedence order (`json` beats `multipart`) would
+resolve every case correctly except the one where the author wanted the other type, with no way to
+say so.
 
 #### Multipart
 
@@ -929,7 +982,18 @@ For a single-payload media type the body *is* the file, with no merge layer and 
     bodyFile: ./fixtures/scan.pdf
 ```
 
-This is the one case where `bodyFile:` is not parsed and merged (§7.4). The media type is what
+`body: !file ./fixtures/scan.pdf` is **exactly equivalent** — the same file, read the same way, with
+the same absence of a merge layer. §7.4's promise is that `!file` works in any value position, and a
+raw payload is a value position; making it the one place the tag is refused would mean learning
+which key a media type wants before writing either. The two are one form with two spellings, not two
+behaviours, and `body:`/`bodyFile:` remain mutually exclusive (§7.2).
+
+The tag's **options stay multipart-only**, as §7.4 has them: `filename:` and `contentType:` on a raw
+binary body are a validation error. There is no part to name, and the payload's type is the
+operation's declared media type — a `contentType:` on the tag would be a third answer to a question
+§7.5 gives one answer to.
+
+This is the one case where a body file is not parsed and merged (§7.4). The media type is what
 distinguishes them, so the same key behaves consistently for a given operation.
 
 #### Seeding
@@ -1107,6 +1171,32 @@ is done, the engine owns when.
 This is what keeps "no new security posture" true rather than aspirational: the engine never chooses
 a runtime, so it cannot choose a weaker one than the host would have.
 
+#### When a script throws
+
+Three positions run user JS — an output (above), a `when:` condition (§9.3), and `shouldRetry`
+(§11.1) — and one rule covers all three: **a throw fails the step with reason `script-error`**
+(§14.6). The message names the position and carries the thrown message, so
+`outputs.partnershipId threw: Cannot read properties of undefined (reading 'find')` is the failure
+rather than something two steps downstream.
+
+This is deliberately *not* §8.1's `undefined` rule. Returning `undefined` is an answer — nothing
+matched — and the flow has a designed response to it. A throw is not an answer, and every way of
+treating it as one converts a bug in the flow into a quiet, wrong outcome:
+
+- A throwing **`when:`** fails the step rather than skipping it. "This errored" is not "this was
+  false", and a skip would remove the step from the run with `condition-false` as the stated reason,
+  which is a false statement about why.
+- A throwing **`shouldRetry`** stops retrying and fails, rather than being read as "do not retry".
+  Otherwise a predicate with a typo turns a 20-attempt poll into a one-attempt failure whose reason
+  says nothing about the typo.
+- A throwing **output** fails the step, but **the remaining outputs are still extracted**, so the
+  capture and the failure block show what the step actually got back. Diagnosing a script that threw
+  needs the response it threw on.
+
+A throw fails one step, not the run — a bad row in a dataset (§9.4) must not take the other
+iterations with it, and §11.3's cleanup steps still run. Propagation from there is §11.2's ordinary
+path, unchanged.
+
 ### 8.3 Built-in step metadata
 
 Always available without declaration:
@@ -1182,7 +1272,18 @@ differently.
 
 **Resolution order**, later overriding earlier: workspace connector file → collection connector
 file → the step's own `outputs:`. A step's block **extends** what it inherits; same-named entries
-override, and `null` suppresses an inherited one.
+override, and **`!...` suppresses an inherited one** — the same removal tag as §7.2, for the same
+reason. `null` keeps its ordinary meaning everywhere in the format; one token with two meanings in
+one file is what §7.2 introduced the tag to avoid, and that argument does not weaken one section
+later just because a `null` output path happens to be useless.
+
+```yaml
+  - id: create_payment
+    operation: payments-api#createPayment
+    outputs:
+      state: !...                  # drop the inherited connector entry
+      paymentId: data.payment.id   # override it
+```
 
 Connector-supplied outputs are declarations like any other: they satisfy §8.4's visibility rule,
 are drawn as graph edges, and their paths are checked against the operation's response schema by
@@ -1425,7 +1526,12 @@ and runs in the same bruno-js sandbox:
         (ctx) => ctx.steps.primary.ok || ctx.steps.fallback.ok
 ```
 
-The dialect is shared with `assert`, and so is most of the context. Both address `steps.*`, `row.*`,
+A condition script that **throws** fails the step with `script-error` rather than skipping it — §8.2
+has the rule and why a skip would be a false statement about what happened.
+
+The dialect is shared with `assert`, and so is most of the context — including §10.2's rule for how
+a bare operand resolves, so `when: steps.fetch_profile.tier eq premium` compares against the string
+`premium` and `when: row.canCreate eq true` against the boolean. Both address `steps.*`, `row.*`,
 `params.*`, `shared.*`, `flow.*`, and bare variables. The difference is one-directional: an
 assertion additionally sees `res.*` and `req.*`, because it is evaluated against a response. A
 condition is evaluated before the request is built, so there is no response for it to address —
@@ -1459,8 +1565,39 @@ dataset:
 ```
 
 The whole flow runs once per row, with the row available as `{{row.<column>}}` and the zero-based
-index as `{{flow.iteration}}`. CSV and JSON are supported, following the data-file handling the
-existing collection runner already implements.
+index as `{{flow.iteration}}`. **CSV, JSON and YAML are supported** — the same three formats and the
+same loader as `!file` (§7.4). A JSON dataset is an array of objects and a YAML dataset a sequence
+of mappings; excluding YAML from the one and not the other would be a difference authors discover
+by hitting an error that has no reason behind it.
+
+#### Row values are typed
+
+A dataset is compared against, not just interpolated — `when: row.canCreate eq true` has to know
+whether the cell holds a boolean or the string `"true"` — and JSON and YAML carry types natively
+while CSV does not.
+
+**A CSV cell is resolved by §10.2's rule for a bare operand**, unchanged: `true`, `false`, `null`
+and `undefined` become those values, a numeric cell becomes a number, a quoted cell becomes a
+string, and anything else is a string. One typing rule serves the whole format, so a flow behaves
+identically whichever of the three files its rows came from — which matters most when a dataset is
+converted from one to another and nothing else in the flow is touched.
+
+```
+canCreate,tier,zip,note
+true,premium,02134,"007"
+```
+
+```
+row.canCreate -> true       (boolean)
+row.tier      -> "premium"  (string)
+row.zip       -> 2134       (number — leading zeros are not preserved)
+row.note      -> "007"      (quoted, so a string)
+```
+
+**Quoting is how a value stays a string**, which is the escape hatch for the `zip` case above and
+worth knowing before a postcode column silently loses a digit. It is a real cost of inference, taken
+because the alternative — every CSV column a string — makes a boolean or numeric column compare
+wrongly against the flow that was authored against a JSON dataset's real types.
 
 Iterations are **sequential by default** (`parallel: 1`), since they typically contend for the same
 backend state. Concurrent iterations draw from the **same run-wide `concurrency` budget** as
@@ -1536,9 +1673,9 @@ writing an assertion.
 
 ### 10.2 Explicit assertions
 
-Business-logic checks on top of the schema. These reuse Bruno's existing assertion operators and
-are evaluated by the existing `AssertRuntime` — flows do not introduce a second assertion
-dialect.
+Business-logic checks on top of the schema. These reuse Bruno's existing assertion operators and are
+evaluated by the existing `AssertRuntime` — flows do not introduce a second assertion dialect, with
+the single exception of reserved-root references, specified below.
 
 ```yaml
     assert:
@@ -1560,6 +1697,40 @@ awkward inline:
 ```
 
 `==` is accepted as an alias for `eq` and `!=` for `neq`.
+
+#### How a bare operand resolves
+
+The right-hand side of an assertion mixes literals (`eq settled`) with references (`eq row.role`),
+and the rule separating them has to be decidable by reading the line — a reader who has to know
+which variables exist cannot tell what `res.body.x eq status` compares against.
+
+**Bruno's existing rule holds, with one addition.** `AssertRuntime` resolves an unquoted operand
+through `evaluateJsTemplateLiteral` (`packages/bruno-js/src/utils.js:65`): `true`, `false`, `null`
+and `undefined` become those values, a numeric operand becomes a number, a quoted operand becomes a
+string, and **anything else is a string**. Flows keep that unchanged, and add: **an unquoted operand
+whose first dot-segment is a reserved root resolves as a reference.**
+
+The reserved roots are `res`, `req`, `steps`, `row`, `params`, `shared` and `flow` — §7.3's
+namespaces, which are already illegal as variable names. That is what makes the rule decidable
+without a symbol table: the seven roots are fixed, so a reader classifies an operand by looking at
+its first segment and nothing else.
+
+```yaml
+    assert:
+      - res.body.data.state eq settled          # "settled"  — a string
+      - res.status eq 201                       # 201        — a number
+      - res.body.data.active eq true            # true       — a boolean
+      - res.body.data.role eq row.role          # a reference — `row` is a reserved root
+      - res.body.data.tier eq status            # "status"   — a string, not a variable
+      - res.body.data.tier eq {{status}}        # the variable — unchanged from today
+```
+
+`{{...}}` continues to work in every operand position, so a variable is always reachable and the
+distinction never traps an author — it only means the short form is reserved for the namespaces.
+The same resolution governs `when:` (§9.3), which is one operand rule for the whole format rather
+than one per clause.
+
+Left-hand sides are unaffected: they have always been expressions and are evaluated as such.
 
 **An assertion addresses flow state as well as the response** — `steps.*`, `row.*`, `params.*`,
 `shared.*`, `flow.*`, and bare variables, alongside `res.*` and `req.*`:
@@ -1694,9 +1865,40 @@ pattern: retry until the response says what you are waiting for.
       maxAttempts: 10
       delay: 2000
       backoff: exponential        # fixed | exponential; default fixed
+      maxDelay: 30000             # ms, caps one delay; default 30000
+      jitter: none                # none | full; default none
       shouldRetry: |
         (res, attempt, ctx) => res.body.state === 'pending'
 ```
+
+**The delay sequence.** `delay` is the base and the wait *before* each retry, so a step with
+`maxAttempts: n` waits `n - 1` times. With `backoff: fixed` every wait is `delay`. With
+`backoff: exponential` the wait before attempt `n + 1` is:
+
+```
+min(delay * 2 ** (n - 1), maxDelay)
+```
+
+`delay: 1000, maxAttempts: 6, backoff: exponential` therefore sleeps `1000, 2000, 4000, 8000,
+16000`; with `maxDelay: 5000` it sleeps `1000, 2000, 4000, 5000, 5000`.
+
+The multiplier is fixed at 2 rather than authorable. A configurable factor is a third knob on a
+block most flows leave alone, and a non-integer one produces fractional milliseconds that have to be
+rounded somewhere — a rule to specify and test in exchange for matching a backoff an API documented
+but does not enforce.
+
+**`maxDelay` defaults to 30 s and always applies**, including to `backoff: fixed`, where it only
+ever bites on a `delay` that was already longer than it. Without a cap, `delay: 5000` with
+`maxAttempts: 12` schedules a final wait of nearly three hours — a flow that looks like a poll and
+behaves like a hang. `maxDuration` (below) bounds the step as a whole; `maxDelay` stops one wait
+from being absurd on its own.
+
+**Jitter is off by default.** `jitter: full` replaces each wait with a uniform random value in
+`[0, computed]`, which is what avoids a thundering herd when concurrent iterations (§9.4) poll the
+same endpoint on the same schedule. It is opt-in because the delay sequence is otherwise exactly
+reproducible, and a conformance run asserts the values passed to `Clock.sleep` and not merely the
+count — a test runner whose own timing is unpredictable by default cannot be used to find a timing
+bug. Nothing in the engine samples randomness unless a step asks for it.
 
 `shouldRetry` receives the response, the 1-based attempt number, and a context carrying
 `ctx.env`, `ctx.steps`, and `ctx.failures` (the assertion/schema failures from this attempt). It
@@ -2012,6 +2214,33 @@ writers are not ancestors of anything inside the sub-flow.
 
 ### 12.4 Constraints
 
+**Which step fields a `uses:` step may carry.** §5.4 makes `operation` XOR `uses` a schema rule, so
+the schema needs the full list rather than a rule per field discovered later:
+
+| | Fields |
+|---|---|
+| **Legal** | `id` `name` `uses` `with` `when` `depends` `outputs` `shared` `assert` `maxDuration` |
+| **Error** | `retry` `timeout` `failOnStatusCode` `validateRequest` `validateSchema` `strictSchema` `failOnUnresolved` `body` `bodyFile` `query` `headers` `pathParams` `contentType` `auth` |
+
+The division is one question: **does the field address a response?** A sub-flow has no single
+response — it has many, or none if every step skipped — so a field that names one is not merely
+useless there but unanswerable, and the schema says so rather than accepting it as a quiet no-op.
+What remains is what a sub-flow genuinely has: it runs or is skipped, it depends on things, it takes
+time, and it exports values. `outputs:` and `shared:` read those exports (§12.1), and `assert:`
+checks them:
+
+```yaml
+  - id: auth
+    uses: ./shared/login.flow.yml
+    with: { email: "{{testEmail}}" }
+    assert:
+      - steps.auth.token isDefined      # the sub-flow's exports, not a response
+```
+
+`maxDuration` is legal and bounds the whole sub-flow, which is the useful bound; `timeout` is
+per-attempt against one request and has nothing to apply to. The individual reasons behind the
+sharper constraints follow.
+
 - **`retry:` on a `uses:` step is a validation error.** Replaying a multi-step sequence replays
   every side effect it already committed — duplicated resources, double charges. Retry belongs on
   individual steps *inside* the sub-flow, where its blast radius is a single request.
@@ -2027,9 +2256,18 @@ writers are not ancestors of anything inside the sub-flow.
 
 ### 12.5 Library flows
 
-**A flow that declares `params:` is a library flow.** It is excluded from directory and glob runs,
-so `bru flow run flows/` in CI never fires `login.flow.yml` standalone and reports a spurious
-missing-param failure.
+**A flow that declares `meta.library: true` is a library flow.** It is excluded from directory and
+glob runs, so `bru flow run flows/` in CI never fires `login.flow.yml` standalone and reports a
+spurious missing-param failure.
+
+**The mark is explicit rather than inferred from `params:` or `exports:`.** Inferring it makes a
+flow's discoverability a side effect of declaring an interface, so adding a param to a flow that CI
+runs deliberately would remove it from CI silently — a change of behaviour with no change that says
+so. The cost of being explicit is the opposite mistake: a flow with required params that forgets the
+flag, which is the spurious CI failure this rule exists to prevent. That is caught by a lint rather
+than by inference — **`bru flow validate` warns when a flow declares a `required` param with no
+`default` and is not marked `library: true`** (§14.3), naming the flag. A warning and not an error,
+because a flow taking a required param from `--param` on every invocation is legitimate.
 
 It remains directly runnable when named explicitly, which is what keeps it testable in isolation:
 
@@ -2083,11 +2321,16 @@ logic would reintroduce exactly the drift this feature exists to eliminate.
 The engine therefore takes injected ports:
 
 ```ts
-type ExecuteRequest = (request: MaterializedRequest, ctx: StepContext) => Promise<ExecutedResponse>;
-type ReadFile      = (path: string, ctx: FlowContext) => Promise<Buffer>;
-type ListDirectory = (path: string, ctx: FlowContext) => Promise<string[]>;
-type RunScript     = (source: string, args: unknown[], ctx: FlowContext) => Promise<unknown>;
-type Clock         = { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> };
+type ExecuteRequest   = (request: MaterializedRequest, ctx: StepContext) => Promise<ExecutedResponse>;
+type ReadFile         = (path: string, ctx: FlowContext) => Promise<Buffer>;
+type WriteFile        = (path: string, data: Buffer, ctx: FlowContext) => Promise<void>;
+type ListDirectory    = (path: string, ctx: FlowContext) => Promise<string[]>;
+type RemoveDirectory  = (path: string, ctx: FlowContext) => Promise<void>;
+type ReadSpec         = (source: string, ctx: FlowContext) => Promise<SpecDocument>;
+type RunScript        = (source: string, args: unknown[], ctx: FlowContext) => Promise<unknown>;
+type Clock            = { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> };
+
+type SpecDocument = { text: string; from: 'file' | 'network' | 'cache' };
 ```
 
 Each host supplies its own implementation and keeps its existing auth, cookie, proxy, and
@@ -2098,9 +2341,26 @@ free of `fs`, each host keeps its own path and permission handling, and conforma
 fixtures in memory rather than on disk. Scope-root containment (§7.4) is enforced by the engine
 before the port is called, so no host can forget it.
 
-`ListDirectory` exists only for enumerating past runs under `.bruno-runs/` (§14.5), which the engine
-reads back rather than only writes — see 002 §11.2. It carries the same containment rule: a
-directory outside the scope root is refused before the port is called.
+`WriteFile`, `ListDirectory` and `RemoveDirectory` serve `.bruno-runs/` (§14.5) — which the engine
+reads back as well as writes, see 002 §11.2. **The engine owns the capture layout**: it computes
+every path, decides what a run directory contains, and applies §14.5's retention by removing the
+directories that fall outside it. A host writes the bytes it is handed and nothing else.
+
+That division is the point. §14.5's layout is a declared contract, and the engine already depends on
+it to read a run back — a host-side writer would put one layout in two implementations and let the
+CLI and app produce directories neither can fully read. The rule "the engine never touches `fs`"
+(§7.4, §17) is unchanged: these are ports, and a conformance run supplies an in-memory
+implementation exactly as it does for `ReadFile`. All three carry the same containment rule as
+`ReadFile`: a path outside the scope root is refused before the port is called.
+
+`ReadSpec` loads an OpenAPI document named by an `apis:` binding (§6.2), whether that source is a
+relative path or an `https://` URL. It is separate from `ReadFile` because the two have different
+containment rules — a spec source is deliberately allowed to be remote, and a fixture is
+deliberately not — and because each host already has a spec loader worth reusing: the app's
+`renderer:fetch-api-spec` / `swagger-fetch` path, the CLI's direct fetch. **Caching is the host's**:
+location, TTL, invalidation and offline behaviour are not flow semantics, and nothing in the
+engine's output changes with a cache hit. The `from` field exists so a host can report where a
+document came from without the engine knowing how it got there.
 
 `RunScript` evaluates the `script:` forms of §8.2, §9.3 and §11.1's `shouldRetry` in the host's
 chosen bruno-js sandbox. It is a port rather than a direct dependency because the two hosts select
@@ -2134,7 +2394,10 @@ type RunOptions = {
   ports: {
     executeRequest: ExecuteRequest;
     readFile: ReadFile;
+    writeFile: WriteFile;
     listDirectory: ListDirectory;
+    removeDirectory: RemoveDirectory;
+    readSpec: ReadSpec;
     runScript: RunScript;
     clock?: Clock;
   };
@@ -2186,15 +2449,40 @@ type IterationResult = {
 
 type StepResult = {
   id: string;                          // sub-flow steps namespaced: "auth/login"
+  kind: 'operation' | 'subflow';       // a `uses:` step is a container — see below
   status: 'success' | 'failed' | 'skipped' | 'cancelled';
   reason?: StepReason;                 // §14.6
   attempts: number;
   durationMs: number;
   assertions: { expr: string; passed: boolean; expected?: unknown; actual?: unknown }[];
+  validation?: {                       // §10.1's automatic checks — absent when both are off
+    request?:  SchemaResult;
+    response?: SchemaResult;
+  };
   outputs: Record<string, unknown>;
   capturePath?: string;
 };
+
+type SchemaResult = { valid: boolean; errors: { path: string; message: string; keyword?: string }[] };
 ```
+
+**Schema validation reports separately from assertions.** §10.1's checks are the engine's, §10.2's
+are the author's, and a step can fail one while passing all of the other — which a single `reason`
+cannot express and a flattened `assertions[]` would misattribute. Keeping them apart also keeps the
+path-keyed error list a schema mismatch actually produces, which is the thing worth showing when a
+response drifts from its spec; `reason` still names which side failed through §14.6's existing
+`invalid-request` and `schema-validation-failed`. The field travels in the result rather than in the capture so it survives capture being
+disabled — [002](./002-api-flows-ui.md) §9 renders it and 002-C U4.10 tests exactly that.
+
+**Sub-flow steps are ordinary members of a flat `steps[]`.** A `uses:` step produces its own
+`StepResult` with `kind: 'subflow'`, and each internal step produces one alongside it with a
+namespaced id, in the same array — not nested inside the container. `step:start` and `step:end` fire
+for internal steps exactly as for top-level ones, so a host can render a sub-flow expanding while it
+runs rather than only after the fact ([002](./002-api-flows-ui.md) §5.4, 002-C U1.8). `kind` exists
+so no consumer has to parse `/` out of an id to tell a container from a leaf, and so the CLI can
+collapse a sub-flow to one line without `--verbose` (§14.7) while the app expands it. A container's
+`status` is derived from its internals by the normal §11.2 rules; its `attempts` is always 1, since
+§12.4 bars `retry:` there.
 
 `RunResult` carries **no exit code**. Mapping an outcome to 0–4 is §14.2's, and the app has no use
 for it — an engine that returned one would be encoding a CLI concern into the shared package.
@@ -2433,8 +2721,11 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
 - Every inline `body` / `query` / `headers` / `pathParams` override names a field that exists in
   the operation's schema, with a did-you-mean suggestion on a near miss (§7.1)
 - Every `uses:` target resolves; the cross-file graph is acyclic
-- Every `required` param is satisfied at each call site
-- No `retry:` on a `uses:` step; no `dataset:` in a sub-flow
+- Every `required` param is satisfied at each call site, and **every key in `with:` names a declared
+  param** — `unknown-param`, with a did-you-mean suggestion. An argument the sub-flow does not
+  declare is otherwise dropped in silence and the sub-flow runs on its default, so the failure
+  surfaces far from the typo that caused it
+- A `uses:` step carries only the fields §12.4 permits; `dataset:` never appears in a sub-flow
 - Every `exports` entry references a real internal step output
 - Every connector-file entry resolves to a real operation, and its paths check against that
   operation's response schema (§8.5)
@@ -2457,9 +2748,12 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
 - No step declares both `operation:` and `uses:`, or both `body:` and `bodyFile:` (§7.4)
 - Every `!file`, `bodyFile:` and `dataset:` path resolves **within the scope root**, and every
   statically-known one exists (§7.4)
-- `!file` appears only where the operation accepts one: a `multipart/form-data` part, or a
-  single-payload media type via `bodyFile:` (§7.5). Its `filename:` and `contentType:` options are
-  multipart-only
+- `!file` appears only where the operation accepts one: a `multipart/form-data` part, or the whole
+  body of a single-payload media type, whether written as `body: !file` or `bodyFile:` (§7.5). Its
+  `filename:` and `contentType:` options are multipart-only
+- `contentType:` on a step appears only where the operation declares more than one request media
+  type, and names one of them; an operation declaring several with no `contentType:` on the step is
+  `ambiguous-media-type`, listing the choices (§7.5)
 - Every `body:` key on a multipart operation names a part in the operation's schema, and every
   required `format: binary` part is supplied (§7.5)
 - No `vars:` entry references `{{steps.*}}` or `{{shared.*}}`, neither of which exists when `vars:`
@@ -2470,6 +2764,10 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   `pathParams` — and never as a step or top-level key (§7.2)
 - Warnings: undeclared `.body` dependencies (§8.3), shadowed reserved namespaces (§7.3),
   unreachable steps, outputs or exports declared but never consumed
+- Warning: a flow declaring a `required` param with no `default` that is not marked
+  `meta.library: true` (§12.5) — the flag was probably forgotten, and a glob run will report a
+  missing-param failure that says nothing about the cause. A warning, because taking a required
+  param from `--param` on every invocation is legitimate
 - Warning: `failOnStatusCode: false` on a step with no `res.status` assertion — the step then
   accepts any status at all, including the 500 it did not mean to allow (§10.3)
 - Warning: a slot read on a path carrying no writer, or a declared slot never written or never
@@ -2527,6 +2825,12 @@ and skip reason; no request was made, so there is nothing else to store.
 
 Sub-flow steps are captured under a namespaced id (`auth/login`) so a shared flow's internals are
 visible without colliding with the parent's step ids.
+
+**The engine writes this directory**, through the `WriteFile` and `RemoveDirectory` ports of §13.2.
+Every path below is computed by the engine, so the layout is identical whichever host is running and
+`listRuns` / `readCapture` (002 §11.2) can read back what either one produced. A host supplies the
+two primitives and nothing more — it does not decide names, nesting, or what a run directory
+contains.
 
 **Storage is split.** Reporters carry a truncated inline preview for quick reading; the
 untruncated payload is written to an artifact directory:
@@ -2631,6 +2935,7 @@ about what it describes.
 | `retries-exhausted` | failed | The retry predicate still wanted to retry at `maxAttempts` (§11.1) |
 | `max-duration-exceeded` | failed | The step's own `maxDuration` elapsed (§11.1) |
 | `file-read-failed` | failed | A `!file`, `bodyFile:` or `dataset:` source could not be read (§7.4) |
+| `script-error` | failed | A `script:` output, a `when:` condition or `shouldRetry` threw (§8.2) |
 | `subflow-failed` | failed | A step inside an invoked sub-flow failed (§12.4) |
 | `unmet-dependency` | skipped | No parent outcome satisfied `depends` (§9.1) |
 | `condition-false` | skipped | `when:` evaluated false (§9.3) |
@@ -2645,9 +2950,16 @@ Request validation leads because §10.1 runs it **before dispatch**: a step that
 sends, so it has no status to be judged on and `invalid-request` and `unexpected-status` are never
 candidates for the same step.
 
+`script-error` (§8.2) takes its place in that same order rather than overriding it, since the three
+script positions run at three different points: a `when:` condition before the request is built —
+ahead of every other check — an output between response-schema validation and assertions, and
+`shouldRetry` after them. A step that returns a 500 *and* has a throwing output therefore reports
+`unexpected-status`, because the 500 is what happened first and is the thing to fix first.
+
 **Diagnostic codes** (§13.2's `Diagnostic.code`) are `kebab-case` and name the rule rather than the
 occurrence — `unknown-operation`, `cyclic-dependency`, `non-ancestor-reference`,
-`unresolved-alias`, `path-outside-scope`, `signing-mode-field-override`. The full set follows
+`unresolved-alias`, `path-outside-scope`, `signing-mode-field-override`, `invalid-step-id`,
+`unknown-param`, `ambiguous-media-type`. The full set follows
 §14.3's check list; each check emits one code, so `--strict` and any future per-rule suppression
 have something stable to name.
 
@@ -2736,6 +3048,12 @@ would forfeit exactly the stall-localising property the stream exists for.
 Redaction (§14.4) applies to all of it, including `--verbose` previews. `--show-sensitive` affects
 stdout only and never reporter files.
 
+**Collapsing a sub-flow is a display choice, not a reporting one.** Its internal steps are in
+`IterationResult.steps` and in the event stream either way (§13.2) — the default output prints one
+line for the `uses:` step, and `--verbose` prints the internals it already had. A failure inside a
+collapsed sub-flow still prints its own failure block, naming the internal step: a collapsed line
+may hide detail, never a cause.
+
 #### Multiple flows
 
 One line per flow as it completes, then an aggregate:
@@ -2777,6 +3095,10 @@ login                 library       1  —                 flows/shared/login.fl
 
 Library flows (§12.5) are marked because they are excluded from directory runs, and a flow silently
 not running is the thing this column exists to prevent.
+
+The `id` column is §5.2's path-derived identity shown by its final segment; when two flows share a
+segment, both are printed with as much of their path as tells them apart. `file` carries the full
+path either way, so the listing is never the only place the answer is.
 
 ---
 
@@ -3021,7 +3343,8 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | `dataset:` as the general file-reading mechanism | It iterates the whole flow per row; loading a lookup table would run the flow once per entry. Reading and iterating are different operations. |
 | Letting `bodyFile:` and `body:` coexist on a step | Two sources for one merge layer with no obvious precedence, and the losing half reads as if it applied. |
 | File reads unconstrained by the scope root | Flows are committed and shared, so a flow from a teammate's branch reads and transmits arbitrary local files, with no secret provenance for §14.4 to redact. |
-| `fs` inside the engine | Breaks the §13.2 separation that keeps the CLI and app from diverging, and forces conformance fixtures onto disk. |
+| `fs` inside the engine | Breaks the §13.2 separation that keeps the CLI and app from diverging, and forces conformance fixtures onto disk. Reads *and* writes go through ports; §13.2 has the full set. |
+| A host-implemented capture writer | §14.5's directory layout is a contract, and the engine reads it back (002 §11.2) — implementing it host-side would give the CLI and app two layouts and make `listRuns` a guess. The engine computes the paths; `WriteFile` / `RemoveDirectory` only move bytes. |
 | Assertions barred from a step's own outputs | Left "this extraction had to succeed" inexpressible, so the only signal was the *consumer* skipping a step later — reporting that the flow could not proceed rather than what was not found (§10.2). |
 | `failOnUnresolved` as the only guard on an extraction that matched nothing | Fires at the consumer, one step after the cause, and depends on there *being* a consumer. An assertion on the located value fails at the step that located nothing. |
 | `failOnUnresolved` failing on any skip reason | Conditional branches, fallback branches and divergent dataset rows all skip by design, so every flow using them would be permanently red. Only `unresolved-dependency` means something went wrong (§11.2). |
@@ -3046,60 +3369,42 @@ phase used to provide, expressed in the same mechanism as every other edge.
 ## 18. Open questions
 
 The four design blockers and the ten gaps found in the first review are resolved into the body
-above. A subsequent audit against the conformance companion raised the following, which are **not**
-resolved. They are recorded rather than answered because each is a decision with a real trade, and
-several are contradictions between two sections that both read as deliberate — picking a side
-silently would discard whichever argument was right.
+above. A subsequent audit against the conformance companion raised twenty-eight more; **seventeen of
+those are now resolved into the body too**, indexed below by where each landed. What
+remains here is **not** resolved. Each is recorded rather than answered because it is a decision
+with a real trade, and several are contradictions between two sections that both read as deliberate
+— picking a side silently would discard whichever argument was right.
 
-Each names what breaks while it stays open.
+Each names what breaks while it stays open. **None of them blocks starting implementation**: the
+contracts that everything else is written against — the port set, the engine boundary's types, the
+expression dialect, the document schema — are settled. What is left below is local to one code path
+apiece, and each names the code path.
 
-### The engine boundary (§13.2)
+### Resolved in this revision
 
-**Who writes `.bruno-runs/`?** Every port is read-only, §7.4 states the engine never touches `fs`,
-and §17 rejects `fs` inside the engine. §14.5 nonetheless requires creating the run directory,
-writing `run.json` at start, per-attempt request and response files, `summary.json` at the end,
-**pruning** older directories, and the `.gitignore` entry. Either a `WriteFile` / `DeleteDirectory`
-pair joins the port set under §7.4's containment rule, or capture writing belongs to each host — and
-then the CLI and app can produce different layouts, which §14.5's contract forbids. R4g2 tests the
-writer and cannot be implemented until this is settled.
+An index, not a second copy of the reasoning — each answer lives in the section that owns it, which
+is where a reader who hits the question will be. The rows are kept only until this revision has been
+reviewed, then deleted per the convention in [README](./README.md).
 
-**How does a remote OpenAPI document reach the engine?** §6.2 resolves `https://` sources "through
-the existing `renderer:fetch-api-spec` / `swagger-fetch` path in the app and a direct fetch in the
-CLI, with an on-disk cache". The engine resolves operations and has no fetch port; 002 §11.1's
-`describeFlow` takes `readFile` alone. Either spec loading is a port nobody has declared, or the
-engine fetches and §13.1's isolation is narrower than stated. The cache's location, TTL,
-invalidation and offline behavior are undefined either way.
-
-**Does `StepResult` carry schema-validation outcomes?** It carries `assertions[]` and a single
-`reason`. [002](./002-api-flows-ui.md) §9 renders a **Validation** tab for request- and
-response-schema results and states they arrive in `StepResult`; 002-C U4.10 asserts they survive
-capture being disabled. A step can fail one schema check while passing several assertions, and one
-`reason` cannot express that. Adding a field is additive under §15.
-
-**Do sub-flow internal steps appear in `IterationResult.steps` and in the event stream?**
-`StepResult.id` is documented as namespaced (`auth/login`), which implies yes, but nothing says it.
-§14.7 renders a sub-flow as one line by default and expands it under `--verbose`; 002 §5.4 and
-002-C U1.8 need the internals present to draw them. Whether `step:start` / `step:end` fire for them
-determines whether the app can render an expanded sub-flow live or only from a capture.
-
-### The expression dialect (§9.3, §10.2)
-
-**How does a bare word in an expression resolve?** §10.2 uses bare unquoted *literals*
-(`res.body.data.state eq settled`, `tier eq premium`) and bare *references*
-(`res.body.data.role eq row.role`, `eq steps.add_product.productId`) with no rule separating them.
-`res.body.x eq status` cannot be read by inspection. This governs every `assert:` and every `when:`
-in the format, and F1.2, F2.1 and F4.1 all turn on it.
-
-**Are dataset values typed?** §9.4 says only that CSV and JSON are supported. F1's
-`when: row.canCreate eq true` requires a CSV cell holding `true` to satisfy a boolean comparison —
-so rows are typed, or inferred, or compared loosely, and the whole F1.1 outcome table depends on
-which. JSON datasets carry types natively, which makes the two formats behave differently unless
-this is stated.
-
-**Should `-` be legal in a step id?** §5.3's pattern admits `my-step`, addressed as
-`steps.my-step.status` inside an expression dialect where `-` reads as an operator. §5.3 excludes
-dots and spaces for exactly this class of reason and does not mention hyphens. R4m tests `my.step`
-and `2fa` only.
+| Question | Answer | Where |
+|---|---|---|
+| Who writes `.bruno-runs/`? | The engine, through `WriteFile` / `RemoveDirectory` ports; it computes every path | §13.2, §14.5, §7.4, §17 |
+| How does a remote OpenAPI document reach the engine? | A `ReadSpec` port; hosts own caching | §13.2, §6.2 |
+| Does `StepResult` carry schema-validation outcomes? | Yes — an additive `validation` field, separate from `assertions[]` | §13.2 |
+| Do sub-flow internals appear in results and events? | Yes — flat `steps[]`, namespaced ids, events fire; `kind` marks the container | §13.2, §14.7 |
+| How does a bare word resolve? | Bruno's existing literal rule, plus: a reserved root makes it a reference | §10.2, §9.3 |
+| Are dataset values typed? | CSV inferred by the same rule; JSON and YAML keep native types | §9.4 |
+| Do datasets accept YAML? | Yes — one loader with `!file` | §9.4 |
+| Should `-` be legal in a step id? | No | §5.3 |
+| Can a raw binary body come from `body: !file`? | Yes, equivalent to `bodyFile:`; the tag's options stay multipart-only | §7.5, §14.3 |
+| What removes an inherited connector entry? | `!...`, not `null` | §8.5 |
+| Is a flow declaring only `exports:` a library flow? | Classification is explicit `meta.library: true`, plus a lint | §12.5, §5.2, §14.3 |
+| Which step fields are legal on a `uses:` step? | The ones not addressing a response — full table | §12.4 |
+| More than one request media type? | Step-level `contentType:`, legal only when ambiguous | §7.5, §14.3 |
+| Is an unknown key in `with:` an error? | Yes — `unknown-param`, with a suggestion | §14.3 |
+| Where does a flow's `id` come from? | Its path, relative to the scope root | §5.2, §14.7 |
+| What is `backoff: exponential`? | `min(delay * 2^(n-1), maxDelay)`, `maxDelay` 30 s, jitter opt-in | §11.1 |
+| What happens when a `script:` throws? | The step fails with `script-error`, in all three script positions | §8.2, §14.6 |
 
 ### Execution semantics
 
@@ -3126,42 +3431,10 @@ gives no ordering over `1`, `2` and `4`.
 whether outputs are extracted on every attempt so `shouldRetry`'s `ctx` can read them, which decides
 whether a predicate can poll on a derived value rather than on `res` directly.
 
-**What happens when a `script:` throws?** §8.2 outputs, §9.3 conditions and §11.1's `shouldRetry`
-all run user JS. §8.1 specifies only the returning-`undefined` case. §14.6's table has no
-`script-error`, so a throw currently has no defined outcome, reason, or effect on the step.
-
-**What is `backoff: exponential`?** No base, multiplier, cap or jitter. §16 uses it; F4.3 asserts
-exactly 30 attempts against the `Clock` port and R4j asserts `sleep` was called 29 times — neither
-is writable without the delay sequence.
-
 **What is `flow.iteration` outside a dataset?** §7.3 lists it unconditionally; §9.4 defines it only
 as a row index. F1 interpolates it into a request body.
 
 ### The format
-
-**Can a raw binary body come from `body: !file`?** §7.5's media-type table says "the raw bytes of a
-single `!file` **or** `bodyFile:`"; §14.3 permits `!file` only as a multipart part or "a
-single-payload media type **via `bodyFile:`**", which rejects it.
-
-**What removes an inherited connector entry?** §8.5 uses `null`; §7.2 gives `null` its ordinary
-meaning of a literal JSON null and reserves `!...` for deletion. One token, two meanings, one file.
-
-**Is a flow declaring only `exports:` a library flow?** §12.5 keys the classification on `params:`
-alone, and it governs glob exclusion (§14.1) and the sidebar mark (002 §4.1).
-
-**Which step fields are legal on a `uses:` step?** §12.4 bars `retry:` and defines `when:`.
-`assert:`, `outputs:`, `shared:`, `failOnStatusCode`, `validateRequest`, `validateSchema`, `timeout`
-and `maxDuration` are neither permitted nor barred, and several are meaningless without a response.
-§5.4 makes `operation` XOR `uses` a schema rule, so the schema needs the answer.
-
-**How is a body assembled when an operation declares more than one request media type?** §7.5 says
-"**the** operation's declared media type decides" and puts nothing on the step to select one. An
-operation offering both `application/json` and `multipart/form-data` is ordinary.
-
-**Do datasets accept YAML?** §9.4 supports CSV and JSON; §7.4's `!file` supports JSON, YAML and CSV.
-
-**Is an unknown key in `with:` an error?** §14.3 checks that required params are satisfied and says
-nothing about arguments the sub-flow does not declare — the typo case.
 
 **What writes a flow file?** §15 mandates `parse(stringify(x)) === x`, a stringifier that preserves
 unrecognized fields, and migrate-on-read. Nothing in 001 or 002 writes a flow — 002 §3 and §13 make
@@ -3173,10 +3446,6 @@ order and formatting survive is unstated for a format whose primary editor is a 
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
 without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and
 002 §15 defers the app's dry run on the premise that the engine already supports it.
-
-**Where does a flow's `id` come from?** §14.7's `bru flow list` prints `checkout-happy-path` and
-`login`. The format has no `id:` field and `meta.name` is a sentence. `--tags` filtering and 002
-§4.1's sidebar both need a stable identity.
 
 **Where does `processEnv` sit in §7.3's chain?** §13.2 says `RunOptions.variables` carries "one
 field per §7.3 tier", but the chain has no processEnv tier — §7.3 says only that
