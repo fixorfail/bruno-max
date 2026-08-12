@@ -1,0 +1,22 @@
+# R2 — the §11.1 default predicate does not retry a failed assertion. The step is a POST, so an
+# implementation that retries turns one created resource into `maxAttempts` of them.
+version: 1
+
+meta:
+  name: R2 — retry does not amplify a non-idempotent failure
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  retry:
+    maxAttempts: 3
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    assert:
+      - res.status eq 200                # the endpoint answers 201 — this assertion is meant to fail

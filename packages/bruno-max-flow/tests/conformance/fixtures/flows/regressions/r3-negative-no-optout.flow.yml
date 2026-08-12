@@ -1,0 +1,20 @@
+# R3, first half: the assertion alone is not enough — without `failOnStatusCode: false` the step
+# fails on the 403 before its assertions are consulted (§10.3).
+version: 1
+
+meta:
+  name: R3 — a negative test without the opt-out fails
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: denied
+    operation: regress-api#createThing
+    body:
+      name: widget
+    assert:
+      - res.status eq 403

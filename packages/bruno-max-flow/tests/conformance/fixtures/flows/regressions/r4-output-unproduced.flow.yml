@@ -1,0 +1,25 @@
+# R4 and R4b — a reference to an output that was never produced. The consumer is skipped
+# `unresolved-dependency`, which is the one skip reason `failOnUnresolved` acts on (§11.2).
+version: 1
+
+meta:
+  name: R4 — an unproduced output skips its consumer
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: consume
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.create.thingId}}"

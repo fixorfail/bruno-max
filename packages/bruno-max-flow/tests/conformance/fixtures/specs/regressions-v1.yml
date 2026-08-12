@@ -1,0 +1,121 @@
+openapi: 3.0.3
+# The service the §7 regression flows bind. It is deliberately generic — each of those flows exists
+# because the defect it guards is invisible in a flow that works (001-C §7), so naming the
+# operations after a domain would suggest a scenario that is not being tested.
+info: { title: Regression API, version: 1.0.0 }
+servers:
+  - url: https://regress.example.com
+paths:
+  /things:
+    post:
+      operationId: createThing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                ref: { type: string }
+                email: { type: string }
+                # R4c asserts `count: "{{$randomInt}}"` arrives as a JSON number, which only means
+                # something against a field the spec types as one.
+                count: { type: integer }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+        '403':
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+        '500':
+          description: Server error
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: object
+                    properties:
+                      message: { type: string }
+  /things/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getThing
+      responses:
+        '200':
+          description: One thing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+  /sessions:
+    post:
+      operationId: signIn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+                      role: { type: string }
+  /state:
+    get:
+      operationId: getState
+      responses:
+        '200':
+          description: Current state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      state: { type: string }
+                      role: { type: string }
+                      count: { type: integer }
+                      active: { type: boolean }

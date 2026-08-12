@@ -1,0 +1,22 @@
+# R4b — `when:` is an author instruction not to run here, so `failOnUnresolved` leaves it alone.
+# Failing on it would make every conditional branch red.
+version: 1
+
+meta:
+  name: R4b — condition-false does not fail the run
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: conditional
+    operation: regress-api#getState
+    when: steps.create.status eq 999

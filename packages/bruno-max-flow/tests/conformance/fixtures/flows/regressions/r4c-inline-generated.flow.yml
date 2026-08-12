@@ -1,0 +1,20 @@
+# R4c — binding to a `var:` is what makes a generated value stable, not the generator: each
+# occurrence generates independently, and a whole-value reference keeps its type (§7.3).
+version: 1
+
+meta:
+  name: R4c — inline generated values
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: "{{$randomUUID}}"
+      ref: "{{$randomUUID}}"
+      count: "{{$randomInt}}"

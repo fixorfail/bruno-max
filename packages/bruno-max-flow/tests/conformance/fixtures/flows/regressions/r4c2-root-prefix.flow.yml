@@ -1,0 +1,18 @@
+# R4c2 — a reserved root matches only as a whole first segment, so `rowrole` is the string and not
+# a reference to `row.role`.
+version: 1
+
+meta:
+  name: R4c2 — a root matches only as a whole segment
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: state
+    operation: regress-api#getState
+    assert:
+      - res.body.data.role eq rowrole

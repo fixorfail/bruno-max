@@ -1,0 +1,38 @@
+# R4c2 — the passing half of §10.2's operand table, which governs every `assert:` and every
+# `when:` in the format. The failing rows are one flow apiece, since a failed assertion fails the
+# step and would mask the rows after it.
+version: 1
+
+meta:
+  name: R4c2 — how a bare operand resolves
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  status: pending
+
+dataset: ../../datasets/operand-row.csv
+
+steps:
+  - id: login
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+      password: "{{testUserPassword}}"
+    outputs:
+      role: data.role
+
+  - id: state
+    operation: regress-api#getState
+    when: row.canCreate eq true
+    assert:
+      - res.body.data.state eq settled            # the string `settled`
+      - res.body.data.count eq 0                  # the number 0
+      - res.body.data.active eq true              # the boolean
+      - res.body.data.role eq row.role            # a reference — `row` is a reserved root
+      - res.body.data.state eq "settled"          # the quoted string
+      - res.body.data.role eq steps.login.role    # an ancestor's declared output

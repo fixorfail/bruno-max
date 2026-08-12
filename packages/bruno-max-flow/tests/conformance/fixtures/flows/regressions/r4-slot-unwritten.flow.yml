@@ -1,0 +1,21 @@
+# R4 and R5 — a declared slot no branch ever writes. It resolves to an empty string and the step
+# runs; what reaches the wire is `""` and never the literal `{{shared.carrierRef}}` (§11.2).
+version: 1
+
+meta:
+  name: R4 — an unwritten slot resolves empty
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [carrierRef]
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+      ref: "{{shared.carrierRef}}"

@@ -1,0 +1,33 @@
+# R4 — concurrent iterations each get their own set of slots (§9.4). A single run-wide set would
+# have the last row to finish decide every iteration's value.
+version: 1
+
+meta:
+  name: R4 — a slot per iteration
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [ref]
+
+dataset:
+  source: ../../datasets/things.csv
+  parallel: 3
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: "{{row.name}}"
+    outputs:
+      thingId: data.id
+    shared:
+      ref: thingId
+
+  - id: consume
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{shared.ref}}"

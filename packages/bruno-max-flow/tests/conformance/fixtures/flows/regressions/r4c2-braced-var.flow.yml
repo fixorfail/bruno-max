@@ -1,0 +1,21 @@
+# R4c2 — `{{status}}` is the flow var, which is the form that wants one. It is right there for the
+# case the bare word deliberately does not serve.
+version: 1
+
+meta:
+  name: R4c2 — a braced operand is the variable
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  status: pending
+
+steps:
+  - id: state
+    operation: regress-api#getState
+    assert:
+      - "res.body.data.state eq {{status}}"

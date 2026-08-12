@@ -52,10 +52,12 @@ generator and needs no seeding hook.
 
 ```
 tests/conformance/
-  harness.js                  # runFlow(flowYaml, { responses, specs, env }) -> RunResult
+  harness.js                  # runFlow(flowFile, { responses, vars, files }) -> RunResult + exit code
+  flow-yaml.js                # §5.4's projected model — the local tags, resolved
   fixtures/
     specs/                    # minimal OpenAPI documents — user, items, external, ...
     flows/                    # the .flow.yml files below, verbatim
+      regressions/            # the minimal flows of §7, one per row
     datasets/
   f1-role-matrix.spec.js
   f2-order-fulfillment.spec.js

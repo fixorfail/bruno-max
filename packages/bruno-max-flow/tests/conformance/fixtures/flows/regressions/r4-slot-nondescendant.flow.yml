@@ -1,0 +1,29 @@
+# R4 — a slot read by a step that is not downstream of every writer. `depends: []` makes `sibling`
+# a second root, so the read would race the write (§9.1).
+version: 1
+
+meta:
+  name: R4 — a slot read off the writer's branch
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [thingId]
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+    shared: [thingId]
+
+  - id: sibling
+    operation: regress-api#getThing
+    depends: []
+    pathParams:
+      id: "{{shared.thingId}}"

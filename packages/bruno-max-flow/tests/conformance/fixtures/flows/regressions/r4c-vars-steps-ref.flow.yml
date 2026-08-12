@@ -1,0 +1,23 @@
+# R4c — nothing has run when `vars:` are evaluated, so a `{{steps.*}}` reference in one is a
+# validation error rather than a runtime empty (§7.3).
+version: 1
+
+meta:
+  name: R4c — vars referencing step state
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  derived: "{{steps.create.thingId}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id

@@ -1,0 +1,31 @@
+# R4c — `vars:` are evaluated once before any step runs, and once per iteration (§7.3). Both rows
+# of the pair have to hold: lazy per-use evaluation gives the two steps different identities, and
+# one shared evaluation gives the two iterations the same one.
+version: 1
+
+meta:
+  name: R4c — a generated identity, stable within an iteration
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  testEmail: "qa+{{$randomUUID}}@example.com"
+
+dataset: ../../datasets/pair.csv
+
+steps:
+  - id: signup
+    operation: regress-api#createThing
+    body:
+      name: "{{row.name}}"
+      email: "{{testEmail}}"
+
+  - id: login
+    operation: regress-api#signIn
+    body:
+      email: "{{testEmail}}"
+      password: "{{testUserPassword}}"

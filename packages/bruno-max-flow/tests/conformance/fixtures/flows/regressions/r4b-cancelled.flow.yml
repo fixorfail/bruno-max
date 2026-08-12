@@ -1,0 +1,21 @@
+# R4b — a run stopped mid-flight reports `cancelled` and exit 4, already distinct from a test
+# failure, so `failOnUnresolved` has nothing to add (§11.3).
+version: 1
+
+meta:
+  name: R4b — run-cancelled does not fail the run
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: later
+    operation: regress-api#getState

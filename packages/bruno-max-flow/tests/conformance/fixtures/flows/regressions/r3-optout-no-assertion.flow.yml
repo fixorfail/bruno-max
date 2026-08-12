@@ -1,0 +1,19 @@
+# R3, second half: the opt-out alone allows any status at all, including the 500 it did not mean
+# to allow. `bru flow validate` warns on exactly this shape (§14.3).
+version: 1
+
+meta:
+  name: R3 — the opt-out without a status assertion
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: denied
+    operation: regress-api#createThing
+    failOnStatusCode: false
+    body:
+      name: widget

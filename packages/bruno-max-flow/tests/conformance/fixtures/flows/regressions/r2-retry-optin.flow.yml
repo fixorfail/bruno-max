@@ -1,0 +1,25 @@
+# R2's other half: opting in still works. Identical to r2-retry-default apart from the predicate.
+version: 1
+
+meta:
+  name: R2 — an explicit shouldRetry still retries
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  retry:
+    maxAttempts: 3
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    retry:
+      maxAttempts: 3
+      shouldRetry: |
+        (res, attempt, ctx) => true
+    assert:
+      - res.status eq 200

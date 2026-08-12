@@ -1,0 +1,29 @@
+# R1 — a dead service does not report green.
+#
+# `failOnUnresolved: false` is what makes this a valid test: both guards catch this outage, and
+# left at the default the flow exits 1 even if `failOnStatusCode` regresses entirely. Disabling
+# the downstream guard isolates the one under test (001-C §7).
+version: 1
+
+meta:
+  name: R1 — a dead service does not report green
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  failOnUnresolved: false
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: consume
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.create.thingId}}"

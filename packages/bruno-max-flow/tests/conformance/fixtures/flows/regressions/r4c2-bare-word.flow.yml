@@ -1,0 +1,21 @@
+# R4c2's load-bearing row: `status` is the string, not the flow var of the same name. An
+# implementation that resolves any bare word against the variable scope passes every other row.
+version: 1
+
+meta:
+  name: R4c2 — a bare word is a string
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  status: pending
+
+steps:
+  - id: state
+    operation: regress-api#getState
+    assert:
+      - res.body.data.state eq status

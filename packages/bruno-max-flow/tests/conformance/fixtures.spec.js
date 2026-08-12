@@ -10,31 +10,12 @@
  */
 const fs = require('fs');
 const path = require('path');
-const yaml = require('js-yaml');
+
+const { load } = require('./flow-yaml');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const FLOWS = path.join(FIXTURES, 'flows');
 const SPECS = path.join(FIXTURES, 'specs');
-
-/**
- * §5.4's resolved form: the local tags become values with identity, never marker objects — a body
- * may legitimately contain any key, so shape cannot be what distinguishes a tag from data.
- */
-const DROP = Symbol('bruno.flow.drop');
-
-class FileRef {
-  constructor(data) {
-    Object.assign(this, typeof data === 'string' ? { path: data } : data);
-  }
-}
-
-const SCHEMA = yaml.DEFAULT_SCHEMA.extend([
-  new yaml.Type('!file', { kind: 'scalar', construct: (data) => new FileRef(data) }),
-  new yaml.Type('!file', { kind: 'mapping', construct: (data) => new FileRef(data) }),
-  new yaml.Type('!...', { kind: 'scalar', construct: () => DROP })
-]);
-
-const load = (file) => yaml.load(fs.readFileSync(file, 'utf8'), { schema: SCHEMA });
 
 const operationIds = (spec) => {
   const ids = new Set();
@@ -48,12 +29,21 @@ const operationIds = (spec) => {
   return ids;
 };
 
-const flowFiles = fs.readdirSync(FLOWS).filter((f) => f.endsWith('.flow.yml'));
+/** Paths relative to `flows/`, so the checks below cover `regressions/` too. */
+const flowFilesUnder = (dir) =>
+  fs.readdirSync(path.join(FLOWS, dir), { withFileTypes: true }).flatMap((entry) => {
+    const name = path.join(dir, entry.name);
+    if (entry.isDirectory()) return flowFilesUnder(name);
+    return entry.name.endsWith('.flow.yml') ? [name] : [];
+  });
+
+const flowFiles = flowFilesUnder('.').map((file) => path.normalize(file));
+const scenarioFlows = flowFiles.filter((file) => !file.includes(path.sep));
 const specFiles = fs.readdirSync(SPECS).filter((f) => f.endsWith('.yml'));
 
 describe('fixture corpus', () => {
   it('has the flows 001-C names', () => {
-    expect(flowFiles.sort()).toEqual([
+    expect(scenarioFlows.sort()).toEqual([
       'f1-role-matrix.flow.yml',
       'f2-login.flow.yml',
       'f2-order-fulfillment.flow.yml',

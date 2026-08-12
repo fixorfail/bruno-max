@@ -1,0 +1,16 @@
+# The sub-flow half of R4's slot-isolation row: it reads a slot only its caller declares.
+version: 1
+
+meta:
+  name: R4 — a sub-flow reading its caller's slot
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: use
+    operation: regress-api#createThing
+    body:
+      name: child
+      ref: "{{shared.thingId}}"

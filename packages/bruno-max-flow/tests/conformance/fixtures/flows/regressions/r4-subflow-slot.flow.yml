@@ -1,0 +1,26 @@
+# R4 — a caller's slot is not visible inside a sub-flow. `shared.*` is data, and data crosses
+# through `params:` and `exports:` where the call site can see it (§12.3).
+version: 1
+
+meta:
+  name: R4 — a caller's slot does not reach a sub-flow
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [thingId]
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+    shared: [thingId]
+
+  - id: child
+    uses: ./r4-subflow-slot-child.flow.yml

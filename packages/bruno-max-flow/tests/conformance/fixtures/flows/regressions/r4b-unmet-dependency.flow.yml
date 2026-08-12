@@ -1,0 +1,24 @@
+# R4b — a fallback branch skipping because the primary succeeded is the design working, not a
+# failure. The `status` set is an author declaration of which outcomes are acceptable.
+version: 1
+
+meta:
+  name: R4b — unmet-dependency does not fail the run
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: primary
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: fallback
+    operation: regress-api#createThing
+    depends: [{ on: primary, status: [failed] }]
+    body:
+      name: fallback
