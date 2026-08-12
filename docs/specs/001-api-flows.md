@@ -3700,15 +3700,21 @@ phase used to provide, expressed in the same mechanism as every other edge.
 
 The four design blockers and the ten gaps found in the first review are resolved into the body
 above. A subsequent audit against the conformance companion raised twenty-eight more; **seventeen of
-those are now resolved into the body too**, indexed below by where each landed. What
-remains here is **not** resolved. Each is recorded rather than answered because it is a decision
-with a real trade, and several are contradictions between two sections that both read as deliberate
-— picking a side silently would discard whichever argument was right.
+those are now resolved into the body too**, indexed below by where each landed. A later
+implementation-readiness review added five, each a section that turned out to be silent where an
+implementer needs an answer rather than a contradiction between two that speak. What remains here is
+**not** resolved. Each is recorded rather than answered because it is a decision with a real trade,
+and several are contradictions between two sections that both read as deliberate — picking a side
+silently would discard whichever argument was right.
 
 Each names what breaks while it stays open. **None of them blocks starting implementation**: the
 contracts that everything else is written against — the port set, the engine boundary's types, the
 expression dialect, the document schema — are settled. What is left below is local to one code path
 apiece, and each names the code path.
+
+Three of the five newest concern sub-flows, which is worth noticing on its own: §12 is the section
+where a rule stated for a flow has to be restated for a flow inside a flow, and it is the place to
+look first when something reads as settled but has no answer for the nested case.
 
 ### Resolved in this revision
 
@@ -3766,6 +3772,27 @@ whether a predicate can poll on a derived value rather than on `res` directly.
 **What is `flow.iteration` outside a dataset?** §7.3 lists it unconditionally; §9.4 defines it only
 as a row index. F1 interpolates it into a request body.
 
+**Does a sub-flow inherit its caller's `config:`?** §12.3's table is exhaustive about what is data
+and what is ambient configuration, and does not mention the block at all. §9.2 settles `concurrency`
+as run-wide, but `failOnStatusCode`, `validateRequest`, `validateSchema`, `strictSchema`,
+`failOnUnresolved`, `redactHeaders` and `capturePreviewBytes` are per-flow *defaults for steps* with
+no stated answer — a shared login flow declaring `failOnStatusCode: false` invoked from a strict
+parent has two defensible readings. §12.3's rule does not decide it, because `config:` is
+configuration under either half of "configuration inherits, data is declared".
+
+**Does a `uses:` step occupy a concurrency slot while its internals run?** §9.2 has sub-flow
+internals draw from the run-wide pool. If the container draws one too, a sub-flow deadlocks at
+`concurrency: 1` — the container holds the only slot and its first internal step can never acquire
+one — and §9.2 recommends `concurrency: 1` for debugging in the next sentence. The dataset wording,
+"three iterations competing for five slots", implies an iteration does not consume a slot, which
+suggests a container should not either; nothing says so.
+
+**Are assertions evaluated on a step that never dispatched?** §10.1 fails a step on
+`validateRequest` *before* sending, so there is no response for a `res.*` assertion to address — but
+001-C R4j asserts that such a step reports `assertions[]` all passing. Either the array is empty and
+R4j needs correcting, or assertions are evaluated against an absent response.
+[002](./002-api-flows-ui.md) §9 renders the array either way.
+
 **Which auth modes does a profile accept, and which of them are signing modes?** §6.4 names eight of
 `AuthMode`'s twelve members and lists four as signing modes. `oauth1` and `akamai-edgegrid` are
 absent from both lists and compute signatures across several request fields, so the partial-override
@@ -3781,6 +3808,20 @@ the app read-only — so migrate-on-read has no writer to persist through, and w
 order and formatting survive is unstated for a format whose primary editor is a human.
 
 ### CLI and artifacts
+
+**How is a sub-flow's namespaced id written to a capture path?** §14.5 captures internals "under a
+namespaced id (`auth/login`)", while §5.3 has step ids become directory names sanitized for Windows.
+Read literally the `/` nests, which collides whenever a top-level step is itself named `auth` — one
+directory would hold both that step's attempts and the sub-flow's children. `readCapture` takes a
+`stepId` without saying which form it expects. The layout is a declared contract and
+[002](./002-api-flows-ui.md) §11.2 reads it back, so the two have to agree.
+
+**What prunes retention when two runs overlap?** §14.5 prunes older run directories at the *start* of
+a run, which is safe for the CLI because §14.1 runs selected flows one at a time.
+[002](./002-api-flows-ui.md) §4.2 deliberately keeps a run alive across a closed tab, so the app can
+have two runs in one scope at once and the second's startup prune can delete the first's in-progress
+directory. R4g2 asserts *which* directories are removed, so a rule that only counts them is not
+enough.
 
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
 without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and
