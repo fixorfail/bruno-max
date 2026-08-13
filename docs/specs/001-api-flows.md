@@ -350,6 +350,21 @@ them reads quite the same way:
 | **Resolved** | what the flow parser produces — each tag becomes an engine value with *identity* | the engine, §7's pipeline, the semantic half of `bru flow validate` |
 | **Projected** | the resolved form with each tag value replaced by the node the tag was applied to | ajv, and nothing else |
 
+##### What the parse is, beyond the tags
+
+The parser reads the **whole document into an AST with source ranges**, and the resolved form is a
+projection of that AST rather than a separate load. Positions are not a debugging nicety: §13.2's
+`Diagnostic` carries `line` and `column`, [002](./002-api-flows-ui.md) §6 puts diagnostics in the
+gutter of the document view, and 002 §11.1's `FlowNode.position` is what makes clicking a graph node
+scroll to its step. A second pass to find line numbers would be a second reader of the format, and
+the two would disagree the first time one of them was wrong.
+
+**Merge keys (`<<:`) are resolved.** A flow may share step configuration through a YAML anchor, and
+the merged fields are the step's own. This is stated rather than left to the parser's default
+because the two obvious YAML libraries disagree about it, and the failure mode is silent: a step
+gains a literal `<<` field instead of the fields the anchor names, and every assertion about that
+step still passes. 001-C's R4p pins it.
+
 ##### The resolved form
 
 ```ts

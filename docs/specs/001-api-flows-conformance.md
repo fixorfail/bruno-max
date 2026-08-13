@@ -66,6 +66,7 @@ tests/conformance/
   regressions.spec.js
   capture.spec.js             # R4g2 and R4n — the artifact directory, asserted through the write ports
   history.spec.js             # R4o — the same directory read back through 002 §11.2's entries
+  parse.spec.js               # R4p — §5.4's tags, merge keys and node positions
 ```
 
 The write ports (`WriteFile`, `ListDirectory`, `RemoveDirectory`) are stubbed as an **in-memory
@@ -1148,6 +1149,27 @@ The last row is the one that keeps the split honest: a reader that resolved the 
 its bytes would put a 2 MB payload in every step-pane open, which is what "storage is split" exists
 to prevent.
 
+### R4p — What the parse guarantees
+
+**Pins:** §5.4's projected model, and §13.2's `Diagnostic.line` / `column`. Separate from R4m, which
+is about the JSON Schema; this is about what reading the file produces before any schema sees it.
+
+| Case | Expected |
+|---|---|
+| `!file ./x.json` and the mapping form `!file { path, filename, contentType }` | both project to the same value with identity, so a step cannot tell which spelling was used |
+| an ordinary mapping `{ path: ./x.pdf }` in a body | **not** a file reference — §5.4 resolves the tags to a class instance and a symbol precisely so a hostile body cannot forge one by shape |
+| `!...` | the removal symbol, distinct from `null` (§8.5) |
+| a `<<:` merge key over an anchor | resolved, so the step carries the merged fields and no literal `<<` |
+| an empty document | an empty flow, not a crash |
+| every step | carries a 1-based line and column pointing at its own node |
+| a diagnostic naming a step | carries that step's line and column |
+| a diagnostic that names no step — an unresolvable `apis:` entry, a bad `vars:` reference | anchors to that node instead, because 002 §6 puts these in the gutter and one with no line has nowhere to land |
+
+**The merge-key row is the one that earns its place.** It is invisible in every fixture and changes
+the meaning of a committed file if it regresses: a flow sharing step config through an anchor would
+silently gain a `<<` field rather than the fields it names, and every assertion about the step would
+still pass.
+
 ### R5 — Unresolved variables never reach the wire
 
 Assert that a declared-but-unwritten `shared` slot interpolated into a body sends `""` and **not**
@@ -1205,4 +1227,5 @@ it belongs in another test suite.
 | — | Skipping to a green exit on unmatched data (`failOnUnresolved`) | F4.2, F1.1, R4b |
 | — | A run had no identity until it finished (§14.5 `run.json`) — found while writing [002](./002-api-flows-ui.md) | R4g2 |
 | — | §14.5's per-attempt layout could not hold what `readCapture` returns — found implementing it | R4g2 |
+| — | Merge-key resolution was inherited from a library default, not decided — found choosing a parser for §5.4's positions | R4p |
 | — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |
