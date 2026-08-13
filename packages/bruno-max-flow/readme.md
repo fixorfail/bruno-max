@@ -4,7 +4,7 @@ The API Flows engine: sequenced, spec-driven request execution shared by `bruno-
 `bruno-electron`.
 
 - **Spec:** [`docs/specs/001-api-flows.md`](../../docs/specs/001-api-flows.md) — semantics, format, CLI
-- **App surface:** [`docs/specs/002-api-flows-ui.md`](../../docs/specs/002-api-flows-ui.md) — `describeFlow`, `listRuns`, `readCapture`
+- **App surface:** [`docs/specs/002-api-flows-ui.md`](../../docs/specs/002-api-flows-ui.md) — `describeFlow`, `listRuns`, `readRun`, `readCapture`
 - **Conformance:** [`docs/specs/001-api-flows-conformance.md`](../../docs/specs/001-api-flows-conformance.md)
 
 This is a **fork-owned package** (`@bruno-max/*` in `packages/bruno-max-*`), so it never collides
@@ -13,7 +13,7 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 
 ## Status
 
-**All five entry points are implemented** and the conformance suite is green — F1–F4 and the
+**All six entry points are implemented** and the conformance suite is green — F1–F4 and the
 engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
 dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's sub-flows, §14.5's
 capture directory in both directions, and 002 §11.1's resolved graph.
@@ -29,7 +29,7 @@ itself; 001-C's R4n holds the rows either way.
 flow reporter writes one yet.
 `tests/conformance/fixtures/readme.md` lists the conformance rows that go with all of these.
 
-The surface is five functions:
+The surface is six functions:
 
 | Function | Spec | |
 |---|---|---|
@@ -37,6 +37,7 @@ The surface is five functions:
 | `validateFlow` | 001 §13.2, §14.3 | implemented |
 | `describeFlow` | 002 §11.1 | implemented |
 | `listRuns` | 002 §11.2 | implemented |
+| `readRun` | 002 §11.2 | implemented |
 | `readCapture` | 002 §11.2 | implemented |
 
 **`.flow.yml` is parsed with `yaml` v2, not `js-yaml`,** because §5.4's positions and `js-yaml`'s
@@ -82,7 +83,14 @@ nothing to map onto and dataset iterations share cookies. And a collection in **
 run a flow's `script:` forms — quickjs discards the value a script evaluates to, and the port refuses
 rather than silently running it in the node VM.
 
-**The renderer surface (002 §4–§10) is not built.** The main process is the half it calls into.
+`bruno-app` is the third, under `src/fork/flows/` behind the one delegation surface `src/fork/registry.js`
+(001 §13.3): the sidebar section, the flow tab, a hand-rolled SVG graph, run controls and the step
+detail pane. It computes no flow semantics — nodes, edges and ranks come from `describeFlow`, node
+states from `FlowEvent`s, bodies from `readCapture` — which is what 002-C's R4 exists to assert.
+
+`readRun` and `run:start`'s `captureDir` were both added while building it: 002 §10 needs a stored
+run's per-step outcomes, which `listRuns` (counts) and `readCapture` (one attempt) do not carry, and
+§9 needs the capture directory *during* a run rather than only in `RunResult`.
 
 ## The engine sends no HTTP
 
