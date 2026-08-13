@@ -47,6 +47,7 @@ const registerApiSpecIpc = require('./ipc/apiSpec');
 const registerGitIpc = require('./ipc/git');
 const registerOpenAPISyncIpc = require('./ipc/openapi-sync');
 const registerMockServerIpc = require('./ipc/mock-server');
+const registerFlowIpc = require('./ipc/flow');
 const registerAiIpc = require('./ipc/ai');
 const registerAiAutocompleteIpc = require('./ipc/ai/autocomplete');
 const { registerMountIpc } = require('./ipc/mount');
@@ -524,6 +525,7 @@ app.on('ready', async () => {
   registerGitIpc(mainWindow);
   registerOpenAPISyncIpc(mainWindow);
   registerMockServerIpc(mainWindow);
+  registerFlowIpc(mainWindow);
   registerAiIpc(mainWindow);
   registerAiAutocompleteIpc(mainWindow);
   registerMountIpc();
