@@ -48,6 +48,7 @@
   ],
   "dependencies": {
     "@aws-sdk/credential-providers": "3.1019.0",
+    "@bruno-max/flow": "0.1.0",
     "@usebruno/common": "0.1.0",
     "@usebruno/converters": "^0.1.0",
     "@usebruno/filestore": "^0.1.0",

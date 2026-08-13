@@ -36,6 +36,16 @@ The modules under `src/` map onto the spec rather than onto layers: `document.ts
 `openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
 §11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3.
 
+## Hosts
+
+`bruno-cli` is the first one: `bru flow run <paths...>` and `bru flow validate <paths...>`, with
+§14.2's exit codes and §14.7's console output. Its half of the boundary — dispatch, `fs`, spec
+loading and the script runtime — is fork-owned under `packages/bruno-cli/src/fork/flow/`, reached
+through a single auto-registered `commands/flow.js`, so the CLI costs no upstream edit beyond the
+dependency line §13.4's manifest already lists.
+
+The Electron host and the app surface ([002](../../docs/specs/002-api-flows-ui.md)) are not built.
+
 ## The engine sends no HTTP
 
 Dispatch, file access, spec loading and script evaluation are injected ports (001 §13.2), because
