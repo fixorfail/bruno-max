@@ -180,6 +180,23 @@ One tab type, `flow`, keyed on the flow's pathname. It is an ordinary closable t
 non-closable set (`NON_CLOSABLE_TAB_TYPES`) is for workspace-level surfaces that always exist, and a
 flow is a file.
 
+**A flow tab still carries a `collectionUid`, because every tab in this app belongs to a
+collection.** That is not a formality: `RequestTabs` renders the strip only for the active
+collection, `addTab`'s pathname dedupe returns early without one, and the snapshot middleware groups
+tabs by collection. A tab without a `collectionUid` is outside the model rather than merely unusual,
+and the app errors when one is opened.
+
+A collection-scoped flow uses its collection's uid. **A workspace-scoped flow uses the workspace's
+scratch collection**, which is exactly how upstream's own `workspaceOverview` and
+`workspaceEnvironments` tabs exist (`slices/workspaces/actions.js:668`) — so this borrows a
+mechanism rather than inventing one.
+
+**Flows are deliberately *not* in `nonReplaceableTabTypes`.** That list is singleton *per type*, so
+adding `flow` would collapse every flow in a collection into a single tab. The dedupe a flow wants is
+per pathname, which `addTab` already does once a `collectionUid` is present. Permanence — not being
+replaced as a preview tab — comes from passing `preview: false` at the call site instead. Neither of
+001 §13.4's two `tabs.js` lines is therefore needed, and that file leaves the manifest.
+
 **Run state is keyed by flow path in the slice, not by tab.** Closing the tab of a running flow does
 not cancel it, and reopening the flow reattaches to the run in progress. The alternative — tying a
 run's lifetime to a piece of UI — makes an accidental ⌘W destroy a run that has already created

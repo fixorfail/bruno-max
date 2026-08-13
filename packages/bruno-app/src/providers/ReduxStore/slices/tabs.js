@@ -1,4 +1,3 @@
-import { FORK_NON_CLOSABLE_TAB_TYPES, FORK_NON_REPLACEABLE_TAB_TYPES } from 'fork/registry';
 import { createSlice } from '@reduxjs/toolkit';
 import filter from 'lodash/filter';
 import find from 'lodash/find';
@@ -10,7 +9,7 @@ import { isActiveTab as checkIsActiveTab, deserializeTab } from 'utils/snapshot'
 
 const MAX_RECENTLY_CLOSED_TABS = 50;
 
-export const NON_CLOSABLE_TAB_TYPES = ['workspaceOverview', 'workspaceEnvironments', ...FORK_NON_CLOSABLE_TAB_TYPES];
+export const NON_CLOSABLE_TAB_TYPES = ['workspaceOverview', 'workspaceEnvironments'];
 
 const ensureTabUid = (tab) => {
   if (!tab.uid) {
@@ -97,8 +96,7 @@ export const tabsSlice = createSlice({
         'openapi-sync',
         'openapi-spec',
         'changelog',
-        'mock-server',
-        ...FORK_NON_REPLACEABLE_TAB_TYPES
+        'mock-server'
       ];
 
       const existingTab = find(state.tabs, (tab) => tab.uid === uid);

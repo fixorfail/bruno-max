@@ -2978,7 +2978,6 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | import + a `default:` case delegating the label | 4 |
 | `bruno-app/…/providers/ReduxStore/index.js` | import + spread fork reducers into the map | 2 |
 | `bruno-app/…/components/Sidebar/index.js` | import + spread fork sidebar sections | 2 |
-| `bruno-app/…/slices/tabs.js` | import + concat fork tab types into **two** separate constants — see below | 3 |
 | `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
 
 **The counts include the `import` line**, which the first version of this table did not — every
@@ -3004,12 +3003,13 @@ silently unlinted, and fork code held to a lower standard than the code around i
 expensive mistake. It is one glob at a stable point in a list that changes only when a package is
 added, and a second fork package costs one more.
 
-`tabs.js` is the least comfortable entry and the manifest should say why. It holds two lists:
-`NON_CLOSABLE_TAB_TYPES`, a module-level export that a fork constant can be concatenated into
-cleanly; and `nonReplaceableTabTypes`, a `const` declared **inside a reducer body**, which cannot be
-extended from outside and forces an edit within a function upstream is more likely to churn. If that
-edit proves painful across merges, the fallback is to stop extending the local list and have the
-fork registry post-process the tab in its own reducer instead.
+**`tabs.js` left this table when the feature was built, and the reason generalises.** It was claimed
+for two lists — `NON_CLOSABLE_TAB_TYPES` and the `nonReplaceableTabTypes` declared *inside* a reducer
+body — and a flow needs neither. It is closable, and the second list is singleton *per type*, which
+would collapse every flow in a collection into one tab; the per-pathname dedupe a flow actually wants
+is already `addTab`'s default, and permanence comes from passing `preview: false` at the call site.
+The lesson worth keeping is that an upstream list is only worth extending when the fork's semantics
+genuinely match its, and the awkward edit inside a reducer body is a hint that they may not.
 
 Everything else — the engine, the renderer components, the Redux slice, the IPC handler, the CLI
 command — lives in files upstream does not have.

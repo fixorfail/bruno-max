@@ -4,6 +4,7 @@ import { registerFlowIpcEvents } from './flows/ipcEvents';
 import FlowSidebarSection from './flows/FlowSidebarSection';
 import FlowTabPane from './flows/FlowTabPane';
 import FlowTabLabel from './flows/FlowTabLabel';
+import { FORK_TAB_TYPES } from './tabTypes';
 
 /**
  * The single delegation surface upstream files call into — 001 §13.3.
@@ -13,16 +14,6 @@ import FlowTabLabel from './flows/FlowTabLabel';
  * indirection: the cost is paid once and the saving recurs at every merge from upstream. The
  * manifest of what those lines are is 001 §13.4 plus 002 §12.1, and 002-C R5 re-checks it.
  */
-
-/** Tab types this fork owns. `flow` is 002 §4.2's, keyed on the flow's pathname. */
-export const FORK_TAB_TYPES = ['flow'];
-
-/**
- * §4.2: a flow is a file, so its tab is ordinary and closable. It is singleton per pathname, which
- * upstream's `addTab` already gives us by matching on `pathname` before it consults this list.
- */
-export const FORK_NON_CLOSABLE_TAB_TYPES = [];
-export const FORK_NON_REPLACEABLE_TAB_TYPES = ['flow'];
 
 export const forkReducers = {
   flows: flowsReducer

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import path from 'path';
 import { useDispatch, useSelector } from 'react-redux';
+import find from 'lodash/find';
 import { IconSitemap } from '@tabler/icons';
 import SidebarSection from 'components/Sidebar/SidebarSection';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
@@ -42,8 +43,25 @@ const FlowSidebarSection = () => {
   const flows = useSelector((state) => state.flows.flows);
   const descriptions = useSelector((state) => state.flows.descriptions);
   const runs = useSelector((state) => state.flows.runs);
+  const collections = useSelector((state) => state.collections.collections);
+  const { workspaces, activeWorkspaceUid } = useSelector((state) => state.workspaces);
 
   const groups = useMemo(() => groupFlows(flows), [flows]);
+
+  /**
+   * **Every tab in this app belongs to a collection**, and a workspace-level one belongs to the
+   * workspace's *scratch* collection — which is how upstream's own `workspaceOverview` and
+   * `workspaceEnvironments` tabs exist (`slices/workspaces/actions.js:668`). The tab strip renders
+   * per active collection, `findTabByPathname` bails without a `collectionUid`, and the snapshot
+   * middleware groups tabs by collection, so a tab without one is outside the model rather than
+   * merely unusual.
+   */
+  const collectionUidFor = (flow) => {
+    if (flow.collectionRoot) {
+      return find(collections, (entry) => entry.pathname === flow.collectionRoot)?.uid;
+    }
+    return find(workspaces, (workspace) => workspace.uid === activeWorkspaceUid)?.scratchCollectionUid;
+  };
 
   const openFlow = (flow) => {
     dispatch(
@@ -52,7 +70,11 @@ const FlowSidebarSection = () => {
         type: 'flow',
         pathname: flow.pathname,
         tabName: flow.filename,
-        collectionUid: undefined
+        collectionUid: collectionUidFor(flow),
+        // Permanent rather than a preview tab. Upstream gets this from `nonReplaceableTabTypes`,
+        // which flows must stay out of: that list is singleton *per type*, and it would collapse
+        // every flow in a collection into one tab. Pathname dedupe is what a flow wants.
+        preview: false
       })
     );
   };

@@ -436,6 +436,19 @@ buffer keyed by nothing would satisfy the first and quietly break the second.
 *Pins 002 §4.1, §11.3.* A watcher that parsed would have to decide what to show for a file that does
 not parse, and the flow that most needs opening is the broken one.
 
+### U5.7 A flow tab is a tab the app can actually hold
+
+Opening a workspace-scoped flow and a collection-scoped one each produce a tab that renders in the
+strip, survives a reload from the snapshot, and does not replace the other. Opening two different
+flows in the same collection yields two tabs; opening the same flow twice yields one.
+
+*Pins 002 §4.2.* Every tab in this app belongs to a collection, and a workspace-scoped flow borrows
+the workspace's scratch collection. Without a `collectionUid` the tab falls outside the model
+entirely and the app errors on open — which no unit test caught, because each piece works alone.
+
+The second half is the opposite failure: putting `flow` in `nonReplaceableTabTypes` makes the tab
+permanent, and also singleton *per type*, so the second flow you open silently replaces the first.
+
 ---
 
 ## 8. Regressions not owned by a single scenario
@@ -541,6 +554,7 @@ whose `step:end` has been received, which is the drift actually worth preventing
 | U4.10 | §9 | Blank panels instead of an explanation |
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher that parses |
+| U5.7 | §4.2 | A tab the app's collection-scoped tab model cannot hold |
 | R1, R2 | §8.1, §9 | Bodies on events; an unbatched stream |
 | R3 | §9 | A secret visible in the app but not in CI |
 | R4 | §11.1, §11.2 | The renderer growing its own parser |
