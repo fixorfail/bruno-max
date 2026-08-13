@@ -98,7 +98,7 @@ in the app as deferred. Until it is done, the app can tell you a step went red a
    request, response and assertion outcomes at attempt granularity.
 5. **No behavioral fork.** Every semantic decision stays in `@bruno-max/flow`. The UI renders what
    the engine reports and computes nothing 001 defines.
-6. **Near-zero upstream footprint.** Two lines in one upstream file beyond what 001 §13.4 already
+6. **Near-zero upstream footprint.** Three lines in one upstream file beyond what 001 §13.4 already
    claims (§12).
 
 ## 3. Non-goals
@@ -1045,13 +1045,19 @@ lines** to it:
 
 | Upstream file | Edit | Lines |
 |---|---|---|
-| `packages/bruno-app/src/providers/App/useIpcEvents.js` | register fork IPC listeners, and call the returned disposer in the teardown | 2 |
+| `packages/bruno-app/src/providers/App/useIpcEvents.js` | import, register fork IPC listeners, and call the returned disposer in the teardown | 3 |
 
-**Two lines, not one, and the reason is structural.** Every listener in that file is registered as
+**Two of those lines are inseparable, and the reason is structural.** Every listener in that file is registered as
 `const removeXListener = ipcRenderer.on(...)` and then called in the `useEffect`'s returned cleanup
 function. A single registration line without the matching teardown line would leak a listener across
 hot reloads and re-mounts. The fork registers all of its listeners in one call returning one
-disposer, so the count stays at two however many channels §11.3 grows.
+disposer, so the count stays flat however many channels §11.3 grows — the third line is the `import`,
+which 001 §13.4's table now counts for every delegation.
+
+**Which scopes to watch costs no upstream line at all.** §11.3 has the renderer name them, and the
+fork learns what is open by subscribing to `main:workspace-opened` and `main:collection-opened` —
+the channels upstream already broadcasts. `ipcRenderer.on` is additive, so the fork's listeners sit
+beside upstream's own handlers rather than replacing or editing them.
 
 Two alternatives were considered:
 

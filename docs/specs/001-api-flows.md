@@ -2967,16 +2967,36 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | Upstream file | Edit | Lines |
 |---|---|---|
 | `package.json` (root) | add `packages/bruno-max-flow` to `workspaces` | 1 |
+| `package.json` (root) | add `build:bruno-max-flow`, and call it from `scripts/setup.js` | 2 |
+| `.github/actions/common/setup-node-deps/action.yml` | build the engine in CI | 1 |
 | `eslint.config.js` | add the package to `mainLintFiles` | 1 |
 | `packages/bruno-cli/package.json` | add engine dependency | 1 |
 | `packages/bruno-electron/package.json` | add engine dependency | 1 |
 | `bruno-electron/src/index.js` | `require` + call `registerFlowIpc` | 2 |
-| `bruno-app/…/RequestTabPanel/index.js` | delegate to the fork pane registry | 2 |
-| `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | delegate to the fork tab-label registry | 1 |
-| `bruno-app/…/providers/ReduxStore/index.js` | spread fork reducers into the map | 1 |
-| `bruno-app/…/components/Sidebar/index.js` | spread fork sidebar sections | 1 |
-| `bruno-app/…/slices/tabs.js` | concat fork tab types into **two** separate constants — see below | 2 |
+| `bruno-app/jsconfig.json` | add the `fork/*` path alias | 1 |
+| `bruno-app/…/RequestTabPanel/index.js` | import + delegate to the fork pane registry | 2 |
+| `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | import + a `default:` case delegating the label | 4 |
+| `bruno-app/…/providers/ReduxStore/index.js` | import + spread fork reducers into the map | 2 |
+| `bruno-app/…/components/Sidebar/index.js` | import + spread fork sidebar sections | 2 |
+| `bruno-app/…/slices/tabs.js` | import + concat fork tab types into **two** separate constants — see below | 3 |
 | `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
+
+**The counts include the `import` line**, which the first version of this table did not — every
+delegation needs one, and a manifest that undercounts by a third is not the thing to re-check a merge
+against. `SpecialTab.js` is four because its switch had no `default:` to extend, so the delegation is
+a three-line case rather than an expression.
+
+The build rows are here because a fork package whose `dist/` is gitignored is invisible to a fresh
+clone: the engine resolves through `main`, so without them `npm run setup` completes and the app then
+fails to boot on `require('@bruno-max/flow')`. They were found by a clone on a second machine, not by
+CI, because until `bruno-electron` required the engine at startup the only consumer was a lazily
+loaded `bru` subcommand.
+
+`bruno-app/jsconfig.json` earns its row the same way `eslint.config.js` does: the bundler resolves
+bare specifiers only through that `paths` map, so without `fork/*` every upstream delegating line
+would have to be a relative `../../fork/registry` — which is both uglier and *more* fragile across a
+merge that moves a file. One entry in a list that changes about never, and a second fork feature
+reuses it.
 
 `eslint.config.js` earns its row by the same argument as the `workspaces` line above it: the file
 gates linting on an explicit `mainLintFiles` allowlist, so a fork package that is not named there is
