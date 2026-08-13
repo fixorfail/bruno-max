@@ -20,6 +20,7 @@ import {
 } from './document';
 import { evaluateCondition, evaluationContext } from './expression';
 import { createFileReader, FileAccessError, parseStructured } from './files';
+import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
@@ -544,8 +545,7 @@ const iterationStatus = (results: StepResult[], verdictFailed: boolean, cancelle
   return 'passed';
 };
 
-export const runFlow = async (options: RunOptions): Promise<RunResult> => {
-  const runId = randomUUID();
+const executeRun = async (runId: string, options: RunOptions): Promise<RunResult> => {
   // The host's signal and the budget's are folded into one, because §11.3 requires the timeout and
   // the interrupt to take the identical path — everything downstream sees a single signal.
   const controller = new AbortController();
@@ -680,4 +680,19 @@ export const runFlow = async (options: RunOptions): Promise<RunResult> => {
 
   state.emit({ type: 'run:end', result });
   return result;
+};
+
+/**
+ * The registration around the run is what lets `listRuns` tell a run still going from one that
+ * died: both are a `run.json` with no `summary.json` beside it, and only the process executing one
+ * knows which it is (002 §10, §11.2).
+ */
+export const runFlow = async (options: RunOptions): Promise<RunResult> => {
+  const runId = randomUUID();
+  markRunActive(runId);
+  try {
+    return await executeRun(runId, options);
+  } finally {
+    markRunFinished(runId);
+  }
 };

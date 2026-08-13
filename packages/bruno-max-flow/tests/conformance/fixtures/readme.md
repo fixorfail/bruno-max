@@ -83,10 +83,10 @@ Two details are load-bearing rather than decorative:
 | `pair.csv` | R4c — two iterations, which is what makes "different across them" assertable |
 | `operand-row.csv` | R4c2 — the single row `row.role` and the `when:` row resolve against |
 
-R4g2 needs no fixture of its own: §14.5's layout is a property of *every* run, so `capture.spec.js`
-asserts it over the flows above — the retry one for a file per attempt, the dataset one for
-iteration nesting, the sub-flow pair for a flat `auth__login`, and `r4b-condition-false` for a
-skipped step writing no directory at all.
+R4g2 and R4o need no fixture of their own: §14.5's layout is a property of *every* run, so
+`capture.spec.js` and `history.spec.js` assert it over the flows above — the retry one for a file
+per attempt, the dataset one for iteration nesting, the sub-flow pair for a flat `auth__login`, and
+`r4b-condition-false` for a skipped step writing no directory at all.
 
 ## What is not here
 

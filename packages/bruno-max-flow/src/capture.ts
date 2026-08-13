@@ -26,13 +26,17 @@ import type { EnginePorts, FlowContext } from './types/ports';
 import type { ExecutedResponse, MaterializedRequest, RequestBody } from './types/request';
 import type { AssertionResult, RunResult, StepResult } from './types/result';
 
-const CAPTURE_DIRNAME = '.bruno-runs';
+/**
+ * The layout's own names, exported because `history.ts` reads back what this module writes and a
+ * reader that recomputed either half would be the second implementation §13.2 exists to prevent.
+ */
+export const CAPTURE_DIRNAME = '.bruno-runs';
+
+export const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
 
 /** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus the runId's first four hex. */
 const runDirectoryName = (startedAt: string, runId: string): string =>
   `${startedAt.replace(/\.\d+Z$/, 'Z').replace(/:/g, '-')}-${runId.replace(/-/g, '').slice(0, 4)}`;
-
-const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
 
 /** An id may legally spell one of these (§5.2's charset allows it) and Windows would refuse it. */
 const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
@@ -49,6 +53,12 @@ const stepSegment = (stepId: string): string => {
   if (safe.length <= MAX_SEGMENT) return safe;
   return `${safe.slice(0, MAX_SEGMENT - 8)}-${createHash('sha1').update(stepId).digest('hex').slice(0, 7)}`;
 };
+
+/** `iteration` is absent for a flow with no `dataset:`, which nests nothing (§14.5). */
+export const stepCaptureDir = (runDir: string, stepId: string, iteration?: number): string =>
+  path.join(runDir, ...(iteration === undefined ? [] : [`iteration-${iteration}`]), stepSegment(stepId));
+
+export const attemptFile = (attempt: number): string => `attempt-${attempt}.json`;
 
 const TEXTUAL = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|[^;]*\+(json|xml))/i;
 
@@ -252,13 +262,6 @@ export const createCapture = (setup: CaptureSetup): Capture => {
   const dir = path.join(root, runDirectoryName(setup.startedAt, setup.context.runId));
   const redactor = createRedactor(setup.redactHeaders);
 
-  const stepDir = (record: AttemptRecord): string =>
-    path.join(
-      dir,
-      ...(record.iteration === undefined ? [] : [`iteration-${record.iteration}`]),
-      stepSegment(record.stepId)
-    );
-
   return {
     dir,
 
@@ -274,7 +277,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
     },
 
     attempt: async (record) => {
-      const target = stepDir(record);
+      const target = stepCaptureDir(dir, record.stepId, record.iteration);
       // A binary body is written out as a sibling and the capture only names it, so the two writes
       // are collected here and both settle before the JSON that points at one of them lands.
       const siblings: Promise<void>[] = [];
@@ -297,7 +300,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
       };
 
       await Promise.all(siblings);
-      await writeJson(setup, path.join(target, `attempt-${record.attempt}.json`), capture);
+      await writeJson(setup, path.join(target, attemptFile(record.attempt)), capture);
       return target;
     },
 

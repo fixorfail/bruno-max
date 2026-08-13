@@ -16,9 +16,8 @@ export * from './types/capture';
 
 export { runFlow } from './run';
 export { validateFlow } from './validate';
+export { listRuns, readCapture } from './history';
 
-// Still to come, per 002 §11.2:
+// Still to come, per 002 §11.1:
 //
 //   describeFlow(options: DescribeOptions): Promise<FlowDescription>
-//   listRuns(options: ListRunsOptions): Promise<RunIndexEntry[]>
-//   readCapture(options: ReadCaptureOptions): Promise<StepCapture>

@@ -21,7 +21,8 @@
  * - **`writeFile` / `listDirectory` / `removeDirectory` are an in-memory filesystem**, so §14.5's
  *   capture layout is observable without touching disk. `files` on the report reads it back, and
  *   the same accessor reaches a response stub through `info.files` — which is how R4g2 asserts what
- *   exists *while* a run is still going.
+ *   exists *while* a run is still going. `readFile` consults it before the fixtures, so R4o's
+ *   `listRuns` and `readCapture` read exactly what the run wrote.
  *
  * Generated values (`{{$randomUUID}}` and friends) are **not** stubbed: R4c asserts the relations
  * between generated values, which hold for any generator and need no seeding hook.
@@ -165,9 +166,32 @@ const createPorts = (options) => {
    */
   const readFrom = (target, ctx) => {
     const resolved = path.isAbsolute(target) ? target : path.resolve(path.dirname(ctx.flow), target);
+    // Captures are read back through the same port that reads fixtures (002 §11.2), so the written
+    // map is consulted first — R4o's round trip is otherwise a read against a file on disk.
+    if (written.has(resolved)) return Buffer.from(written.get(resolved));
     if (overlay.has(resolved)) return Buffer.from(overlay.get(resolved));
     return fs.readFileSync(resolved);
   };
+
+  // The path is logged before the read, so R4d can assert containment on the *port* — a run that
+  // read the file and then rejected it has already read it.
+  const readFile = async (target, ctx) => {
+    log.reads.push(target);
+    return readFrom(target, ctx);
+  };
+
+  const listDirectory = async (target) => {
+    const prefix = target.endsWith(path.sep) ? target : `${target}${path.sep}`;
+    const entries = new Set();
+    for (const key of written.keys()) {
+      if (key.startsWith(prefix)) entries.add(key.slice(prefix.length).split(path.sep)[0]);
+    }
+    return [...entries].sort();
+  };
+
+  /** 002 §11.2's two-port read side, which a scenario also reaches mid-run through `info`. */
+  const readRuns = (overrides = {}) =>
+    engine.listRuns({ scopeRoot: FIXTURES, ports: { readFile, listDirectory }, ...overrides });
 
   const executeRequest = async (request, ctx) => {
     const operationId = identify(request);
@@ -175,7 +199,15 @@ const createPorts = (options) => {
     callCounts.set(operationId, call);
 
     const entry = { operationId, stepId: ctx.stepId, iteration: ctx.iteration, attempt: ctx.attempt };
-    const info = { ...entry, call, abort: () => controller.abort(), files };
+    const info = {
+      ...entry,
+      call,
+      abort: () => controller.abort(),
+      files,
+      // R4o's `running` row: a run in flight has to be listable from inside itself, which is the
+      // case 002 §10 calls ordinary rather than an edge.
+      listRuns: readRuns
+    };
     const record = {
       ...entry,
       call,
@@ -207,13 +239,6 @@ const createPorts = (options) => {
     } finally {
       record.settledAt = ++tick;
     }
-  };
-
-  // The path is logged before the read, so R4d can assert containment on the *port* — a run that
-  // read the file and then rejected it has already read it.
-  const readFile = async (target, ctx) => {
-    log.reads.push(target);
-    return readFrom(target, ctx);
   };
 
   const readSpec = async (source, ctx) => ({ text: readFrom(source, ctx).toString('utf8'), from: 'file' });
@@ -249,16 +274,9 @@ const createPorts = (options) => {
     readSpec,
     runScript,
     clock,
+    listDirectory,
     writeFile: async (target, data) => {
       written.set(target, Buffer.from(data));
-    },
-    listDirectory: async (target) => {
-      const prefix = target.endsWith(path.sep) ? target : `${target}${path.sep}`;
-      const entries = new Set();
-      for (const key of written.keys()) {
-        if (key.startsWith(prefix)) entries.add(key.slice(prefix.length).split(path.sep)[0]);
-      }
-      return [...entries].sort();
     },
     removeDirectory: async (target) => {
       removed.push(target);
@@ -268,12 +286,12 @@ const createPorts = (options) => {
     }
   };
 
-  return { ports, log, controller, files };
+  return { ports, log, controller, files, readRuns };
 };
 
 const outcomeOf = (step) => (step.reason ? `${step.status}:${step.reason}` : step.status);
 
-const report = (result, log, files) => {
+const report = (result, log, files, ports, readRuns) => {
   const iteration = (index) => {
     const found = result.iterations[index];
     if (!found) throw new Error(`harness: the run produced no iteration ${index}`);
@@ -312,6 +330,9 @@ const report = (result, log, files) => {
     reads: log.reads,
 
     files,
+    /** 002 §11.2's readers run against the ports this run wrote through — that is the round trip. */
+    listRuns: readRuns,
+    readCapture: (options) => engine.readCapture({ dir: result.captureDir, ports, ...options }),
     captureDir: result.captureDir,
     /** Every written path relative to the run's own directory — the layout without its timestamp. */
     layout: () =>
@@ -334,7 +355,7 @@ const report = (result, log, files) => {
  * ```
  */
 const runFlow = async (file, options = {}) => {
-  const { ports, log, controller, files } = createPorts(options);
+  const { ports, log, controller, files, readRuns } = createPorts(options);
   const result = await engine.runFlow({
     entry: flowPath(file),
     scope: { workspaceRoot: FIXTURES },
@@ -344,7 +365,7 @@ const runFlow = async (file, options = {}) => {
     signal: controller.signal,
     onEvent: options.onEvent
   });
-  return report(result, log, files);
+  return report(result, log, files, ports, readRuns);
 };
 
 /** §13.2's read-only entry — two ports, because validation dispatches nothing. */
