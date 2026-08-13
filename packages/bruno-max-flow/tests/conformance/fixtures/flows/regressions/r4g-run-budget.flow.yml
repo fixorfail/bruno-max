@@ -1,0 +1,45 @@
+# R4g — §11.3's whole-run budget. The polling step consumes the budget in retry delays, so the
+# steps after it meet a run that has already stopped: an ordinary one is skipped `run-cancelled`,
+# while the cleanup step still runs, which is the whole point of the budget over a SIGKILL from
+# the CI runner.
+version: 1
+
+meta:
+  name: R4g — a whole-run budget
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  maxRunDuration: 2000
+  cleanupGrace: 30000
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: await_ready
+    operation: regress-api#getThing
+    pathParams: { id: "{{steps.create.thingId}}" }
+    retry:
+      maxAttempts: 5
+      delay: 1000
+      shouldRetry: |
+        (res, attempt, ctx) => res.body.data.name !== 'ready'
+
+  - id: follow_up
+    operation: regress-api#getState
+
+  # The four-way list §9.1 gives cleanup: the question this fixture asks is whether the step runs
+  # after the run stopped, not how a bare `status: [cancelled]` resolves — which §18 still has open.
+  - id: cleanup
+    operation: regress-api#getThing
+    depends:
+      - on: await_ready
+        status: [success, failed, skipped, cancelled]
+    pathParams: { id: "{{steps.create.thingId}}" }

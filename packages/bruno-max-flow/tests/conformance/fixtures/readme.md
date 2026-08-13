@@ -46,6 +46,9 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r4b-condition-false.flow.yml` · `r4b-unmet-dependency.flow.yml` · `r4b-cancelled.flow.yml` | R4b — the three skip reasons `failOnUnresolved` must leave alone |
 | `r4c-generated-vars.flow.yml` · `r4c-inline-generated.flow.yml` · `r4c-vars-steps-ref.flow.yml` | R4c — when `vars:` are evaluated, and what binding a generated value to one buys |
 | `r4c2-literals.flow.yml` · `r4c2-bare-word.flow.yml` · `r4c2-braced-var.flow.yml` · `r4c2-root-prefix.flow.yml` | R4c2 — §10.2's operand table; the failing rows are one flow apiece because a failed assertion masks the rows after it |
+| `r4d-file-sources.flow.yml` · `r4d-body-file-interpolated.flow.yml` | R4d — a `!file` var, a `bodyFile:` inline layer, and a path selected by an earlier step |
+| `r4e-multipart.flow.yml` · `r4e-binary.flow.yml` · `r4e-ambiguous.flow.yml` | R4e — §7.5's three assembly rules: parts, raw bytes, and the media type a step must select |
+| `r4g-run-budget.flow.yml` | R4g — a poll that spends §11.3's budget, so the steps after it meet a stopped run |
 
 R4b's two override rows are not files: they are the `r4-output-unproduced` fixture with one field
 changed, which `harness.js`'s `variant()` applies in memory. A near-duplicate file would have to be
@@ -81,8 +84,7 @@ Two details are load-bearing rather than decorative:
 
 ## What is not here
 
-R4d (file sources), R4e (multipart and binary bodies), R4f (cookie jars), R4g (the run budget),
-R4g2 (capture layout), R4h (request validation), R4i (multi-flow ordering), R4l (console output)
-and R4m (the document schema). Those rows need fixtures this corpus does not carry yet — binary
-payloads, a capture directory, a `bru flow` command and the §5.4 schema — and the first four are
-engine rows that a later pass adds here.
+R4f (cookie jars), R4g2 (capture layout), R4h (request validation) and R4m (the document schema).
+Those rows need a capture directory and the §5.4 schema, neither of which exists yet, or — for
+R4f — a host-side jar the stub port would have to implement before the engine's scoping rules
+become observable. R4i and R4l are the CLI's, and live in `packages/bruno-cli/tests/fork/flow/`.

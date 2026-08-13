@@ -86,6 +86,10 @@ const builder = (yargs) =>
     .option('env-var', { describe: 'Override a single variable (repeatable)', type: 'string' })
     .option('param', { describe: 'Supply a declared params value (repeatable)', type: 'string' })
     .option('concurrency', { describe: 'Override config.concurrency', type: 'number' })
+    .option('max-run-duration', {
+      describe: 'Bound the whole run in ms; elapsing takes the cancellation path and exits 4',
+      type: 'number'
+    })
     .option('bail', { describe: 'Stop after the first failing flow', type: 'boolean', default: false })
     .option('verbose', { describe: 'Expand sub-flows', type: 'boolean', default: false })
     .option('quiet', { describe: 'Summary and failures only', type: 'boolean', default: false })
@@ -156,7 +160,7 @@ const handler = async (argv) => {
         ports,
         variables,
         params: asPairs(argv.param),
-        overrides: { concurrency: argv.concurrency },
+        overrides: { concurrency: argv.concurrency, maxRunDuration: argv.maxRunDuration },
         signal: controller.signal,
         onEvent: reporter.onEvent
       });

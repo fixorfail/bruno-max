@@ -446,6 +446,73 @@ describe('R4b — failOnUnresolved fires on one reason only', () => {
   });
 });
 
+describe('R4g — the whole-run budget', () => {
+  // Fake timers drive the clock: the poll's retry delays are what consume the budget, so the run
+  // stops without a second of wall-clock time passing.
+  const responses = {
+    createThing: CREATED,
+    getThing: (request, ctx, info) => ({
+      status: 200,
+      body: { data: { id: 'thing-1', name: info.call >= 5 ? 'ready' : 'pending' } }
+    }),
+    getState: STATE
+  };
+
+  const budgeted = () => runFlow(flow('r4g-run-budget.flow.yml'), { responses });
+
+  it('takes the cancellation path rather than a distinct one', async () => {
+    const run = await budgeted();
+
+    expect(run.outcome('follow_up')).toBe('skipped:run-cancelled');
+    expect(run.status).toBe('cancelled');
+    expect(run.exitCode).toBe(4);
+  });
+
+  // This is the whole point of a budget the engine owns over a SIGKILL from the CI runner, which
+  // leaves the resources the flow created behind.
+  it('still runs a step whose depends accepts cancelled', async () => {
+    const run = await budgeted();
+
+    expect(run.outcome('cleanup')).toBe('success');
+    expect(run.calls.map((call) => call.stepId)).toContain('cleanup');
+  });
+
+  it('spends the budget on the poll rather than on wall-clock time', async () => {
+    const startedAt = Date.now();
+    const run = await budgeted();
+
+    expect(run.sleeps).toEqual([1000, 1000, 1000, 1000]);
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+  });
+
+  // The bound is off unless asked for: flows differ by orders of magnitude and a wrong default
+  // would fail long polls that were working.
+  it('runs to completion with no maxRunDuration set', async () => {
+    const { entry, files } = variant(flow('r4g-run-budget.flow.yml'), (document) => {
+      delete document.config.maxRunDuration;
+    });
+
+    const run = await runFlow(entry, { responses, files });
+
+    expect(run.outcome('follow_up')).toBe('success');
+    expect(run.status).toBe('passed');
+    expect(run.exitCode).toBe(0);
+  });
+
+  // An unattended run has no second interrupt to bound it, so the cleanup window is a deadline of
+  // its own rather than an open phase.
+  it('abandons cleanup once the grace window has passed', async () => {
+    const { entry, files } = variant(flow('r4g-run-budget.flow.yml'), (document) => {
+      document.config.cleanupGrace = 0;
+    });
+
+    const run = await runFlow(entry, { responses, files });
+
+    expect(run.outcome('cleanup')).toBe('skipped:run-cancelled');
+    expect(run.status).toBe('cancelled');
+  });
+});
+
 describe('R4c — generated data is stable where it must be', () => {
   const responses = {
     createThing: CREATED,

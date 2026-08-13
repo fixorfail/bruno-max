@@ -17,10 +17,9 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
 dialect, §9's graph, datasets and slots, §11's retry and propagation, and §12's sub-flows.
 
-Not implemented: capture (§14.5) and the three read-only entries built on it, multipart and binary
-bodies (§7.5), file sources (§7.4), cookie-jar scoping (§7.6), the whole-run budget (§11.3) and the
-§5.4 document schema. `tests/conformance/fixtures/readme.md` lists the conformance rows that go with
-them.
+Not implemented: capture (§14.5) and the three read-only entries built on it, cookie-jar scoping
+(§7.6), redaction (§14.4) and the §5.4 document schema.
+`tests/conformance/fixtures/readme.md` lists the conformance rows that go with them.
 
 The surface is five functions:
 

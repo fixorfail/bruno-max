@@ -68,7 +68,39 @@ type RunState = {
   emit: (event: FlowEvent) => void;
   /** The environment tiers, flattened per §7.3's order. `--env-var` merges into `environment`. */
   environment: Vars;
+  /** §11.3's whole-run budget, as a deadline on the injected clock. Absent unless asked for. */
+  deadline?: number;
+  /** When the run was stopped, so §11.3's cleanup window can be bounded from it. */
+  stoppedAt?: number;
+  cleanupGrace: number;
+  stop: () => void;
 };
+
+/**
+ * §11.3. A run that has passed its budget enters **exactly** the cancellation path a signal takes —
+ * that equivalence is the reason to have a budget at all. A run killed by the CI runner's own
+ * timeout dies on `SIGKILL`: no cleanup runs, the exit code is the runner's, and the resources the
+ * flow created are left behind.
+ */
+const stopped = (state: RunState): boolean => {
+  if (state.flowContext.signal.aborted) return true;
+  if (state.deadline !== undefined && state.clock.now() >= state.deadline) {
+    state.stop();
+    return true;
+  }
+  return false;
+};
+
+/**
+ * The exception §11.3 carves out: steps whose `depends` accepts `cancelled` still run, so a flow
+ * can clean up after an interrupted run. Deliberately bounded — only steps that *declared*
+ * `cancelled` are eligible, and only inside `config.cleanupGrace`.
+ */
+const isCleanup = (step: NormalizedStep): boolean =>
+  step.depends.entries.some((entry) => entry.status.includes('cancelled'));
+
+const withinCleanupGrace = (state: RunState): boolean =>
+  state.stoppedAt === undefined || state.clock.now() < state.stoppedAt + state.cleanupGrace;
 
 type FlowRun = {
   flow: NormalizedFlow;
@@ -363,7 +395,9 @@ const executeFlow = async (
       operation: step.operation ? `${step.operation.alias}#${step.operation.operationId}` : undefined
     });
 
-    if (state.flowContext.signal.aborted) {
+    if (stopped(state) && !(isCleanup(step) && withinCleanupGrace(state))) {
+      // An unattended CI run has nobody to send a second interrupt, so an unbounded cleanup phase
+      // would hang exactly where hanging is worst (§11.3).
       record(step, skip(step, prefix, 'run-cancelled'));
       return;
     }
@@ -484,7 +518,13 @@ const iterationStatus = (results: StepResult[], verdictFailed: boolean, cancelle
 
 export const runFlow = async (options: RunOptions): Promise<RunResult> => {
   const runId = randomUUID();
-  const signal = options.signal || new AbortController().signal;
+  // The host's signal and the budget's are folded into one, because §11.3 requires the timeout and
+  // the interrupt to take the identical path — everything downstream sees a single signal.
+  const controller = new AbortController();
+  if (options.signal?.aborted) controller.abort();
+  options.signal?.addEventListener('abort', () => controller.abort());
+
+  const signal = controller.signal;
   const flowContext: FlowContext = { runId, flow: options.entry, scope: options.scope, signal };
 
   const state: RunState = {
@@ -508,11 +548,26 @@ export const runFlow = async (options: RunOptions): Promise<RunResult> => {
       ...options.variables.collectionVars,
       ...options.variables.environment,
       ...options.variables.envVarOverrides
+    },
+    cleanupGrace: 30000,
+    stop: () => {
+      if (state.stoppedAt === undefined) state.stoppedAt = state.clock.now();
+      controller.abort();
     }
   };
 
+  signal.addEventListener('abort', () => {
+    if (state.stoppedAt === undefined) state.stoppedAt = state.clock.now();
+  });
+
   const flow = await loadFlow(state, options.entry);
   state.budget = new Budget(options.overrides?.concurrency || flow.config.concurrency);
+  state.cleanupGrace = flow.config.cleanupGrace;
+
+  // The bound belongs to whoever knows the environment, which is usually CI rather than the flow
+  // file — so `--max-run-duration` overrides, and neither is set by default (§11.3).
+  const maxRunDuration = options.overrides?.maxRunDuration ?? flow.config.maxRunDuration;
+  if (maxRunDuration !== undefined) state.deadline = state.clock.now() + maxRunDuration;
 
   const rows: (Vars | undefined)[] = flow.dataset
     ? parseDataset(
