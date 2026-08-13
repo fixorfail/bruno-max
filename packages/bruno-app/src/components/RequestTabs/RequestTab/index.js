@@ -17,6 +17,7 @@ import ConfirmCloseEnvironment from 'components/Environments/ConfirmCloseEnviron
 import RequestTabNotFound from './RequestTabNotFound';
 import RequestTabLoading from './RequestTabLoading';
 import SpecialTab from './SpecialTab';
+import { FORK_TAB_TYPES } from 'fork/tabTypes';
 import { IconAppWindow } from '@tabler/icons';
 import StyledWrapper from './StyledWrapper';
 import MenuDropdown from 'ui/MenuDropdown';
@@ -200,7 +201,8 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     'openapi-sync',
     'openapi-spec',
     'mock-server',
-    'changelog'
+    'changelog',
+    ...FORK_TAB_TYPES
   ];
 
   const hasDraft = tab.type === 'collection-settings' && collection?.draft;
@@ -515,7 +517,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
         ) : tab.type === 'mock-server' ? (
           <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} tabName={tab.tabName} />
         ) : (
-          <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} />
+          <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} tabName={tab.tabName} />
         )}
       </StyledWrapper>
     );

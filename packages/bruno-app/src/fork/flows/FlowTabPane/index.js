@@ -142,7 +142,10 @@ const FlowTabPane = ({ tab }) => {
           stepId={selectedStep}
           node={selectedNode}
           runDir={run?.dir}
-          iteration={iteration}
+          /* 001 §14.5 nests captures under `iteration-N` only for a `dataset:` flow, so the reader
+             has to ask the same way the writer wrote — naming an iteration for a flow that has none
+             looks in a directory that was never created. */
+          iteration={description?.dataset ? iteration : undefined}
           captureEnabled={configuration.capture !== false}
         />
       ) : null}

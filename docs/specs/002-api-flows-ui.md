@@ -544,6 +544,14 @@ Selecting a node opens the step detail pane:
 | Validation | Request-schema and response-schema outcomes (001 §10.1) |
 | Attempts | One row per attempt when there was more than one |
 
+**A capture is read the way it was written.** 001 §14.5 nests a run's captures under `iteration-N`
+only for a `dataset:` flow, so `readCapture` is given an `iteration` only when `describeFlow`
+reported one. Naming iteration 0 for a flow that has no dataset reads a directory that was never
+created.
+
+**A capture that could not be read is reported as that**, never as a step that sent nothing. The two
+are different facts about the run, and only one of them is the pane's to assert.
+
 **Bodies come from the capture, fetched on demand.** 001 §13.2 excludes bodies from events
 deliberately — every event crosses IPC, and attaching payloads would serialize them twice for data
 the UI needs only when a step is opened. Opening a step reads its capture through

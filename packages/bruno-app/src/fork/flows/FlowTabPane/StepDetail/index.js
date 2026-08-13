@@ -45,25 +45,32 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
   const dispatch = useDispatch();
   const [tab, setTab] = useState('request');
   const [attempt, setAttempt] = useState(1);
-  const [capture, setCapture] = useState(undefined);
-  const [loading, setLoading] = useState(false);
+  /**
+   * `idle` and `failed` are distinct from a capture that loaded and simply has no request in it.
+   * Collapsing them is how "the read failed" renders as "nothing was sent" — a claim about the run
+   * that the pane is in no position to make.
+   */
+  const [read, setRead] = useState({ status: 'idle' });
 
   useEffect(() => {
     setAttempt(1);
-    setCapture(undefined);
+    setRead({ status: 'idle' });
   }, [stepId]);
 
   useEffect(() => {
-    if (!runDir || !captureEnabled) {
+    if (!captureEnabled) {
+      return undefined;
+    }
+    if (!runDir) {
+      setRead({ status: 'failed', error: 'This run did not report a capture directory' });
       return undefined;
     }
 
     let current = true;
-    setLoading(true);
+    setRead({ status: 'loading' });
     dispatch(readStepCapture({ dir: runDir, stepId, iteration, attempt }))
-      .then((result) => current && setCapture(result))
-      .catch(() => current && setCapture(undefined))
-      .finally(() => current && setLoading(false));
+      .then((capture) => current && setRead({ status: 'loaded', capture }))
+      .catch((error) => current && setRead({ status: 'failed', error: error.message }));
 
     return () => {
       current = false;
@@ -79,6 +86,7 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
   }
 
   const needsCapture = tab === 'request' || tab === 'response';
+  const capture = read.capture;
 
   return (
     <StyledWrapper data-testid="flow-step-detail">
@@ -110,9 +118,15 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
           <div className="detail-empty">Captures were disabled for this run</div>
         ) : null}
 
-        {needsCapture && captureEnabled && loading ? <div className="detail-empty">Loading capture…</div> : null}
+        {needsCapture && captureEnabled && read.status === 'loading' ? (
+          <div className="detail-empty">Loading capture…</div>
+        ) : null}
 
-        {tab === 'request' && captureEnabled && !loading ? (
+        {needsCapture && captureEnabled && read.status === 'failed' ? (
+          <div className="detail-empty">{`The capture could not be read — ${read.error}`}</div>
+        ) : null}
+
+        {tab === 'request' && read.status === 'loaded' ? (
           capture?.request ? (
             <>
               <Row label="Method">{capture.request.method}</Row>
@@ -129,7 +143,7 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
           )
         ) : null}
 
-        {tab === 'response' && captureEnabled && !loading ? (
+        {tab === 'response' && read.status === 'loaded' ? (
           capture?.response ? (
             <>
               <Row label="Status">{`${capture.response.status} ${capture.response.statusText || ''}`}</Row>

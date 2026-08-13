@@ -2976,6 +2976,7 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `bruno-electron/src/index.js` | `await ipc/flow.shutdown()` in the `before-quit` chain (002 §4.2) | 1 |
 | `bruno-app/jsconfig.json` | add the `fork/*` path alias | 1 |
 | `bruno-app/…/RequestTabPanel/index.js` | import + delegate to the fork pane registry | 2 |
+| `bruno-app/…/RequestTabs/RequestTab/index.js` | import + spread fork types into `specialTabs`, and pass `tabName` on the fallback branch | 3 |
 | `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | import + a `default:` case delegating the label | 4 |
 | `bruno-app/…/providers/ReduxStore/index.js` | import + spread fork reducers into the map | 2 |
 | `bruno-app/…/components/Sidebar/index.js` | import + spread fork sidebar sections | 2 |
@@ -2985,6 +2986,14 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 delegation needs one, and a manifest that undercounts by a third is not the thing to re-check a merge
 against. `SpecialTab.js` is four because its switch had no `default:` to extend, so the delegation is
 a three-line case rather than an expression.
+
+**A tab type needs two registrations in the tab strip, not one.** `SpecialTab.js` supplies the label,
+but `RequestTab/index.js` decides whether a tab is *special at all* — a type missing from its
+`specialTabs` list falls through to a branch that looks the tab up as a request in a collection,
+finds nothing, and renders "Not found". Registering only the label produces a tab that opens
+correctly and is titled as missing. The `tabName` on its fallback branch is the second line: the
+terminal `<SpecialTab>` passed only `type`, so every fork tab would otherwise share one static
+label.
 
 The build rows are here because a fork package whose `dist/` is gitignored is invisible to a fresh
 clone: the engine resolves through `main`, so without them `npm run setup` completes and the app then
