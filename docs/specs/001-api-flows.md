@@ -1796,8 +1796,8 @@ writing an assertion.
 
 ### 10.2 Explicit assertions
 
-Business-logic checks on top of the schema. These reuse Bruno's existing assertion operators and are
-evaluated by the existing `AssertRuntime` — flows do not introduce a second assertion dialect, with
+Business-logic checks on top of the schema. These reuse Bruno's existing assertion operators and its
+operand rule — flows do not introduce a second assertion dialect, with
 the single exception of reserved-root references, specified below.
 
 ```yaml
@@ -1917,6 +1917,21 @@ This costs nothing to implement. `AssertRuntime` already evaluates against a con
 by spreading every variable scope over `bru`/`req`/`res`
 (`packages/bruno-js/src/runtime/assert-runtime.js:443-453`); flow namespaces are additional keys on
 that object, not a second evaluation path.
+
+#### What the engine reuses, and what it restates
+
+The **dialect** is Bruno's and is reused literally: the operand rule above is
+`evaluateJsTemplateLiteral`, and a left-hand side is `evaluateJsExpression`, both imported from
+`packages/bruno-js/src/utils.js`. What the engine does **not** reuse is `AssertRuntime` itself. That
+module loads the QuickJS sandbox at import time — a runtime §8.2 makes the *host's* to select, and
+one the engine must not pull in — and it is built around a Bruno request/response pair and emits
+test results rather than the `AssertionResult` triple §13.2 reports. So the operator table is
+restated in `expression.ts`.
+
+That restatement is the one place a second dialect could drift into existence, and the guard against
+it is 001-C's R4c2: it asserts the operand rule directly rather than through a flow that happens to
+exercise it, so an operator behaving differently here than in a `.bru` test shows up as a failure
+rather than as a surprise years later.
 
 ### 10.3 Negative tests
 
@@ -3771,6 +3786,13 @@ the second reading and fails the first. R4g's fixture is exactly that shape.
 **Which outcome wins when a run both fails and is cancelled?** `RunResult.status` admits one value
 and the exit codes differ (1 versus 4). §14.1's "worst outcome" for a multi-flow selection likewise
 gives no ordering over `1`, `2` and `4`.
+
+> The engine currently answers **cancelled**, and the CLI's multi-flow reducer answers **the
+> numerically highest code**, which orders them `4 > 3 > 2 > 1`. Neither is tested and neither is
+> reasoned — they are what the obvious implementation does. A conformance row settling this should
+> land with whichever answer the argument picks, since the two disagree: an interrupted run
+> containing a genuine failure reports `cancelled` from the engine and `4` from a single-flow CLI
+> run, which hides a real regression behind an infrastructure outcome.
 
 **Which attempt's outputs survive a retry?** Presumably the last, but §11.1 does not say — nor
 whether outputs are extracted on every attempt so `shouldRetry`'s `ctx` can read them, which decides

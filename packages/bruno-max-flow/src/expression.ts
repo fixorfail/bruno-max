@@ -1,15 +1,20 @@
 /**
  * The expression dialect — 001 §10.2, shared with `when:` (§9.3).
  *
- * Flows introduce no second assertion dialect: the operand rule *is* Bruno's, reused rather than
- * restated. `evaluateJsTemplateLiteral` is the function §10.2 names by line — `true`, `false`,
- * `null` and `undefined` become those values, a numeric operand a number, a quoted operand a
- * string, anything else a string — and the one addition is that an unquoted operand whose first
- * dot-segment is a reserved root resolves as a reference instead.
+ * **The operand rule is Bruno's, reused literally.** `evaluateJsTemplateLiteral` is the function
+ * §10.2 names by line — `true`, `false`, `null` and `undefined` become those values, a numeric
+ * operand a number, a quoted operand a string, anything else a string — and the one addition is
+ * that an unquoted operand whose first dot-segment is a reserved root resolves as a reference. Both
+ * helpers are imported from `@usebruno/js/src/utils` rather than through the package index, which
+ * loads the QuickJS runtime at import time; sandbox selection is a host's (§8.2), and neither
+ * helper needs one.
  *
- * The helpers are imported from `@usebruno/js/src/utils` rather than through the package index,
- * which loads the QuickJS runtime at import time. Sandbox selection is a host's (§8.2), and the
- * engine reaches nothing here that needs one: both helpers compile a plain function.
+ * **The operator table below is restated, not reused.** `AssertRuntime` is what a `.bru` test runs
+ * through, and the engine cannot import it: it pulls in that same QuickJS runtime, and it is built
+ * around a request/response pair and emits test results rather than §13.2's `AssertionResult`. So
+ * these operators are a second implementation of the same names, and the thing keeping them honest
+ * is 001-C's R4c2, which asserts the dialect directly instead of through a flow that happens to
+ * exercise it. An operator added here belongs in that table too.
  */
 import { evaluateJsExpression, evaluateJsTemplateLiteral } from '@usebruno/js/src/utils';
 
