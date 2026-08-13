@@ -9,11 +9,12 @@
  * tagged union: handing hosts a bare object would leave each of them re-deriving "is this
  * multipart?" from the body's shape.
  */
-import { DROP, type ApiBinding, type FlowConfig, type NormalizedStep } from './document';
+import { DROP, FileRef, type ApiBinding, type FlowConfig, type NormalizedStep } from './document';
+import { basenameOf, contentTypeFor, parseStructured, type FileReader } from './files';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { requestExample, requestMediaTypes, requestSchema, type ResolvedOperation } from './openapi';
 import type { Auth } from '@usebruno/schema-types/common/auth';
-import type { MaterializedRequest, RequestBody } from './types/request';
+import type { MaterializedRequest, MultipartPart, RequestBody } from './types/request';
 
 export class MaterializationError extends Error {
   constructor(readonly code: string, message: string) {
@@ -103,16 +104,110 @@ const selectMediaType = (step: NormalizedStep, operation: Record<string, any>): 
   return declared[0];
 };
 
-const asBody = (mediaType: string | undefined, value: unknown): RequestBody => {
-  if (mediaType === undefined || value === undefined) return { kind: 'none' };
+/** §7.5's first row: the structured media types, assembled from the merged structure. */
+const isStructured = (mediaType: string) =>
+  mediaType.includes('json') || mediaType.includes('x-www-form-urlencoded');
+
+const containsFile = (value: unknown): boolean => {
+  if (value instanceof FileRef) return true;
+  if (Array.isArray(value)) return value.some(containsFile);
+  if (isMapping(value)) return Object.values(value).some(containsFile);
+  return false;
+};
+
+const asStructuredBody = (mediaType: string, value: unknown): RequestBody => {
+  if (value === undefined) return { kind: 'none' };
   if (mediaType.includes('json')) return { kind: 'json', value };
-  if (mediaType.includes('x-www-form-urlencoded')) {
-    return {
-      kind: 'urlencoded',
-      fields: Object.entries(isMapping(value) ? value : {}).map(([name, entry]) => ({ name, value: String(entry) }))
-    };
+  return {
+    kind: 'urlencoded',
+    fields: Object.entries(isMapping(value) ? value : {}).map(([name, entry]) => ({ name, value: String(entry) }))
+  };
+};
+
+/**
+ * §7.5. Each key of the merged structure becomes a part; a `!file` value makes that part a file
+ * upload and anything else a field. Repeated parts are an array, consistent with §7.2 replacing
+ * arrays wholesale.
+ */
+const assembleMultipart = async (
+  step: NormalizedStep,
+  operation: Record<string, any>,
+  merged: unknown,
+  read: FileReader
+): Promise<RequestBody> => {
+  const content = operation.requestBody?.content?.['multipart/form-data'] || {};
+  const encoding: Record<string, { contentType?: string }> = content.encoding || {};
+  const schema: Record<string, any> = content.schema || {};
+  const parts: MultipartPart[] = [];
+
+  for (const [name, value] of Object.entries(isMapping(merged) ? merged : {})) {
+    for (const entry of Array.isArray(value) ? value : [value]) {
+      if (entry instanceof FileRef) {
+        parts.push({
+          name,
+          kind: 'file',
+          file: {
+            bytes: await read(entry.path),
+            filename: entry.filename || basenameOf(entry.path),
+            contentType: contentTypeFor(entry.path, entry.contentType, encoding[name]?.contentType),
+            sourcePath: entry.path
+          }
+        });
+        continue;
+      }
+      // A part typed `object` is sent as JSON, matching OpenAPI's default encoding rather than
+      // flattening it to a string.
+      const asJson = isMapping(entry) || Array.isArray(entry);
+      parts.push({
+        name,
+        kind: 'field',
+        value: asJson ? JSON.stringify(entry) : String(entry),
+        contentType: asJson ? encoding[name]?.contentType || 'application/json' : encoding[name]?.contentType
+      });
+    }
   }
-  return { kind: 'text', value: typeof value === 'string' ? value : JSON.stringify(value), contentType: mediaType };
+
+  // §7.1 never seeds a `format: binary` property, so a required one that nobody supplied is a
+  // validation error naming the part — a better failure than a request the server rejects for
+  // reasons the flow cannot explain.
+  for (const required of schema.required || []) {
+    const declared = schema.properties?.[required];
+    if (declared?.format === 'binary' && !parts.some((part) => part.name === required)) {
+      throw new MaterializationError('missing-binary-part', `${step.id}: the required part ${required} has no file`);
+    }
+  }
+
+  return { kind: 'multipart', parts };
+};
+
+/**
+ * §7.5's raw binary: the body *is* the file, with no merge layer and no interpolation —
+ * substituting into bytes would corrupt them. `body: !file` and `bodyFile:` are one form with two
+ * spellings, so both arrive here.
+ */
+const assembleBinary = async (
+  step: NormalizedStep,
+  reference: FileRef,
+  scope: Scope,
+  read: FileReader
+): Promise<RequestBody> => {
+  if (reference.filename || reference.contentType) {
+    throw new MaterializationError(
+      'binary-file-options',
+      `${step.id}: filename: and contentType: are multipart-only — the payload's type is the operation's`
+    );
+  }
+
+  const source = interpolateScalar(reference.path, scope);
+  return {
+    kind: 'binary',
+    file: {
+      bytes: await read(source),
+      filename: basenameOf(source),
+      contentType: contentTypeFor(source),
+      sourcePath: source
+    }
+  };
 };
 
 /** §6.3, first match wins: the binding's `baseUrl`, then `config.baseUrl`, then `servers[0]`. */
@@ -170,21 +265,36 @@ export type Materialized = {
   unresolved: string[];
 };
 
-export const materialize = (
+/**
+ * The inline layer a step contributes, which is its `body:` or its `bodyFile:` — never both (§7.2).
+ * The order for a file is: interpolate the path, read it, merge the contents, then interpolate the
+ * contents, which is what makes a fixture selectable by something an earlier step produced.
+ */
+const inlineLayer = async (step: NormalizedStep, scope: Scope, read: FileReader): Promise<unknown> => {
+  if (!step.bodyFile) return step.body;
+  const source = interpolateScalar(step.bodyFile, scope);
+  return parseStructured(source, (await read(source)).toString('utf8'));
+};
+
+export const materialize = async (
   step: NormalizedStep,
   binding: ApiBinding | undefined,
   resolved: ResolvedOperation,
   profiles: Record<string, AuthProfile>,
   config: FlowConfig,
-  scope: Scope
-): Materialized => {
+  scope: Scope,
+  read: FileReader
+): Promise<Materialized> => {
   const mediaType = selectMediaType(step, resolved.operation);
-  const seed = mediaType
+  const raw = mediaType !== undefined && !isStructured(mediaType) && mediaType !== 'multipart/form-data';
+
+  const seed = mediaType && !raw
     ? merge(seedFromSchema(requestSchema(resolved.operation, mediaType)), requestExample(resolved.operation, mediaType))
     : undefined;
 
   const authored = {
-    body: merge(seed, step.body),
+    // A raw payload takes no merge layer at all, so the seed and the step's value never meet.
+    body: raw ? undefined : merge(seed, await inlineLayer(step, scope, read)),
     query: merge(binding?.defaultQuery, step.query) || {},
     headers: merge(binding?.defaultHeaders, step.headers) || {},
     pathParams: step.pathParams
@@ -192,6 +302,28 @@ export const materialize = (
 
   const { value, unresolved } = interpolateValue(authored, scope);
   const url = `${resolveBaseUrl(binding, config, resolved, scope)}${substitute(resolved.template, value.pathParams as Record<string, unknown>)}`;
+
+  let body: RequestBody = { kind: 'none' };
+  if (raw) {
+    const reference = step.bodyFile ? new FileRef(step.bodyFile) : step.body;
+    if (!(reference instanceof FileRef)) {
+      throw new MaterializationError(
+        'missing-binary-body',
+        `${step.id}: ${mediaType} takes the raw bytes of a bodyFile: or a body: !file`
+      );
+    }
+    body = await assembleBinary(step, reference, scope, read);
+  } else if (mediaType === 'multipart/form-data') {
+    body = await assembleMultipart(step, resolved.operation, value.body, read);
+  } else if (mediaType !== undefined) {
+    if (containsFile(value.body)) {
+      throw new MaterializationError(
+        'file-not-allowed',
+        `${step.id}: !file is only a value where the operation accepts one — ${mediaType} does not`
+      );
+    }
+    body = asStructuredBody(mediaType, value.body);
+  }
 
   return {
     mediaType,
@@ -203,7 +335,7 @@ export const materialize = (
       headers: Object.fromEntries(
         Object.entries(value.headers as Record<string, unknown>).map(([name, entry]) => [name, String(entry)])
       ),
-      body: asBody(mediaType, value.body),
+      body,
       auth: resolveAuth(step, binding, profiles),
       operation: {
         api: binding?.alias || '',

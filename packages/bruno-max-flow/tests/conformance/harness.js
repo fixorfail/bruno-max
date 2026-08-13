@@ -131,7 +131,7 @@ const materializeResponse = (spec) => ({
 const createPorts = (options) => {
   const overlay = new Map(Object.entries(options.files || {}));
   const controller = new AbortController();
-  const log = { calls: [], scripts: [], sleeps: [] };
+  const log = { calls: [], scripts: [], sleeps: [], reads: [] };
 
   let tick = 0;
   let clockNow = 0;
@@ -190,7 +190,12 @@ const createPorts = (options) => {
     }
   };
 
-  const readFile = async (target, ctx) => readFrom(target, ctx);
+  // The path is logged before the read, so R4d can assert containment on the *port* — a run that
+  // read the file and then rejected it has already read it.
+  const readFile = async (target, ctx) => {
+    log.reads.push(target);
+    return readFrom(target, ctx);
+  };
 
   const readSpec = async (source, ctx) => ({ text: readFrom(source, ctx).toString('utf8'), from: 'file' });
 
@@ -285,7 +290,8 @@ const report = (result, log) => {
     },
 
     sleeps: log.sleeps,
-    scripts: log.scripts
+    scripts: log.scripts,
+    reads: log.reads
   };
 };
 
@@ -346,4 +352,4 @@ const variant = (file, mutate) => {
   return { entry, files: { [entry]: stringify(document) } };
 };
 
-module.exports = { runFlow, validate, variant };
+module.exports = { runFlow, validate, variant, FLOWS };

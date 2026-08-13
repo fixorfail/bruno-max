@@ -1,0 +1,20 @@
+# R4e — an operation declaring two request media types. `contentType:` is what selects one, and
+# nothing is inferred from the body's shape (§7.5).
+version: 1
+
+meta:
+  name: R4e — an ambiguous media type
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: bundle
+    operation: regress-api#createBundle
+    contentType: multipart/form-data
+    body:
+      name: autumn
+      manifest: !file ./fixtures/manifest.csv

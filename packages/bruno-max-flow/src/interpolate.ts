@@ -104,7 +104,10 @@ export const interpolateValue = <T>(value: T, scope: Scope): Interpolated<T> => 
       return interpolateText(node, scope, unresolved);
     }
     if (Array.isArray(node)) return node.map(walk);
-    if (node && typeof node === 'object') {
+    // Only plain objects are walked. A `!file` reference is a class instance by §5.4's design, and
+    // rebuilding it as a plain object here would strip the identity that distinguishes it from a
+    // body that happens to carry the same keys.
+    if (node && typeof node === 'object' && Object.getPrototypeOf(node) === Object.prototype) {
       const mapped: Record<string, unknown> = {};
       for (const [key, item] of Object.entries(node as Record<string, unknown>)) {
         mapped[key] = walk(item);

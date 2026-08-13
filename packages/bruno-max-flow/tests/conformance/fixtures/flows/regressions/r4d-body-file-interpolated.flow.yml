@@ -1,0 +1,24 @@
+# R4d — the path interpolates first, then the file is read, which is what makes a fixture
+# selectable by something an earlier step produced (§7.4).
+version: 1
+
+meta:
+  name: R4d — an interpolated bodyFile path
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: pick
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+    outputs:
+      variant: data.role
+
+  - id: create
+    operation: regress-api#createThing
+    bodyFile: "./fixtures/{{steps.pick.variant}}.json"

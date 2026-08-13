@@ -9,7 +9,9 @@
  * multi-flow selection — all of which belong to the CLI's own suite. R6 covers the exit codes an
  * engine outcome determines; `2` and `3` are the CLI's mapping of a diagnostic and a usage error.
  */
-const { runFlow, validate, variant } = require('./harness');
+const path = require('path');
+
+const { runFlow, validate, variant, FLOWS } = require('./harness');
 
 const flow = (name) => `regressions/${name}`;
 
@@ -129,6 +131,237 @@ describe('R4 — slot and output resolution boundaries', () => {
       const name = run.iterations[read.iteration].row.name;
       expect(read.url).toBe(`https://regress.example.com/things/thing-${name}`);
     }
+  });
+});
+
+describe('R4d — file sources', () => {
+  // Fixtures come through the stubbed `ReadFile` port, never from disk: §7.4 has the engine touch
+  // no `fs`, and a conformance run supplies them in memory exactly as a host would from a file.
+  const at = (name) => path.join(FLOWS, 'regressions', 'fixtures', name);
+
+  const files = {
+    [at('catalog.json')]: JSON.stringify({ items: [{ sku: 'SKU-1' }, { sku: 'SKU-2' }] }),
+    [at('thing.json')]: JSON.stringify({ name: 'from a file' }),
+    [at('admin.json')]: JSON.stringify({ name: 'the admin variant' })
+  };
+
+  const responses = {
+    createThing: CREATED,
+    signIn: { status: 200, body: { data: { token: 'tok-1', role: 'admin' } } }
+  };
+
+  it('navigates a parsed !file var', async () => {
+    const run = await runFlow(flow('r4d-file-sources.flow.yml'), { responses, files });
+
+    expect(run.call('createThing').json.name).toBe('SKU-1');
+  });
+
+  it('merges a bodyFile as the step\'s inline layer', async () => {
+    const run = await runFlow(flow('r4d-file-sources.flow.yml'), { responses, files });
+
+    expect(run.call('createThing', 2).json).toEqual({ name: 'from a file' });
+    expect(run.status).toBe('passed');
+  });
+
+  it('interpolates the path first, then reads the file', async () => {
+    const run = await runFlow(flow('r4d-body-file-interpolated.flow.yml'), { responses, files });
+
+    expect(run.call('createThing').json).toEqual({ name: 'the admin variant' });
+  });
+
+  it('rejects a step carrying both body: and bodyFile:', async () => {
+    const { entry, files: variantFiles } = variant(flow('r4d-file-sources.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'from_file').body = { name: 'inline too' };
+    });
+
+    const diagnostics = await validate(entry, { files: { ...files, ...variantFiles } });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ severity: 'error', stepId: 'from_file' })
+    );
+  });
+
+  // The containment row asserts on the port, not on the outcome — a run that reads the file and
+  // then rejects it has already read it (§7.4).
+  it('never calls the port for a path escaping the scope root', async () => {
+    const { entry, files: variantFiles } = variant(flow('r4d-file-sources.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'from_file').bodyFile = '../../../../../../etc/passwd';
+    });
+
+    const run = await runFlow(entry, { responses, files: { ...files, ...variantFiles } });
+
+    expect(run.outcome('from_file')).toBe('failed:file-read-failed');
+    expect(run.reads.some((read) => read.includes('passwd'))).toBe(false);
+  });
+
+  it('fails the step with a file-read reason when the fixture is missing', async () => {
+    const { entry, files: variantFiles } = variant(flow('r4d-file-sources.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'from_file').bodyFile = './fixtures/absent.json';
+    });
+
+    const run = await runFlow(entry, { responses, files: { ...files, ...variantFiles } });
+
+    expect(run.outcome('from_file')).toBe('failed:file-read-failed');
+  });
+});
+
+describe('R4e — multipart and binary bodies', () => {
+  const at = (name) => path.join(FLOWS, 'regressions', 'fixtures', name);
+  const INVOICE = Buffer.from('%PDF-1.4 invoice {{not interpolated}}');
+  const SCAN = Buffer.from('%PDF-1.4 scan {{also not interpolated}}');
+
+  const files = {
+    [at('invoice.pdf')]: INVOICE,
+    [at('a.pdf')]: Buffer.from('%PDF a'),
+    [at('b.pdf')]: Buffer.from('%PDF b'),
+    [at('scan.pdf')]: SCAN,
+    [at('manifest.csv')]: 'sku\nSKU-1\n'
+  };
+
+  const partsOf = (call) => call.body.parts;
+  const partNamed = (call, name) => partsOf(call).filter((part) => part.name === name);
+
+  describe('multipart', () => {
+    let call;
+
+    beforeAll(async () => {
+      const run = await runFlow(flow('r4e-multipart.flow.yml'), {
+        responses: { uploadInvoice: { status: 201 } },
+        files
+      });
+      call = run.call('uploadInvoice');
+    });
+
+    it('assembles one part per key', () => {
+      expect(call.body.kind).toBe('multipart');
+      expect(partNamed(call, 'document')[0].kind).toBe('file');
+      expect(partNamed(call, 'description')[0]).toMatchObject({ kind: 'field', value: 'Q3 invoice' });
+    });
+
+    it('carries the file bytes and the basename as the filename', () => {
+      const document = partNamed(call, 'document')[0];
+      expect(document.file.bytes.equals(INVOICE)).toBe(true);
+      expect(document.file.filename).toBe('invoice.pdf');
+    });
+
+    // The spec's `encoding` is better evidence than a file suffix, so it wins over inference.
+    it('takes the part content type from the operation\'s encoding', () => {
+      expect(partNamed(call, 'document')[0].file.contentType).toBe('application/x-pdf');
+    });
+
+    // A part typed `object` is sent as JSON, matching OpenAPI's default encoding rather than
+    // flattening it to a string.
+    it('serializes an object part as JSON', () => {
+      const metadata = partNamed(call, 'metadata')[0];
+      expect(metadata.contentType).toBe('application/json');
+      expect(JSON.parse(metadata.value)).toEqual({ tenant: 'acme' });
+    });
+
+    it('sends an array as repeated parts under one name', () => {
+      expect(partNamed(call, 'attachments')).toHaveLength(2);
+      expect(partNamed(call, 'attachments').map((part) => part.file.filename)).toEqual(['a.pdf', 'b.pdf']);
+    });
+
+    it('honours a filename override on the tag', async () => {
+      const { entry, files: variantFiles } = variant(flow('r4e-multipart.flow.yml'), (document) => {
+        document.steps[0].body.document = { path: './fixtures/invoice.pdf', filename: 'signed.pdf' };
+      });
+      // The projected model strips the tag, so the variant re-tags the node it wrote back.
+      const text = variantFiles[entry].replace('document:\n', 'document: !file\n');
+      const run = await runFlow(entry, {
+        responses: { uploadInvoice: { status: 201 } },
+        files: { ...files, ...variantFiles, [entry]: text }
+      });
+
+      expect(partNamed(run.call('uploadInvoice'), 'document')[0].file.filename).toBe('signed.pdf');
+    });
+
+    // §7.1 never seeds a binary property, so a required part nobody supplied has to be caught
+    // rather than sent as a zero-byte upload that looks deliberate.
+    it('refuses to dispatch when a required binary part is missing', async () => {
+      const { entry, files: variantFiles } = variant(flow('r4e-multipart.flow.yml'), (document) => {
+        delete document.steps[0].body.document;
+      });
+
+      const run = await runFlow(entry, {
+        responses: { uploadInvoice: { status: 201 } },
+        files: { ...files, ...variantFiles }
+      });
+
+      expect(run.callsFor('uploadInvoice')).toHaveLength(0);
+    });
+  });
+
+  describe('raw binary', () => {
+    const scanResponses = { uploadScan: { status: 201 } };
+
+    it('sends the exact bytes, byte for byte', async () => {
+      const run = await runFlow(flow('r4e-binary.flow.yml'), { responses: scanResponses, files });
+      const { body } = run.call('uploadScan');
+
+      expect(body.kind).toBe('binary');
+      expect(body.file.bytes.equals(SCAN)).toBe(true);
+    });
+
+    // A PDF containing `{{` is not unusual, and interpolating it would produce a file that is
+    // subtly wrong rather than obviously broken.
+    it('runs no interpolation over the bytes', async () => {
+      const run = await runFlow(flow('r4e-binary.flow.yml'), { responses: scanResponses, files });
+
+      expect(run.call('uploadScan').body.file.bytes.toString()).toContain('{{also not interpolated}}');
+    });
+
+    // `bodyFile:` and `body: !file` are one form with two spellings, not two behaviours.
+    it('produces an identical request from body: !file', async () => {
+      const viaBodyFile = await runFlow(flow('r4e-binary.flow.yml'), { responses: scanResponses, files });
+
+      const { entry, files: variantFiles } = variant(flow('r4e-binary.flow.yml'), (document) => {
+        delete document.steps[0].bodyFile;
+        document.steps[0].body = './fixtures/scan.pdf';
+      });
+      const text = variantFiles[entry].replace('body: ', 'body: !file ');
+      const viaTag = await runFlow(entry, {
+        responses: scanResponses,
+        files: { ...files, ...variantFiles, [entry]: text }
+      });
+
+      expect(viaTag.call('uploadScan').body).toEqual(viaBodyFile.call('uploadScan').body);
+    });
+  });
+
+  describe('an ambiguous operation', () => {
+    const bundleResponses = { createBundle: { status: 201 } };
+
+    it('assembles multipart when the step says so', async () => {
+      const run = await runFlow(flow('r4e-ambiguous.flow.yml'), { responses: bundleResponses, files });
+
+      expect(run.call('createBundle').body.kind).toBe('multipart');
+    });
+
+    // The same body, the other declared type: assert the two produce different wire formats.
+    it('assembles JSON from the same body under the other content type', async () => {
+      const { entry, files: variantFiles } = variant(flow('r4e-ambiguous.flow.yml'), (document) => {
+        document.steps[0].contentType = 'application/json';
+        document.steps[0].body = { name: 'autumn', manifest: 'inline' };
+      });
+
+      const run = await runFlow(entry, { responses: bundleResponses, files: { ...files, ...variantFiles } });
+
+      expect(run.call('createBundle').body.kind).toBe('json');
+      expect(run.call('createBundle').json).toEqual({ name: 'autumn', manifest: 'inline' });
+    });
+
+    // The regression test for the rejected alternative: an implementation that guesses multipart
+    // from the presence of a `!file` silently changes the wire format when someone edits a value.
+    it('infers nothing from the body\'s shape when contentType is absent', async () => {
+      const { entry, files: variantFiles } = variant(flow('r4e-ambiguous.flow.yml'), (document) => {
+        delete document.steps[0].contentType;
+      });
+
+      const run = await runFlow(entry, { responses: bundleResponses, files: { ...files, ...variantFiles } });
+
+      expect(run.callsFor('createBundle')).toHaveLength(0);
+      expect(run.outcome('bundle')).toBe('failed:invalid-request');
+    });
   });
 });
 

@@ -117,6 +117,13 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     for (const entry of step.depends.entries) {
       if (!ids.has(entry.on)) error('unknown-dependency', `${step.id} depends on ${entry.on}, which is not a step`, step.id);
     }
+    // Two sources for one value, with no obvious precedence (§7.4).
+    if (step.body !== undefined && step.bodyFile !== undefined) {
+      error('body-and-body-file', `${step.id} declares both body: and bodyFile:`, step.id);
+    }
+    if (step.operation && step.uses) {
+      error('operation-and-uses', `${step.id} declares both operation: and uses:`, step.id);
+    }
   }
 
   const cycle = hasCycle(flow);

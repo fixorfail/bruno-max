@@ -1,0 +1,17 @@
+# R4e — a raw binary body. `bodyFile:` and `body: !file` are one form with two spellings, so this
+# fixture and its `body: !file` variant must produce byte-identical requests (§7.5).
+version: 1
+
+meta:
+  name: R4e — a raw binary body
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: scan
+    operation: regress-api#uploadScan
+    bodyFile: ./fixtures/scan.pdf

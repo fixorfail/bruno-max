@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 
 import { parseDataset } from './dataset';
 import {
+  FileRef,
   normalizeFlow,
   parseAssertion,
   parseDocument,
@@ -17,8 +18,9 @@ import {
   type NormalizedStep
 } from './document';
 import { evaluateCondition, evaluationContext } from './expression';
-import { interpolateValue, type Scope } from './interpolate';
-import { materialize, MaterializationError, type AuthProfile } from './materialize';
+import { createFileReader, FileAccessError, parseStructured } from './files';
+import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
+import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
 import { runAttempt, retryDelay, sleepFor, wantsRetry, type ScriptRunner } from './step';
 import type { RunOptions } from './types/options';
@@ -79,6 +81,10 @@ type FlowRun = {
 };
 
 const terminal = new Set<StepStatus>(['success', 'failed', 'skipped', 'cancelled']);
+
+/** §7.4's boundary: the collection or workspace root that owns the flows. */
+const scopeRoot = (state: RunState): string =>
+  state.options.scope.collectionRoot || state.options.scope.workspaceRoot;
 
 const readText = async (state: RunState, file: string): Promise<string> =>
   (await state.options.ports.readFile(file, state.flowContext)).toString('utf8');
@@ -148,9 +154,32 @@ const executeFlow = async (
     }
   });
 
+  const readFile = createFileReader(
+    state.options.ports.readFile,
+    { ...state.flowContext, flow: flow.file },
+    scopeRoot(state)
+  );
+
+  // §7.4: a `!file` var is parsed at flow start, so `{{catalog.items[0].sku}}` navigates the
+  // structure exactly as it would a structured output.
+  const loadFileVars = async (node: unknown): Promise<unknown> => {
+    if (node instanceof FileRef) {
+      const source = interpolateScalar(node.path, scopeFor());
+      return parseStructured(source, (await readFile(source)).toString('utf8'));
+    }
+    if (Array.isArray(node)) return Promise.all(node.map(loadFileVars));
+    if (node && typeof node === 'object' && Object.getPrototypeOf(node) === Object.prototype) {
+      const entries = await Promise.all(
+        Object.entries(node as Record<string, unknown>).map(async ([key, value]) => [key, await loadFileVars(value)])
+      );
+      return Object.fromEntries(entries);
+    }
+    return node;
+  };
+
   // §7.3: flow vars are evaluated once before any step runs, and once per iteration — which is
   // what makes a generated identity stable across the steps that read it and distinct per row.
-  resolvedVars = interpolateValue(flow.vars, scopeFor()).value as Vars;
+  resolvedVars = interpolateValue(await loadFileVars(flow.vars), scopeFor()).value as Vars;
 
   const profiles: Record<string, AuthProfile> = {
     ...run.profiles,
@@ -190,7 +219,23 @@ const executeFlow = async (
       throw new MaterializationError('unknown-operation', `${step.id}: ${step.operation?.operationId} is not in ${binding?.source}`);
     }
 
-    const materialized = materialize(step, binding, resolved, profiles, flow.config, scopeFor());
+    let materialized: Materialized;
+    try {
+      materialized = await materialize(step, binding, resolved, profiles, flow.config, scopeFor(), readFile);
+    } catch (cause) {
+      // A fixture that could not be read fails the step with a reason rather than crashing the run
+      // (§14.6). Everything else materialization refuses is a shape `bru flow validate` reports
+      // before a run — reaching here means nobody validated, and the request is still never sent.
+      if (!(cause instanceof FileAccessError) && !(cause instanceof MaterializationError)) throw cause;
+      return {
+        result: {
+          ...skip(step, prefix, undefined),
+          status: 'failed',
+          reason: cause instanceof FileAccessError ? 'file-read-failed' : 'invalid-request',
+          attempts: 0
+        }
+      };
+    }
     if (materialized.unresolved.length) return { result: skip(step, prefix, 'unresolved-dependency') };
 
     const jar = { id: `${state.runId}:${run.iteration}` };

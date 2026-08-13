@@ -1,0 +1,28 @@
+# R4d — §7.4's two reading positions in one flow: a `!file` var, parsed at flow start and
+# navigated like any structured value, and a `bodyFile:` merged as the step's inline layer with
+# `{{steps.*}}` inside the file still interpolating.
+version: 1
+
+meta:
+  name: R4d — file sources
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  catalog: !file ./fixtures/catalog.json
+
+steps:
+  - id: pick
+    operation: regress-api#createThing
+    body:
+      name: "{{catalog.items[0].sku}}"
+    outputs:
+      thingId: data.id
+
+  - id: from_file
+    operation: regress-api#createThing
+    bodyFile: ./fixtures/thing.json

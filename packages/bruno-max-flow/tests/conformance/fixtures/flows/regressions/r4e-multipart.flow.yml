@@ -1,0 +1,26 @@
+# R4e — §7.5's multipart assembly: each key of `body:` becomes a part, a `!file` value makes that
+# part a file upload, an object part is sent as JSON rather than flattened, and repeated parts are
+# an array.
+version: 1
+
+meta:
+  name: R4e — multipart
+
+apis:
+  billing-api: ../../specs/billing-v4.yml
+
+config:
+  baseUrl: "{{billingBaseUrl}}"
+
+steps:
+  - id: upload
+    operation: billing-api#uploadInvoice
+    pathParams: { id: inv-1 }
+    body:
+      document: !file ./fixtures/invoice.pdf
+      description: "Q3 invoice"
+      metadata:
+        tenant: acme
+      attachments:
+        - !file ./fixtures/a.pdf
+        - !file ./fixtures/b.pdf

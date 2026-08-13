@@ -101,6 +101,42 @@ paths:
                     properties:
                       token: { type: string }
                       role: { type: string }
+  /scans:
+    post:
+      operationId: uploadScan
+      # A single-payload media type: the body *is* the file, with no merge layer and no
+      # interpolation (§7.5).
+      requestBody:
+        required: true
+        content:
+          application/pdf:
+            schema: { type: string, format: binary }
+      responses:
+        '201': { description: Stored }
+  /bundles:
+    post:
+      operationId: createBundle
+      # Declares two request media types, which is what makes `contentType:` legal on a step and
+      # its absence `ambiguous-media-type` (§7.5).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                manifest: { type: string }
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                manifest: { type: string, format: binary }
+      responses:
+        '201': { description: Created }
   /state:
     get:
       operationId: getState
