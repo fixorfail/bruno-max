@@ -3363,9 +3363,9 @@ ahead of every other check — an output between response-schema validation and 
 `unexpected-status`, because the 500 is what happened first and is the thing to fix first.
 
 **Diagnostic codes** (§13.2's `Diagnostic.code`) are `kebab-case` and name the rule rather than the
-occurrence — `unknown-operation`, `cyclic-dependency`, `non-ancestor-reference`,
-`unresolved-alias`, `path-outside-scope`, `signing-mode-field-override`, `invalid-step-id`,
-`unknown-param`, `ambiguous-media-type`. The full set follows
+occurrence — `parse-error`, `unknown-operation`, `cyclic-dependency`, `non-ancestor-reference`,
+`undeclared-dependency`, `unresolved-alias`, `path-outside-scope`, `signing-mode-field-override`,
+`invalid-step-id`, `unknown-param`, `ambiguous-media-type`. The full set follows
 §14.3's check list; each check emits one code, so `--strict` and any future per-rule suppression
 have something stable to name.
 

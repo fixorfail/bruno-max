@@ -628,6 +628,12 @@ resolved DAG and needs the same knowledge `runFlow` has, so computing it in the 
 second implementation of the scheduling order. Turning ranks into coordinates is presentation and
 stays in fork UI code.
 
+**A sub-flow's internals are ranked within their own flow, not continued from the caller's.** Its
+first step is rank 0. §5.4 draws the expansion as its own graph inline beneath the container node,
+so those ranks are the ones that picture needs; continuing the caller's numbering would make a
+sub-flow's layout depend on how deep in the parent it happened to be invoked, and the same library
+flow would draw differently in two callers. The `parent` field is what relates the two.
+
 **Positions are why this returns more than a graph.** §6 anchors diagnostics into the document view,
 and a `Diagnostic` already carries `line`/`column` (001 §13.2). `FlowNode.position` extends the same
 idea to selection: clicking a node scrolls the document to its step.

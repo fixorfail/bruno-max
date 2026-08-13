@@ -67,6 +67,7 @@ tests/conformance/
   capture.spec.js             # R4g2 and R4n — the artifact directory, asserted through the write ports
   history.spec.js             # R4o — the same directory read back through 002 §11.2's entries
   parse.spec.js               # R4p — §5.4's tags, merge keys and node positions
+  describe.spec.js            # R4q — the graph 002 §11.1 hands the app
 ```
 
 The write ports (`WriteFile`, `ListDirectory`, `RemoveDirectory`) are stubbed as an **in-memory
@@ -1161,6 +1162,8 @@ is about the JSON Schema; this is about what reading the file produces before an
 | `!...` | the removal symbol, distinct from `null` (§8.5) |
 | a `<<:` merge key over an anchor | resolved, so the step carries the merged fields and no literal `<<` |
 | an empty document | an empty flow, not a crash |
+| a document with a syntax error | reported as `parse-error` diagnostics carrying the line, and the model is **empty** rather than the partial tree the parser recovered — recovery is for an editor drawing squiggles, and running it would send requests the file does not describe |
+| `runFlow` over that document | refuses; `bru flow validate` reports it and exits 2 first (§14.3) |
 | every step | carries a 1-based line and column pointing at its own node |
 | a diagnostic naming a step | carries that step's line and column |
 | a diagnostic that names no step — an unresolvable `apis:` entry, a bad `vars:` reference | anchors to that node instead, because 002 §6 puts these in the gutter and one with no line has nowhere to land |
@@ -1169,6 +1172,37 @@ is about the JSON Schema; this is about what reading the file produces before an
 the meaning of a committed file if it regresses: a flow sharing step config through an anchor would
 silently gain a `<<` field rather than the fields it names, and every assertion about the step would
 still pass.
+
+### R4q — The described graph
+
+**Pins:** 002 §11.1 and §5.3, over §9.1's graph. Here rather than in 002-C for R4o's reason: which
+edges exist and what rank a node gets are statements about the engine's own graph, and 002-C §8
+hands those to this file. U1.1–U1.10 assert the *drawing* of what comes back.
+
+| Case | Expected |
+|---|---|
+| a flow with no `depends` | every consecutive pair joined by a `'sequence'` edge, and every node at a distinct rank — the linear case is the common one and must degenerate to a column |
+| the same flow with a step inserted in the middle | the chain rewires A → B → C; nothing else moves |
+| an explicit `depends` | `'depends'`, not `'sequence'` — the two are the same relationship by the time the graph exists, and only file order distinguishes them |
+| `depends: [{ on: x, status: [failed] }]` | a `status` of `['failed']` on the edge; a default `[success]` edge carries **no** `status` at all, so a renderer labels only what it is given |
+| a step with an `any:` join | `join: 'any'` on its incoming edges; switching the fixture to `all:` changes it |
+| a declared output consumed downstream | one `'data'` edge named for the output, `declared: true` |
+| the same output interpolated three times in one body | still **one** edge — a data path, not an occurrence count |
+| `{{steps.other.body.id}}` (§8.3's raw access) | a `'data'` edge with `declared: false`, **and** an `undeclared-dependency` warning; the graph and the validator agree or neither is trustworthy |
+| `{{steps.other.status}}` and the rest of §8.3's built-ins | **no** data edge — always-available metadata is not a data path |
+| a shared slot with two writers and one reader | two `'slot-write'` edges and one `'slot-read'`, and no edge from either writer to the reader |
+| `slots` | each slot's writers and readers by id, whatever order they appear in the file |
+| rank | longest path from a root, so a step below two branches of unequal length sits under the longer one |
+| a `uses:` step | one node with `kind: 'subflow'`, plus the sub-flow's own steps under namespaced ids, each carrying `parent` |
+| a sub-flow's first internal step | rank 0 — ranks are relative to the flow being drawn (002 §5.2) |
+| a resolved step | `operation` carries the method and the path template, not the `alias#operationId` the file wrote |
+| markers | `conditional` for `when:`, `retryMaxAttempts` only above 1, `allowsErrorStatus` for `failOnStatusCode: false`, `usesSharedSlot` for either direction |
+| every node | a `position`, and the `diagnostics` are the set `validateFlow` returns for the same file |
+| a flow that does not parse, and one whose `apis:` entry does not resolve | both still return — an id, a name, the parse error or the binding error in `diagnostics`, and as much of the graph as could be built (002 §6) |
+
+The built-in-metadata row is the one that keeps the feature honest. If `{{steps.x.status}}` drew a
+data edge, every step in a flow with a status check would appear to consume data from its
+predecessor, and "data paths are named and drawable" would stop meaning anything.
 
 ### R5 — Unresolved variables never reach the wire
 
@@ -1228,4 +1262,7 @@ it belongs in another test suite.
 | — | A run had no identity until it finished (§14.5 `run.json`) — found while writing [002](./002-api-flows-ui.md) | R4g2 |
 | — | §14.5's per-attempt layout could not hold what `readCapture` returns — found implementing it | R4g2 |
 | — | Merge-key resolution was inherited from a library default, not decided — found choosing a parser for §5.4's positions | R4p |
+| — | A syntax error stopped being an error once the parser recovered from it instead of throwing | R4p |
+| — | Normalization erased whether an edge was declared, so `depends: [previous]` and no `depends:` became indistinguishable — found implementing 002 §5.3 | R4q |
+| — | §8.3's `undeclared-dependency` warning was specified and never implemented | R4q |
 | — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |

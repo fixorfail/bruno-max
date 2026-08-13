@@ -443,6 +443,10 @@ whose `step:end` has been received, which is the drift actually worth preventing
 - **`listRuns` and `readCapture` themselves.** §11.2 declares them here, but what makes them correct
   is that they recover what 001 §14.5's writer wrote — a round trip, and so 001-C's R4o. U4.5–U4.10
   assert the app renders what they return, which is the part that is this file's.
+- **`describeFlow`'s nodes and edges.** Same split: which edges exist, and what `rank` each node
+  gets, are statements about 001 §9.1's graph, so they are 001-C's R4q. U1.1–U1.10 assert the
+  drawing — that a sequence edge *looks* different from a declared one, that a slot goes through a
+  glyph — which is what this file can see and R4q cannot.
 
 ## 9. Traceability
 
