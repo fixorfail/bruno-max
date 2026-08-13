@@ -98,10 +98,29 @@ type Tools = { specs: SpecLoader; readFlow: (file: string) => Promise<Normalized
 const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<string>): Promise<Diagnostic[]> => {
   const diagnostics: Diagnostic[] = [];
   const file = flow.file;
-  const error = (code: string, message: string, stepId?: string) =>
-    diagnostics.push({ severity: 'error', code, message, file, stepId });
-  const warn = (code: string, message: string, stepId?: string) =>
-    diagnostics.push({ severity: 'warning', code, message, file, stepId });
+
+  /**
+   * A diagnostic anchors to the step it names, or to an explicit node for the checks no step owns
+   * (002 §6 puts these in the gutter of the document view, so one without a line has nowhere to
+   * land). Steps carry their own position from the parse; anything else is addressed by path.
+   */
+  const at = (stepId?: string, node?: (string | number)[]) => {
+    if (node) return flow.positions.at(node);
+    return stepId === undefined ? undefined : flow.steps.find((step) => step.id === stepId)?.position;
+  };
+
+  const report = (
+    severity: Diagnostic['severity'],
+    code: string,
+    message: string,
+    stepId?: string,
+    node?: (string | number)[]
+  ) => diagnostics.push({ severity, code, message, file, stepId, ...at(stepId, node) });
+
+  const error = (code: string, message: string, stepId?: string, node?: (string | number)[]) =>
+    report('error', code, message, stepId, node);
+  const warn = (code: string, message: string, stepId?: string, node?: (string | number)[]) =>
+    report('warning', code, message, stepId, node);
 
   const ids = new Set(flow.steps.map((step) => step.id));
   const ancestors = ancestorsOf(flow);
@@ -134,7 +153,10 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     try {
       specs.set(binding.alias, await tools.specs.load(binding.source, file));
     } catch (cause) {
-      error('unresolved-alias', `${binding.alias} does not resolve: ${(cause as Error).message}`);
+      error('unresolved-alias', `${binding.alias} does not resolve: ${(cause as Error).message}`, undefined, [
+        'apis',
+        binding.alias
+      ]);
     }
   }
 
@@ -154,7 +176,9 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   for (const reference of referencesIn(flow.vars)) {
     error(
       'invalid-var-reference',
-      `a vars: entry references ${reference.text}, which does not exist when vars: are evaluated`
+      `a vars: entry references ${reference.text}, which does not exist when vars: are evaluated`,
+      undefined,
+      ['vars']
     );
   }
 

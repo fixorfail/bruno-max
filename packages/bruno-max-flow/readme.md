@@ -38,6 +38,13 @@ The surface is five functions:
 | `listRuns` | 002 §11.2 | implemented |
 | `readCapture` | 002 §11.2 | implemented |
 
+**`.flow.yml` is parsed with `yaml` v2, not `js-yaml`,** because §5.4's positions and `js-yaml`'s
+flat event listener do not fit: one `parseDocument` yields the model *and* every node's source
+range, so `Diagnostic.line` and `FlowNode.position` come from the same read as the model. Two
+options are load-bearing and neither is the library default — `merge: true` (a `<<:` anchor would
+otherwise leave a literal `<<` field, silently changing a committed flow) and the `!file` / `!...`
+custom tags. R4p pins both.
+
 The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5,
 `openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
 §11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4, `capture.ts` §14.5, and

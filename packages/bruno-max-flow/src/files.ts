@@ -11,7 +11,7 @@
  * secret-variable provenance to trace.
  */
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+import * as YAML from 'yaml';
 
 import { parseDataset } from './dataset';
 import type { FlowContext, ReadFile } from './types/ports';
@@ -52,7 +52,7 @@ export const createFileReader = (readFile: ReadFile, ctx: FlowContext, scopeRoot
 export const parseStructured = (source: string, text: string): unknown => {
   const extension = path.extname(source).toLowerCase();
   if (extension === '.json') return JSON.parse(text);
-  if (extension === '.yml' || extension === '.yaml') return yaml.load(text);
+  if (extension === '.yml' || extension === '.yaml') return YAML.parse(text, { merge: true });
   if (extension === '.csv') return parseDataset(source, text);
   throw new FileAccessError('unsupported-file-format', `${source}: expected .json, .yml or .csv`);
 };

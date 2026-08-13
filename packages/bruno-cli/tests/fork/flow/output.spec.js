@@ -174,6 +174,35 @@ describe('markers', () => {
   });
 });
 
+describe('diagnostics', () => {
+  const entry = (over = {}) => ({
+    severity: 'error',
+    code: 'unknown-operation',
+    message: 'noSuchOp is not an operation in regressions-v1.yml',
+    file: 'flows/checkout.flow.yml',
+    stepId: 'create',
+    ...over
+  });
+
+  it('names the line a diagnostic was anchored to', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.diagnostics('flows/checkout.flow.yml', [entry({ line: 12, column: 5 })]);
+
+    expect(text()).toContain('12:5');
+    expect(text()).toContain('unknown-operation');
+  });
+
+  // Not every check can anchor — one about the document as a whole has no node to point at — and a
+  // reporter that printed `undefined:undefined` would be worse than one that prints nothing.
+  it('says nothing about a position when the engine had none', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.diagnostics('flows/checkout.flow.yml', [entry({ line: undefined, column: undefined })]);
+
+    expect(text()).not.toContain('undefined');
+    expect(text()).toContain('unknown-operation');
+  });
+});
+
 describe('ordering', () => {
   // Live lines appear as steps complete, so a hung run shows where it hung. The summary block is
   // what has to be deterministic.

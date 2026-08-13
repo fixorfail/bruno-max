@@ -6,7 +6,7 @@
  * belong together: a stage that saw the raw document would have to re-derive the implicit sequence
  * (§9.1) or a step's effective flags, and two derivations drift.
  */
-import * as yaml from 'js-yaml';
+import * as YAML from 'yaml';
 
 import type { StepStatus } from './types/result';
 
@@ -27,11 +27,37 @@ export class FileRef {
   }
 }
 
-const SCHEMA = yaml.DEFAULT_SCHEMA.extend([
-  new yaml.Type('!file', { kind: 'scalar', construct: (data) => new FileRef(data) }),
-  new yaml.Type('!file', { kind: 'mapping', construct: (data) => new FileRef(data) }),
-  new yaml.Type('!...', { kind: 'scalar', construct: () => DROP })
-]);
+/**
+ * §5.4's local tags. Both `!file` forms build the same class, so the projected model is identical
+ * whichever spelling an author used, and neither can be forged by an ordinary mapping of the same
+ * shape.
+ */
+const TAGS: YAML.CollectionTag[] | YAML.ScalarTag[] = [
+  { tag: '!file', collection: 'map', resolve: (map: YAML.YAMLMap) => new FileRef(map.toJSON()) },
+  { tag: '!file', resolve: (value: string) => new FileRef(value) },
+  { tag: '!...', resolve: () => DROP }
+] as YAML.CollectionTag[];
+
+/**
+ * `merge: true` is load-bearing rather than incidental. `js-yaml` resolved a `<<:` merge key by
+ * default and this parser does not, so a flow sharing step config through an anchor would silently
+ * gain a literal `<<` field instead — a committed file changing meaning, which §15 forbids.
+ */
+const OPTIONS: YAML.ParseOptions & YAML.DocumentOptions & YAML.SchemaOptions = {
+  merge: true,
+  customTags: TAGS as YAML.Tags
+};
+
+/** 1-based, matching `Diagnostic.line` / `column` (§13.2) and `FlowNode.position` (002 §11.1). */
+export type Position = { line: number; column: number };
+
+/**
+ * Where each node of the document sits in its file. Addressed by the path through the *projected*
+ * model, so a caller asks for `['steps', 3, 'assert', 0]` and never handles a YAML node.
+ */
+export type Positions = { at(path: (string | number)[]): Position | undefined };
+
+export type ParsedDocument = { model: Record<string, unknown>; positions: Positions };
 
 export type Depends = { mode: 'all' | 'any'; entries: { on: string; status: StepStatus[] }[] };
 
@@ -84,6 +110,8 @@ export type NormalizedStep = {
   flags: StepFlags;
   timeout?: number;
   maxDuration?: number;
+  /** Where the step's node starts, so a diagnostic and a graph node can point at it. */
+  position?: Position;
 };
 
 export type ApiBinding = {
@@ -119,6 +147,8 @@ export type NormalizedFlow = {
   dataset?: { source: string; parallel: number };
   params: Record<string, { required: boolean; default?: unknown }>;
   exports: Record<string, string>;
+  /** Retained so a caller can anchor to a node no step owns — an `apis:` binding, say. */
+  positions: Positions;
   steps: NormalizedStep[];
 };
 
@@ -277,10 +307,33 @@ const normalizeParams = (raw: unknown): NormalizedFlow['params'] =>
     })
   );
 
-export const parseDocument = (text: string): Record<string, unknown> =>
-  asRecord(yaml.load(text, { schema: SCHEMA }));
+/**
+ * One parse produces both the model and the positions, which is the whole reason this is an AST
+ * parse rather than a plain load: a second pass to find line numbers would be a second reader of
+ * the format, and the two would disagree the first time one of them was wrong.
+ */
+export const parseDocument = (text: string): ParsedDocument => {
+  const lineCounter = new YAML.LineCounter();
+  const document = YAML.parseDocument(text, { ...OPTIONS, lineCounter });
 
-export const normalizeFlow = (document: Record<string, unknown>, file: string): NormalizedFlow => {
+  return {
+    model: asRecord(document.toJS()),
+    positions: {
+      at: (path) => {
+        const node = path.length === 0 ? document.contents : document.getIn(path, true);
+        // A node has no range when it came from a merge key or an alias rather than from source
+        // text of its own; there is no line to point at, and inventing one would point at the
+        // anchor a reader did not write.
+        if (!YAML.isNode(node) || !node.range) return undefined;
+        const { line, col } = lineCounter.linePos(node.range[0]);
+        return { line, column: col };
+      }
+    }
+  };
+};
+
+export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedFlow => {
+  const { model: document, positions } = parsed;
   const config = normalizeConfig(document.config);
   const meta = asRecord(document.meta);
   const rawSteps = asArray<Record<string, unknown>>(document.steps).map(asRecord);
@@ -318,7 +371,8 @@ export const normalizeFlow = (document: Record<string, unknown>, file: string): 
         strictSchema: flag(raw, config, 'strictSchema')
       },
       timeout: raw.timeout === undefined ? undefined : Number(raw.timeout),
-      maxDuration: raw.maxDuration === undefined ? undefined : Number(raw.maxDuration)
+      maxDuration: raw.maxDuration === undefined ? undefined : Number(raw.maxDuration),
+      position: positions.at(['steps', index])
     };
   });
 
@@ -343,6 +397,7 @@ export const normalizeFlow = (document: Record<string, unknown>, file: string): 
     exports: Object.fromEntries(
       Object.entries(asRecord(document.exports)).map(([name, value]) => [name, String(value)])
     ),
-    steps
+    steps,
+    positions
   };
 };

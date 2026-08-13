@@ -36,6 +36,6 @@ module.exports = [
       terser()
     ],
     external: (id) =>
-      isBuiltin(id) || id.startsWith('@usebruno/') || ['ajv', 'ajv-formats', 'js-yaml', 'lodash'].includes(id)
+      isBuiltin(id) || id.startsWith('@usebruno/') || ['ajv', 'ajv-formats', 'lodash', 'yaml'].includes(id)
   }
 ];

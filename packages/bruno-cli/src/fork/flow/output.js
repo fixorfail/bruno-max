@@ -109,7 +109,10 @@ const createReporter = ({
       line(`${paint(1, file)}`);
       for (const entry of entries) {
         const label = entry.severity === 'error' ? paint(31, 'error') : paint(33, 'warning');
-        line(`  ${label}  ${entry.code}  ${entry.message}`);
+        // The line the rule fired on, when the engine could anchor it (§13.2). A diagnostic over a
+        // hundred-step flow is close to unusable without one, and the file heading is already above.
+        const where = entry.line === undefined ? '' : `${paint(90, `${entry.line}:${entry.column}`)}  `;
+        line(`  ${label}  ${where}${entry.code}  ${entry.message}`);
       }
     }
   };

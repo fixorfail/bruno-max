@@ -7,7 +7,7 @@
  * `when: row.canCreate eq true` compare against a boolean.
  */
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+import * as YAML from 'yaml';
 import { evaluateJsTemplateLiteral } from '@usebruno/js/src/utils';
 
 import type { Vars } from './types/ports';
@@ -50,6 +50,6 @@ export const parseDataset = (source: string, text: string): Vars[] => {
   const extension = path.extname(source).toLowerCase();
   if (extension === '.csv') return parseCsv(text);
   if (extension === '.json') return JSON.parse(text) as Vars[];
-  if (extension === '.yml' || extension === '.yaml') return (yaml.load(text) || []) as Vars[];
+  if (extension === '.yml' || extension === '.yaml') return (YAML.parse(text, { merge: true }) || []) as Vars[];
   throw new Error(`unsupported dataset format ${extension} — CSV, JSON and YAML are supported`);
 };

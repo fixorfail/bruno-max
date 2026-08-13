@@ -6,7 +6,7 @@
  * only "which method, which path template, which schemas".
  */
 import * as path from 'path';
-import * as yaml from 'js-yaml';
+import * as YAML from 'yaml';
 
 import type { FlowContext, ReadSpec } from './types/ports';
 
@@ -69,7 +69,7 @@ export class SpecLoader {
     if (cached) return cached;
 
     const loading = this.readSpec(resolved, this.ctx).then((document) =>
-      indexDocument((yaml.load(document.text) || {}) as Record<string, any>, resolved)
+      indexDocument((YAML.parse(document.text, { merge: true }) || {}) as Record<string, any>, resolved)
     );
     this.cache.set(resolved, loading);
     return loading;
