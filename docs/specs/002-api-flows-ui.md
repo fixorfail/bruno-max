@@ -817,8 +817,24 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 | `renderer:flow-cancel` | invoke | Abort a run by `runId` |
 | `renderer:flow-list-runs` | invoke | `listRuns` for a scope |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
+| `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
+| `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
 | `main:flow-tree-updated` | send | Watcher: a flow file added, changed or removed |
+
+**The renderer says which scopes to watch**, because it is the side that knows which workspaces and
+collections are open — main learns a workspace path as an IPC argument and holds no list of its own
+(§7.2 makes the same observation about environments). This is how API Specs already work: the
+renderer calls `renderer:open-api-spec-file` per file and each call starts a watcher
+(`bruno-electron/src/ipc/apiSpec.js:123`). Flows watch a *directory* per scope rather than a file
+per artifact, since §4.1 requires a flow that appears on disk to appear in the sidebar without
+anyone having opened it.
+
+`renderer:flow-watch-scope` resolves with the flows already present rather than relying on the
+watcher's initial `add` burst. Both would work — chokidar's `ignoreInitial: false` emits one `add`
+per existing file — but a slice that can populate from the call it made has a defined moment at
+which the section is complete, and one that only accumulates pushes never knows whether it is still
+loading or simply empty.
 
 All of it is registered by `registerFlowIpc` in a new `bruno-electron/src/ipc/flow/` — the single
 `require('./ipc/flow')` + call that 001 §13.4 already claims in `bruno-electron/src/index.js`.
@@ -868,6 +884,10 @@ type CancelRequest = { runId: string };
 
 // renderer:flow-list-runs  ->  RunIndexEntry[] (§11.2)
 type ListRunsRequest = { scopeRoot: string; flow?: string };
+
+// renderer:flow-watch-scope    ->  FlowTreeEntry[], the flows already on disk
+// renderer:flow-unwatch-scope  ->  void
+type WatchScopeRequest = { scopeRoot: string; collectionRoot?: string };
 
 // renderer:flow-read-capture  ->  StepCapture (§11.2)
 type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; attempt: number };

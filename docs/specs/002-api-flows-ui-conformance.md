@@ -429,8 +429,9 @@ buffer keyed by nothing would satisfy the first and quietly break the second.
 
 ### U5.6 The watcher reports, and parses nothing
 
-Adding, editing and deleting a `.flow.yml` under a workspace and under a collection each emit one
-`main:flow-tree-updated`. A file that is not valid YAML still emits `addFile`.
+`renderer:flow-watch-scope` resolves with the flows already on disk. Adding, editing and deleting a
+`.flow.yml` under a workspace and under a collection then each emit one `main:flow-tree-updated`, and
+`renderer:flow-unwatch-scope` stops them. A file that is not valid YAML still appears.
 
 *Pins 002 §4.1, §11.3.* A watcher that parsed would have to decide what to show for a file that does
 not parse, and the flow that most needs opening is the broken one.
