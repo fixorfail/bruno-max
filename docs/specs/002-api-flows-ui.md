@@ -697,6 +697,8 @@ type CapturedResponse = {
 type CapturedBody =
   | { kind: 'text';      contentType?: string; text: string }
   | { kind: 'binary';    contentType?: string; byteLength: number; file: string }
+  | { kind: 'upload';    sourcePath: string; filename: string;
+                         contentType: string; byteLength: number }   // by reference (001 §7.5)
   | { kind: 'multipart'; parts: CapturedPart[] };
 
 type CapturedPart =
@@ -744,6 +746,13 @@ Textual bodies — JSON included — are stored as `text` rather than as a parse
 shows is what crossed the wire rather than a re-serialization of it. `binary` names a sibling file
 because 001 §14.5 writes binary payloads out "with an appropriate extension" and never previews them;
 `file` is that artifact's name, resolved against the same `dir` the options carry.
+
+**`upload` and `binary` are not the same case, and only responses ever produce the second.** A
+request's binary body is always a file source (001 §7.5's `bodyFile:` and `!file` bodies), so 001
+§14.5's capture-by-reference rule applies to it exactly as it does to a multipart file part — the
+content is already in the repository, and naming the fixture is the more useful record. Folding both
+into `binary` would either copy every upload into every run's artifact or leave a `file` field
+pointing at a sibling that was deliberately never written.
 
 `CapturedPart` mirrors 001 §13.2's `MultipartPart` with one field swapped: `bytes` becomes
 `sourcePath` plus `byteLength`. That is 001 §14.5's capture-by-reference rule expressed in the type —

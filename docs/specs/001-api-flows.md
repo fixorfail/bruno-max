@@ -2489,7 +2489,9 @@ it to read a run back — a host-side writer would put one layout in two impleme
 CLI and app produce directories neither can fully read. The rule "the engine never touches `fs`"
 (§7.4, §17) is unchanged: these are ports, and a conformance run supplies an in-memory
 implementation exactly as it does for `ReadFile`. All three carry the same containment rule as
-`ReadFile`: a path outside the scope root is refused before the port is called.
+`ReadFile`: a path outside the capture root is refused before the port is called, and the capture
+root is inside the scope root unless the operator moved it with `--capture-dir` — §14.5 has the one
+exception and why it is narrow.
 
 `ReadSpec` loads an OpenAPI document named by an `apis:` binding (§6.2), whether that source is a
 relative path or an `https://` URL. It is separate from `ReadFile` because the two have different
@@ -3186,17 +3188,31 @@ untruncated payload is written to an artifact directory:
 
 ```
 .bruno-runs/
-  2026-08-05T14-22-01Z-a3f9/
+  2026-08-05T14-22-01Z-a3f9/          # startedAt, made path-safe, + the runId's first four hex
     run.json
     summary.json
     verify_ledger/
-      attempt-1.request.json
-      attempt-1.response.json
+      attempt-1.json
     await_settlement/
-      attempt-1.response.json
+      attempt-1.json
       ...
-      attempt-10.response.json
+      attempt-10.json
+    export_ledger/
+      attempt-1.json                  # names the sibling below
+      attempt-1.response.pdf
 ```
+
+**One file per attempt, holding the whole `StepCapture`** (002 §11.2) — request, response,
+assertions and schema-validation outcomes together, which is exactly the object `readCapture`
+returns. Splitting it into `attempt-1.request.json` and `attempt-1.response.json` would mean a third
+file for the outcomes, three reads to answer one question, and three partial states a killed run can
+leave behind. The ten-attempt poll is the case that decides it: ten files rather than thirty, each
+one independently parseable, which is what makes an interrupted run readable at all.
+
+**Textual bodies are stored inline and untruncated.** Binary bodies are **never** previewed and
+never inlined: the capture records content type and byte length and names a sibling artifact written
+with an extension derived from the content type — `attempt-1.request.<ext>` and
+`attempt-1.response.<ext>`.
 
 ```json
 "capture": {
@@ -3205,14 +3221,33 @@ untruncated payload is written to an artifact directory:
     "preview": "{\"entries\":[...",
     "truncated": true,
     "originalSize": 2101440,
-    "full": ".bruno-runs/2026-08-05T14-22-01Z-a3f9/verify_ledger/attempt-1.response.json"
+    "full": ".bruno-runs/2026-08-05T14-22-01Z-a3f9/verify_ledger/attempt-1.json"
   }
 }
 ```
 
-Previews truncate at `config.capturePreviewBytes` (default 8 KB). **Binary bodies are never
-previewed** — the capture records content-type and size, and the full body is written with an
-appropriate extension. Dataset iterations nest under a per-iteration subdirectory.
+Previews truncate at `config.capturePreviewBytes` (default 8 KB). The `preview`, `truncated` and
+`originalSize` fields are the *reporter's* inline copy, and never appear in the file `full` points
+at — that is what "storage is split" means.
+
+**A step directory exists only where a step made a call.** Skipped steps and `uses:` containers
+record their status and reason in `summary.json` and store nothing else, so listing a run directory
+yields exactly the steps that were attempted — which is the list 002 §10 renders for a run whose
+`summary.json` is missing.
+
+**Each step id is one flat directory.** A sub-flow's namespaced `auth/login` becomes `auth__login`
+rather than a nested `auth/login/`: a run directory then lists as the step ids it holds instead of
+having to be walked, and a container step can never be both a directory's parent and a step
+directory itself. §5.2 already constrains ids to `^[a-zA-Z_][a-zA-Z0-9_]*$`, so the only hazards
+left are the Windows reserved device names an id may legally spell — `CON`, `PRN`, `AUX`, `NUL`,
+`COM1`–`COM9`, `LPT1`–`LPT9` — and total path length. A reserved name takes a trailing `_`, and a
+segment over 64 characters is truncated with a short hash of the full id appended, per
+`.claude/rules/cross-platform.md`.
+
+**Dataset iterations nest under a per-iteration subdirectory** — `iteration-0/verify_ledger/…` —
+and *only* when the flow declares a `dataset:`. A flow without one runs a single iteration whose
+index is always `0` (§13.2), and an `iteration-0/` level that never has a sibling is a directory
+every reader would have to know to skip.
 
 #### `run.json` and `summary.json`
 
@@ -3231,7 +3266,10 @@ can see and cannot cover for the ones it cannot. Such a run has **no status**, a
 synthesize one; the captures that exist are the record of what happened.
 
 **Uploaded files are captured by reference, not by content** (§7.5): source path, filename, content
-type and byte length. Copying them in would put the fixture corpus into every run's artifact, and
+type and byte length. The source path is the one the flow wrote, relative to it rather than
+absolute — `run.json` names the flow, so the reference resolves, and an absolute path would record
+one machine's layout in an artifact meant to be read on another. Copying them in would put the
+fixture corpus into every run's artifact, and
 unlike a response body the content is already in the repository — the reference is the more useful
 record anyway, since it names which fixture was sent.
 
@@ -3249,6 +3287,14 @@ the collection root for a collection-scoped run, the workspace root for a worksp
 is never placed relative to the current working directory, so the same command produces the same
 layout wherever it is invoked from. `--capture-dir` overrides it.
 
+**`--capture-dir` is the one exception to §13.2's scope-root containment, and only for the root
+itself.** Containment exists because a *flow file* names the paths it reads (§7.4), and a flow
+arriving on a teammate's branch must not be able to reach outside the scope. The capture root is
+named by whoever ran the command, not by the flow — a CI job writing artifacts to a build directory
+is the ordinary case, and refusing it would leave `--capture-dir` with nothing useful to point at.
+Everything *inside* the root is still engine-computed and still contained: no step id, iteration
+index or artifact name can escape the run directory, which is the property the rule was protecting.
+
 `.bruno-runs/` must be added to that scope's `.gitignore` on creation — captured payloads are run
 output, not source, and they contain response data that has no business in a repository.
 
@@ -3256,10 +3302,6 @@ output, not source, and they contain response data that has no business in a rep
 `.bruno-runs/` in *this repository*, which covers runs against the collections living here. A
 collection or workspace a user opens from anywhere else has its own root and its own repository, and
 only the on-creation write reaches it.
-
-Step ids appear in filesystem paths, so they are sanitized and length-limited per
-`.claude/rules/cross-platform.md` before use — Windows path limits and reserved device names
-(`CON`, `PRN`, `AUX`, …) apply.
 
 ### 14.6 Status and reason vocabulary
 

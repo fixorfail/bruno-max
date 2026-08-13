@@ -64,7 +64,14 @@ tests/conformance/
   f3-batch-settlement.spec.js
   f4-partner-acceptance.spec.js
   regressions.spec.js
+  capture.spec.js             # R4g2 and R4n — the artifact directory, asserted through the write ports
 ```
+
+The write ports (`WriteFile`, `ListDirectory`, `RemoveDirectory`) are stubbed as an **in-memory
+filesystem** for the same reason `ReadFile` is, and `capture.spec.js` asserts §14.5's layout against
+it. That layout is a contract two hosts and 002 §11.2's readers depend on, so it is asserted as a set
+of *paths* rather than through a result field — a divergence has to surface here rather than as the
+app failing to open a run the CLI wrote.
 
 `runFlow` returns the per-step outcome table, the flow status, and the exit code, because that
 triple is what every scenario below asserts on.
@@ -944,6 +951,11 @@ with, so the layout is asserted without touching disk.
 | after a run aborted before completion, `run.json` is present and `summary.json` absent | this is the interrupted state, and it is legible rather than corrupt |
 | an interrupted run's existing step captures parse | the captures are the only record of what happened |
 | `run.json` names the flow even when the run produced no steps at all | a flow that failed validation still occupies a directory |
+| a retried step writes one `attempt-N.json` per attempt, each carrying that attempt's own request, response, assertions and validation | §14.5's unit is the attempt, and a file per attempt is what lets a poll be read one call at a time |
+| a skipped step and a `uses:` container write no directory at all | listing the run directory is how 002 §10 enumerates the steps that were attempted |
+| a sub-flow internal | lands in a flat `auth__login/`, not a nested `auth/login/` |
+| a flow with a `dataset:` versus one without | `iteration-<n>/` appears only for the first — an always-present level a reader must skip is worse than none |
+| `--no-capture` | no path is passed to `WriteFile` at all, and the run's result is otherwise identical |
 
 Killing the run for the third row means terminating without the cancellation path of §11.3 — a
 `SIGKILL` equivalent, not a signal the engine handles, since a clean cancel writes its summary.
@@ -1088,6 +1100,28 @@ Two negative controls, because they define the schema's boundary: a flow whose `
 exist in the bound document, and one with a cyclic `depends`, must both **pass** the schema and fail
 only at §14.3. A schema that rejects them has grown semantic knowledge it cannot keep correct.
 
+### R4n — Redaction
+
+**Pins:** §14.4, and §14.5's rule that the artifact directory is redacted exactly as reporter output
+is. Asserted against the capture rather than stdout, because that is the copy a CI job uploads and
+the one `--show-sensitive` can never reach.
+
+| Case | Expected |
+|---|---|
+| a step with an `Authorization:` header written straight into the flow file | `••••` in the capture — the case provenance cannot catch, which is why the denylist exists |
+| `config.redactHeaders: [X-Legacy-Key]` | masked alongside the built-ins, and the built-ins still masked |
+| a repeated response header on the list (`Set-Cookie`) | every value masked, not just the first |
+| a header not on the list | untouched; a denylist that quietly became an allowlist would empty every capture |
+| the mask itself | a fixed `••••` whatever the secret's length — a length-preserving mask leaks the size |
+| a value from a `secret: true` environment entry, used in a query param and echoed back in an error body | masked in both, by provenance rather than by name |
+| the same value promoted into a shared slot (§9.1) | still masked — tracking is by value, so promotion carries it for free |
+| `--show-sensitive` | changes stdout only; the capture file is byte-identical with and without it |
+
+The last three need a host that knows which environment entries are `secret: true`; §13.2's
+`VariableTiers` has no field for it and neither host loads environments for flows yet, so the
+provenance half of §14.4 has no input to track. The rows are here because the policy is one policy —
+a suite that tested only the denylist would read as if §14.4 had one mechanism.
+
 ### R5 — Unresolved variables never reach the wire
 
 Assert that a declared-but-unwritten `shared` slot interpolated into a body sends `""` and **not**
@@ -1144,3 +1178,5 @@ it belongs in another test suite.
 | — | Retry amplifying non-idempotent failures | R2 |
 | — | Skipping to a green exit on unmatched data (`failOnUnresolved`) | F4.2, F1.1, R4b |
 | — | A run had no identity until it finished (§14.5 `run.json`) — found while writing [002](./002-api-flows-ui.md) | R4g2 |
+| — | §14.5's per-attempt layout could not hold what `readCapture` returns — found implementing it | R4g2 |
+| — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |
