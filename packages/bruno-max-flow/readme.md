@@ -21,9 +21,10 @@ capture directory in both directions, and 002 §11.1's resolved graph.
 Not implemented: cookie-jar scoping (§7.6), the §5.4 document schema, and **the
 primary half of §14.4's redaction**. §14.4 specifies two
 mechanisms; the header-name denylist is in `redact.ts`, and provenance tracking is not, because
-§13.2's `VariableTiers` carries no field saying which environment entries are `secret: true` and
-neither host loads environments for flows yet — there is nothing yet to track. It lands with the
-host work that supplies it; 001-C's R4n holds the rows either way.
+§13.2's `variables` carries no field saying which environment entries are `secret: true`. That input
+now exists on one side — the Electron host receives whole variable entries with the flag intact
+(002 §7.2, 002-C U5.2) — so what remains is a tier field for it to travel in and the tracking
+itself; 001-C's R4n holds the rows either way.
 `config.capturePreviewBytes` is likewise unread: previews are the reporter's inline copy, and no
 flow reporter writes one yet.
 `tests/conformance/fixtures/readme.md` lists the conformance rows that go with all of these.
@@ -68,7 +69,20 @@ loading and the script runtime — is fork-owned under `packages/bruno-cli/src/f
 through a single auto-registered `commands/flow.js`, so the CLI costs no upstream edit beyond the
 dependency line §13.4's manifest already lists.
 
-The Electron host and the app surface ([002](../../docs/specs/002-api-flows-ui.md)) are not built.
+`bruno-electron` is the second, under `src/ipc/flow/` with its watcher in `src/app/flowsWatcher.js`,
+serving 002 §11.3's channels. Its `ExecuteRequest` is the app's own `configureRequest`, so a flow
+step inherits the proxy settings, client certificates, cookie jar and OAuth2 token cache a request
+already gets (002 §7.3) — which is the payoff the port design was for, and the reason
+`MaterializedRequest.auth` had to become Bruno's real `Auth` shape rather than the flat form a flow
+authors (001 §6.4, 001-C R4j).
+
+Two limits worth knowing, both recorded where they belong rather than only here. Cookie-jar scoping
+(§7.6) is not honoured: `bruno-electron`'s cookie jar is process-wide, so `StepContext.cookieJar` has
+nothing to map onto and dataset iterations share cookies. And a collection in **safe mode** cannot
+run a flow's `script:` forms — quickjs discards the value a script evaluates to, and the port refuses
+rather than silently running it in the node VM.
+
+**The renderer surface (002 §4–§10) is not built.** The main process is the half it calls into.
 
 ## The engine sends no HTTP
 
