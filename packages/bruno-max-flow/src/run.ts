@@ -142,8 +142,17 @@ const scopeRoot = (state: RunState): string =>
 const readText = async (state: RunState, file: string): Promise<string> =>
   (await state.options.ports.readFile(file, state.flowContext)).toString('utf8');
 
-const loadFlow = async (state: RunState, file: string): Promise<NormalizedFlow> =>
-  normalizeFlow(parseDocument(await readText(state, file)), file);
+const loadFlow = async (state: RunState, file: string): Promise<NormalizedFlow> => {
+  const flow = normalizeFlow(parseDocument(await readText(state, file)), file);
+  // `bru flow validate` reports these as diagnostics and exits 2 before a run is attempted (§14.3),
+  // so reaching here means nobody validated. Refusing is the point: the parser recovers a partial
+  // tree from a syntax error, and running it would send requests the file does not describe.
+  if (flow.errors.length) {
+    const [first] = flow.errors;
+    throw new Error(`${file}:${first.line}:${first.column} ${first.message}`);
+  }
+  return flow;
+};
 
 const scriptRunner = (state: RunState): ScriptRunner => (source, args) =>
   state.options.ports.runScript(source, args, state.flowContext);

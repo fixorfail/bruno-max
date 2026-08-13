@@ -378,6 +378,16 @@ const validate = async (file, options = {}) => {
   });
 };
 
+/** 002 §11.1's read-only entry, over the same two ports for the same reason. */
+const describe_ = async (file, options = {}) => {
+  const { ports } = createPorts(options);
+  return engine.describeFlow({
+    entry: flowPath(file),
+    scope: { workspaceRoot: FIXTURES },
+    ports: { readFile: ports.readFile, readSpec: ports.readSpec }
+  });
+};
+
 /**
  * A committed fixture with an edit applied, served from memory beside the original so its relative
  * `apis:` and `uses:` paths still resolve.
@@ -402,4 +412,4 @@ const variant = (file, mutate) => {
   return { entry, files: { [entry]: stringify(document) } };
 };
 
-module.exports = { runFlow, validate, variant, FLOWS };
+module.exports = { runFlow, validate, describeFlow: describe_, variant, FLOWS };

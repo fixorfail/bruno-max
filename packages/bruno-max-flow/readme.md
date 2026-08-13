@@ -13,12 +13,12 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 
 ## Status
 
-`runFlow`, `validateFlow`, `listRuns` and `readCapture` are implemented and the conformance suite is
-green — F1–F4 and the engine-level rows of 001-C §7. What that covers is the §7 materialization
-pipeline, the §10.2 dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's
-sub-flows, and §14.5's capture directory in both directions.
+**All five entry points are implemented** and the conformance suite is green — F1–F4 and the
+engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
+dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's sub-flows, §14.5's
+capture directory in both directions, and 002 §11.1's resolved graph.
 
-Not implemented: `describeFlow`, cookie-jar scoping (§7.6), the §5.4 document schema, and **the
+Not implemented: cookie-jar scoping (§7.6), the §5.4 document schema, and **the
 primary half of §14.4's redaction**. §14.4 specifies two
 mechanisms; the header-name denylist is in `redact.ts`, and provenance tracking is not, because
 §13.2's `VariableTiers` carries no field saying which environment entries are `secret: true` and
@@ -34,7 +34,7 @@ The surface is five functions:
 |---|---|---|
 | `runFlow` | 001 §13.2 | implemented |
 | `validateFlow` | 001 §13.2, §14.3 | implemented |
-| `describeFlow` | 002 §11.1 | — |
+| `describeFlow` | 002 §11.1 | implemented |
 | `listRuns` | 002 §11.2 | implemented |
 | `readCapture` | 002 §11.2 | implemented |
 
@@ -47,9 +47,13 @@ custom tags. R4p pins both.
 
 The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5,
 `openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
-§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4, `capture.ts` §14.5, and
+§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4, `capture.ts` §14.5,
 `history.ts` 002 §11.2 — the reader of what `capture.ts` writes, sharing its path computation so the
-layout has one implementation rather than two.
+layout has one implementation rather than two — and `describe.ts` 002 §11.1.
+
+`references.ts` is shared by `validate.ts` and `describe.ts` for the same reason: §8.3 makes raw
+`.body` access legal but *undeclared*, so the validator's warning and the graph's dashed edge come
+from one answer about what a step reads. Either alone is a claim the other would contradict.
 
 **`listRuns` distinguishes `running` from `interrupted` per process.** Both are a `run.json` with no
 `summary.json`, and only the process executing one can tell them apart (002 §10), so `runFlow`

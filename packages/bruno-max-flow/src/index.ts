@@ -16,8 +16,5 @@ export * from './types/capture';
 
 export { runFlow } from './run';
 export { validateFlow } from './validate';
+export { describeFlow } from './describe';
 export { listRuns, readCapture } from './history';
-
-// Still to come, per 002 §11.1:
-//
-//   describeFlow(options: DescribeOptions): Promise<FlowDescription>

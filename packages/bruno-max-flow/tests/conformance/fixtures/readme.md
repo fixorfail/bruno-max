@@ -50,6 +50,7 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r4e-multipart.flow.yml` · `r4e-binary.flow.yml` · `r4e-ambiguous.flow.yml` | R4e — §7.5's three assembly rules: parts, raw bytes, and the media type a step must select |
 | `r4g-run-budget.flow.yml` | R4g — a poll that spends §11.3's budget, so the steps after it meet a stopped run |
 | `r4n-redaction.flow.yml` | R4n — credentials written straight into a flow file, which is the only case §14.4's denylist exists for |
+| `r4q-graph.flow.yml` | R4q — every edge kind at once, because the distinctions between them are what 002 §5.3 calls load-bearing and a fixture per kind would never catch two being conflated |
 
 R4b's two override rows are not files: they are the `r4-output-unproduced` fixture with one field
 changed, which `harness.js`'s `variant()` applies in memory. A near-duplicate file would have to be

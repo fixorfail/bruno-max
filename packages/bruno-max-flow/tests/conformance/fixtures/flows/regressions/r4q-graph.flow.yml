@@ -1,0 +1,65 @@
+# R4q — one flow carrying every edge kind at once, because the distinctions between them are what
+# 002 §5.3 calls load-bearing and a fixture per kind would never catch two being conflated.
+#
+# `sign_in` and `create` are an implicit sequence; `fallback` hangs off a status-conditioned edge;
+# `settle` is an `any:` join over both; `audit` reads a declared output, the raw body of another
+# step, and a shared slot.
+version: 1
+
+meta:
+  name: R4q — every edge kind
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  failOnUnresolved: false
+
+shared: [ref]
+
+steps:
+  - id: sign_in
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+    outputs:
+      token: data.token
+
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+    shared:
+      ref: thingId
+
+  - id: fallback
+    operation: regress-api#createThing
+    depends:
+      - on: create
+        status: [failed]
+    failOnStatusCode: false
+    retry:
+      maxAttempts: 3
+    body:
+      name: fallback widget
+
+  - id: settle
+    depends:
+      any:
+        - on: create
+        - on: fallback
+    operation: regress-api#getState
+    when: steps.create.ok eq true
+
+  - id: audit
+    operation: regress-api#getThing
+    depends: [settle]
+    pathParams:
+      id: "{{steps.create.thingId}}"
+    query:
+      ref: "{{shared.ref}}"
+      raw: "{{steps.sign_in.body.data.role}}"
+      again: "{{steps.create.thingId}}"

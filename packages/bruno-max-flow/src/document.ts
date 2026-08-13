@@ -57,9 +57,25 @@ export type Position = { line: number; column: number };
  */
 export type Positions = { at(path: (string | number)[]): Position | undefined };
 
-export type ParsedDocument = { model: Record<string, unknown>; positions: Positions };
+/** A syntax error, with the place it was found. §14.3 reports these; nothing runs past one. */
+export type ParseError = { message: string } & Position;
 
-export type Depends = { mode: 'all' | 'any'; entries: { on: string; status: StepStatus[] }[] };
+export type ParsedDocument = {
+  model: Record<string, unknown>;
+  positions: Positions;
+  errors: ParseError[];
+};
+
+export type Depends = {
+  mode: 'all' | 'any';
+  entries: { on: string; status: StepStatus[] }[];
+  /**
+   * The edge came from §9.1's implicit sequence rather than from the file. Normalization otherwise
+   * erases the difference, and 002 §5.3 needs it: `depends: [previous]` and no `depends:` at all
+   * produce the same entries, and drawing them identically hides the rule that surprises authors.
+   */
+  implicit: boolean;
+};
 
 export type RetryPolicy = {
   maxAttempts: number;
@@ -149,6 +165,8 @@ export type NormalizedFlow = {
   exports: Record<string, string>;
   /** Retained so a caller can anchor to a node no step owns — an `apis:` binding, say. */
   positions: Positions;
+  /** Non-empty means nothing else here is trustworthy; §14.3 reports these and stops. */
+  errors: ParseError[];
   steps: NormalizedStep[];
 };
 
@@ -177,13 +195,17 @@ const normalizeDepends = (raw: unknown, previous?: string): Depends => {
   };
 
   if (raw === undefined) {
-    return { mode: 'all', entries: previous ? [{ on: previous, status: DEFAULT_STATUS }] : [] };
+    return {
+      mode: 'all',
+      entries: previous ? [{ on: previous, status: DEFAULT_STATUS }] : [],
+      implicit: previous !== undefined
+    };
   }
-  if (Array.isArray(raw)) return { mode: 'all', entries: raw.map(entry) };
+  if (Array.isArray(raw)) return { mode: 'all', entries: raw.map(entry), implicit: false };
 
   const mapping = asRecord(raw);
-  if (Array.isArray(mapping.any)) return { mode: 'any', entries: mapping.any.map(entry) };
-  return { mode: 'all', entries: asArray(mapping.all).map(entry) };
+  if (Array.isArray(mapping.any)) return { mode: 'any', entries: mapping.any.map(entry), implicit: false };
+  return { mode: 'all', entries: asArray(mapping.all).map(entry), implicit: false };
 };
 
 const normalizeOutputs = (raw: unknown): OutputSpec[] =>
@@ -316,8 +338,17 @@ export const parseDocument = (text: string): ParsedDocument => {
   const lineCounter = new YAML.LineCounter();
   const document = YAML.parseDocument(text, { ...OPTIONS, lineCounter });
 
+  const errors = document.errors.map((error) => {
+    const { line, col } = lineCounter.linePos(error.pos[0]);
+    return { message: error.message.split('\n')[0], line, column: col };
+  });
+
   return {
-    model: asRecord(document.toJS()),
+    // A document with syntax errors yields **nothing**, rather than the partial tree the parser
+    // recovered. Recovery is for an editor drawing squiggles; handing the engine `steps: [{id: 'a'},
+    // 'stray text']` would run a flow nobody wrote (§14.3).
+    model: errors.length ? {} : asRecord(document.toJS()),
+    errors,
     positions: {
       at: (path) => {
         const node = path.length === 0 ? document.contents : document.getIn(path, true);
@@ -333,7 +364,7 @@ export const parseDocument = (text: string): ParsedDocument => {
 };
 
 export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedFlow => {
-  const { model: document, positions } = parsed;
+  const { model: document, positions, errors } = parsed;
   const config = normalizeConfig(document.config);
   const meta = asRecord(document.meta);
   const rawSteps = asArray<Record<string, unknown>>(document.steps).map(asRecord);
@@ -398,6 +429,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       Object.entries(asRecord(document.exports)).map(([name, value]) => [name, String(value)])
     ),
     steps,
-    positions
+    positions,
+    errors
   };
 };

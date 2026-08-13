@@ -14,41 +14,12 @@ import * as path from 'path';
 
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
 import { SpecLoader } from './openapi';
+import { referenceKind, referencesIn, referencesOf, type Reference } from './references';
 import type { ValidateOptions } from './types/options';
 import type { Diagnostic } from './types/result';
 import type { FlowContext } from './types/ports';
 
-const REFERENCE = /\{\{\s*(steps|shared)\.([^}\s.]+)(?:\.([^}\s]+))?\s*\}\}/g;
-
-type Reference = { root: 'steps' | 'shared'; name: string; text: string };
-
-const referencesIn = (value: unknown, found: Reference[] = []): Reference[] => {
-  if (typeof value === 'string') {
-    for (const match of value.matchAll(REFERENCE)) {
-      found.push({ root: match[1] as Reference['root'], name: match[2], text: `${match[1]}.${match[2]}` });
-    }
-    return found;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((entry) => referencesIn(entry, found));
-    return found;
-  }
-  if (value && typeof value === 'object') {
-    Object.values(value as Record<string, unknown>).forEach((entry) => referencesIn(entry, found));
-  }
-  return found;
-};
-
-/** Bare `steps.x` / `shared.x` operands, which the expression dialect resolves as references. */
-const expressionReferences = (step: NormalizedStep): Reference[] =>
-  [...step.assert.map((assertion) => assertion.source), ...step.when.map((when) => (typeof when === 'string' ? when : ''))]
-    .flatMap((source) => source.split(/\s+/))
-    .flatMap((token) => {
-      const [root, name] = token.split('.');
-      return root === 'steps' || root === 'shared' ? [{ root, name, text: `${root}.${name}` } as Reference] : [];
-    });
-
-const ancestorsOf = (flow: NormalizedFlow): Map<string, Set<string>> => {
+export const ancestorsOf = (flow: NormalizedFlow): Map<string, Set<string>> => {
   const direct = new Map(flow.steps.map((step) => [step.id, step.depends.entries.map((entry) => entry.on)]));
   const closure = new Map<string, Set<string>>();
 
@@ -98,6 +69,20 @@ type Tools = { specs: SpecLoader; readFlow: (file: string) => Promise<Normalized
 const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<string>): Promise<Diagnostic[]> => {
   const diagnostics: Diagnostic[] = [];
   const file = flow.file;
+
+  // Every check below reads the model, and a document that did not parse has none worth reading —
+  // reporting "step undefined depends on undefined" over a stray indent buries the one line that
+  // matters. 002 §6 anchors these in the document view, which is why they carry a position.
+  if (flow.errors.length) {
+    return flow.errors.map((error) => ({
+      severity: 'error' as const,
+      code: 'parse-error',
+      message: error.message,
+      file,
+      line: error.line,
+      column: error.column
+    }));
+  }
 
   /**
    * A diagnostic anchors to the step it names, or to an explicit node for the checks no step owns
@@ -182,7 +167,8 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     );
   }
 
-  const checkReference = (step: NormalizedStep, reference: Reference, where: string) => {
+  const checkReference = (step: NormalizedStep, reference: Reference) => {
+    const where = reference.where;
     if (reference.root === 'steps') {
       if (!ids.has(reference.name)) {
         error('unknown-step-reference', `${where} references ${reference.text}, which is not a step`, step.id);
@@ -192,6 +178,19 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
         error(
           'non-ancestor-reference',
           `${where} references ${reference.text}, which is not a transitive ancestor of ${step.id}`,
+          step.id
+        );
+        return;
+      }
+
+      // §8.3: raw `.body` / `.headers` access is permitted — refusing it would push people to
+      // declare junk outputs — but it is not a declared data path, and the warning is what keeps
+      // "make data paths explicit" enforceable by tooling rather than by convention.
+      const producer = flow.steps.find((candidate) => candidate.id === reference.name);
+      if (referenceKind(reference, producer) === 'raw') {
+        warn(
+          'undeclared-dependency',
+          `${where} reads ${reference.text}.${reference.field} directly instead of a declared output`,
           step.id
         );
       }
@@ -214,31 +213,16 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   };
 
   for (const step of flow.steps) {
-    const inline = referencesIn([step.body, step.query, step.headers, step.pathParams, step.args, step.bodyFile]);
-    for (const reference of [...inline, ...expressionReferences(step)]) {
-      checkReference(step, reference, `${step.id}`);
+    // §6.4 and §6.3 are covered by the same sweep: an auth token and a host are data dependencies
+    // exactly as a body field is, and a step resolving either from a value the run has not produced
+    // does not fail cleanly — it sends a real request with a malformed credential or host.
+    for (const reference of referencesOf(step, flow)) {
+      checkReference(step, reference);
     }
 
-    // §6.4 and §6.3: an auth token and a host are data dependencies exactly as a body field is,
-    // and a step that resolves either from a value the run has not produced does not fail
-    // cleanly — it sends a real request with a malformed credential or to a malformed host.
     const profileName = step.auth || (step.operation ? flow.apis[step.operation.alias]?.auth : undefined);
-    if (profileName && profileName !== 'none') {
-      const profile = flow.authProfiles[profileName];
-      if (!profile) {
-        error('unknown-auth-profile', `${step.id} authenticates with ${profileName}, which is not declared`, step.id);
-      } else {
-        for (const reference of referencesIn(profile)) {
-          checkReference(step, reference, `${step.id}'s auth profile ${profileName}`);
-        }
-      }
-    }
-
-    const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
-    if (binding) {
-      for (const reference of referencesIn([binding.baseUrl, binding.defaultHeaders, binding.defaultQuery])) {
-        checkReference(step, reference, `${step.id}'s api binding ${binding.alias}`);
-      }
+    if (profileName && profileName !== 'none' && !flow.authProfiles[profileName]) {
+      error('unknown-auth-profile', `${step.id} authenticates with ${profileName}, which is not declared`, step.id);
     }
 
     // §10.3: the opt-out alone allows any status at all, including the 500 it did not mean.

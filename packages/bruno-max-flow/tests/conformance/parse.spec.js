@@ -8,7 +8,7 @@
 const path = require('path');
 
 const { parseDocument, normalizeFlow, FileRef, DROP } = require('../../src/document');
-const { validate, variant, FLOWS } = require('./harness');
+const { runFlow, validate, variant, FLOWS } = require('./harness');
 
 const flow = (name) => `regressions/${name}`;
 
@@ -84,6 +84,47 @@ steps:
 describe('R4p — an empty document is an empty flow', () => {
   it('parses rather than crashing', () => {
     expect(parse('').steps).toEqual([]);
+  });
+});
+
+describe('R4p — a syntax error yields no model', () => {
+  const broken = 'version: 1\nsteps:\n  - id: a\n   bad indent\n';
+
+  // The parser recovers a partial tree from a syntax error, which is right for an editor drawing
+  // squiggles and wrong for an engine: the recovery here is `steps: [{id: 'a'}, 'bad indent']`, and
+  // running it would send requests the file does not describe.
+  it('reports the error with its line and hands back nothing', () => {
+    const parsed = parseDocument(broken);
+
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toMatchObject({ line: 4, column: 1 });
+    expect(parsed.model).toEqual({});
+    expect(parse(broken).steps).toEqual([]);
+  });
+
+  it('is a parse-error diagnostic rather than a crash', async () => {
+    const entry = path.join(FLOWS, 'regressions', 'r4p-broken.variant.flow.yml');
+    const diagnostics = await validate(entry, { files: { [entry]: broken } });
+
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ severity: 'error', code: 'parse-error', file: entry, line: 4 });
+  });
+
+  // Everything downstream reads the model, so continuing would bury the one line that matters under
+  // "step undefined depends on undefined".
+  it('reports nothing else about the file', async () => {
+    const entry = path.join(FLOWS, 'regressions', 'r4p-broken2.variant.flow.yml');
+    const diagnostics = await validate(entry, {
+      files: { [entry]: `${broken}apis:\n  missing: ./nope.yml\n` }
+    });
+
+    expect(diagnostics.map((entry_) => entry_.code)).toEqual(['parse-error']);
+  });
+
+  it('refuses to run', async () => {
+    const entry = path.join(FLOWS, 'regressions', 'r4p-broken3.variant.flow.yml');
+
+    await expect(runFlow(entry, { files: { [entry]: broken } })).rejects.toThrow(/:4:1 /);
   });
 });
 
