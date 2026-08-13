@@ -65,6 +65,7 @@ tests/conformance/
   f4-partner-acceptance.spec.js
   regressions.spec.js
   capture.spec.js             # R4g2 and R4n — the artifact directory, asserted through the write ports
+  history.spec.js             # R4o — the same directory read back through 002 §11.2's entries
 ```
 
 The write ports (`WriteFile`, `ListDirectory`, `RemoveDirectory`) are stubbed as an **in-memory
@@ -1121,6 +1122,31 @@ The last three need a host that knows which environment entries are `secret: tru
 `VariableTiers` has no field for it and neither host loads environments for flows yet, so the
 provenance half of §14.4 has no input to track. The rows are here because the policy is one policy —
 a suite that tested only the denylist would read as if §14.4 had one mechanism.
+
+### R4o — Reading a run back
+
+**Pins:** §14.5's layout, through 002 §11.2's `listRuns` and `readCapture`. These live here rather
+than in 002-C because the thing under test is the **round trip**: the reader is correct exactly when
+it recovers what the writer wrote, and 002-C §8 hands engine semantics to this file. 002-C's U4 rows
+assert the *app* renders what comes back.
+
+| Case | Expected |
+|---|---|
+| a finished run, listed | one entry, `state: 'complete'`, with `status` and `summary` from `summary.json` and `runId` / `flow` / `startedAt` from `run.json` |
+| a directory with `run.json` and no `summary.json`, for a run the engine is not executing | `state: 'interrupted'`, and **no** `status` — an interrupted run has no outcome and a reader must not synthesize one |
+| the same shape while `runFlow` is executing it | `state: 'running'`; the two are distinguishable only because the engine knows which runs it owns |
+| several runs | newest first, by `startedAt` rather than by directory name |
+| `flow:` supplied | runs of other flows in the same scope are excluded, and the filter works on an entry that has no `summary.json` |
+| a capture root that does not exist | an empty list, not a throw — no run has happened yet |
+| a directory not matching the run-directory naming, or one missing `run.json` | skipped; a run that cannot be attributed to a flow is not listed as one |
+| `readCapture` over every attempt a retried step wrote | each returns that attempt's own request, response, assertions and validation |
+| `readCapture` with and without `iteration` | resolves the nested and the flat layout respectively (§14.5) |
+| a step id needing sanitizing — a sub-flow's `auth/login` | resolves, because the reader computes the segment the writer did rather than its own |
+| a binary response body | `readCapture` returns `kind: 'binary'` naming the sibling; the reader does not inline it |
+
+The last row is the one that keeps the split honest: a reader that resolved the sibling and returned
+its bytes would put a 2 MB payload in every step-pane open, which is what "storage is split" exists
+to prevent.
 
 ### R5 — Unresolved variables never reach the wire
 

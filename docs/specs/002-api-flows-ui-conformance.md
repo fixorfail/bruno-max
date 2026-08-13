@@ -440,6 +440,9 @@ whose `step:end` has been received, which is the drift actually worth preventing
   conformance question.
 - **The `run.json` writer.** U4.8 and U4.9 assert the app reads it; that the *engine* writes it at
   run start belongs in 001-C once 001 §14.5 carries it (002 §11.4).
+- **`listRuns` and `readCapture` themselves.** §11.2 declares them here, but what makes them correct
+  is that they recover what 001 §14.5's writer wrote — a round trip, and so 001-C's R4o. U4.5–U4.10
+  assert the app renders what they return, which is the part that is this file's.
 
 ## 9. Traceability
 
