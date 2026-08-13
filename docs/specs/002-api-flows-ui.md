@@ -51,7 +51,7 @@ commitments something outside this feature depends on:
 
 | Contract | Where | Consumed by |
 |---|---|---|
-| `describeFlow`, `listRuns`, `readCapture` | §11.1, §11.2 | `bruno-electron`, and the future builder |
+| `describeFlow`, `listRuns`, `readRun`, `readCapture` | §11.1, §11.2 | `bruno-electron`, and the future builder |
 | The `ListDirectory` port | §11.2 | Every host of `@bruno-max/flow` |
 | IPC channel names | §11.3 | The renderer, and the e2e suite |
 | Upstream files touched | §12.1 | Re-checked after every merge from upstream |
@@ -676,6 +676,7 @@ could be built, because §6 requires a broken flow to open.
 
 ```ts
 declare function listRuns(options: ListRunsOptions): Promise<RunIndexEntry[]>;
+declare function readRun(options: ReadRunOptions): Promise<StoredRun>;
 declare function readCapture(options: ReadCaptureOptions): Promise<StepCapture>;
 
 type ListRunsOptions = {
@@ -692,6 +693,18 @@ type RunIndexEntry = {
   state: 'complete' | 'running' | 'interrupted';
   status?: RunResult['status'];        // 001 §14.6's vocabulary, only when state is 'complete'
   summary?: RunResult['summary'];      // likewise — both come from summary.json
+};
+
+type ReadRunOptions = {
+  dir: string;                         // a run directory, from `listRuns`
+  stepIds?: string[];                  // which ids to ask about — see below
+  iteration?: number;                  // which iteration's captures, for a dataset flow
+  ports: { readFile: ReadFile; listDirectory: ListDirectory };
+};
+
+type StoredRun = RunIndexEntry & {
+  result?: RunResult;                  // summary.json — absent on a running or interrupted run
+  capturedSteps: string[];             // the subset of `stepIds` that has a capture
 };
 
 type ReadCaptureOptions = {
@@ -804,6 +817,30 @@ also what lets 001 §7.4's scope-root containment be enforced by the engine for 
 as it is for fixture reads — a run directory outside the scope root is refused before the port is
 called.
 
+**`readRun` is the index/detail split.** `listRuns` answers "which runs are there" and must stay
+cheap enough to build a selector from — it reads two small files per directory and reports counts.
+Opening one run needs every step's outcome, which is the `iterations[].steps[]` that `summary.json`
+already holds, and putting that in `RunIndexEntry` would make listing twenty runs parse twenty full
+result sets to render twenty rows.
+
+It is a separate entry point rather than a flag on `listRuns` because the two return different
+shapes and §10 calls them at different moments — the selector on open, the reader on selection.
+
+`capturedSteps` is what makes §10's interrupted run render. A run that died before writing
+`summary.json` has no `StepResult` for anything, so the only evidence of what happened is which step
+directories exist; knowing them lets the graph show those steps as having run and the rest as
+never-started, without claiming an outcome for any of them. On a complete run it is redundant with
+`result`, and returning it anyway keeps one shape for both cases rather than making every consumer
+branch on which fields are present.
+
+**`stepIds` is an input rather than something the reader discovers, because 001 §14.5's directory
+name is a lossy encoding of the step id.** The segment replaces `/` with `__`, suffixes a reserved
+Windows device name, and truncates a long id to a hash — so `child__use` is either `child/use` or a
+step genuinely named `child__use`, and nothing on disk separates them. Walking the tree and inverting
+the names would answer confidently and sometimes wrongly. The caller already holds the ids it cares
+about — the graph `describeFlow` returned — so the decidable question is which of *those* have a
+capture, and the id-to-segment mapping stays in the engine, where §14.5 puts every path computation.
+
 The capture layout is a 001 contract (§14.5). A parser in the renderer would be a second reader of a
 format the CLI writes, and the two would drift the first time the layout gained a field — the same
 argument 001 §13.1 makes about request dispatch, applied to the artifact.
@@ -816,6 +853,7 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 | `renderer:flow-run` | invoke | Start a run; resolves with the `runId` |
 | `renderer:flow-cancel` | invoke | Abort a run by `runId` |
 | `renderer:flow-list-runs` | invoke | `listRuns` for a scope |
+| `renderer:flow-read-run` | invoke | One stored run's results |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
 | `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
 | `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
@@ -887,6 +925,9 @@ type ListRunsRequest = { scopeRoot: string; flow?: string };
 // renderer:flow-watch-scope    ->  FlowTreeEntry[], the flows already on disk
 // renderer:flow-unwatch-scope  ->  void
 type WatchScopeRequest = FlowScope;
+
+// renderer:flow-read-run  ->  StoredRun (§11.2)
+type ReadRunRequest = { dir: string };
 
 // renderer:flow-read-capture  ->  StepCapture (§11.2)
 type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; attempt: number };

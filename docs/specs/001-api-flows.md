@@ -2702,11 +2702,11 @@ authority rather than inferring it from a rejection it caused.
 
 #### The entry API
 
-Two entry points execute and validate. Three more are **read-only** — `describeFlow`, which returns
-the resolved graph, and `listRuns` / `readCapture`, which read `.bruno-runs/` back. They exist for
+Two entry points execute and validate. Four more are **read-only** — `describeFlow`, which returns
+the resolved graph, and `listRuns` / `readRun` / `readCapture`, which read `.bruno-runs/` back. They exist for
 the app and are specified in [002](./002-api-flows-ui.md) §11.1 and §11.2 rather than here, because
 nothing in this document consumes them; they are named here so the boundary's readers know the
-package's surface is five functions and not two.
+package's surface is six functions and not two.
 
 ```ts
 declare function runFlow(options: RunOptions): Promise<RunResult>;
@@ -2883,7 +2883,7 @@ running graph.
 
 ```ts
 type FlowEvent =
-  | { type: 'run:start';       runId: string; flow: string; iterationCount: number }
+  | { type: 'run:start';       runId: string; flow: string; iterationCount: number; captureDir?: string }
   | { type: 'iteration:start'; index: number; row?: Vars }
   | { type: 'step:start';      id: string; index: number; operation?: string }
   | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
@@ -2904,6 +2904,18 @@ turn a passing flow red.
 **Redaction is applied before emission**, not by the consumer (§14.4). Events are the most-copied
 thing in the system — logged, forwarded over IPC, rendered — so a raw secret in one would leak
 everywhere at once.
+
+**`run:start` carries `captureDir`**, absent when capture is disabled. `RunResult.captureDir` reports
+the same path, and reporting it only at the end would mean a consumer could not open a *running*
+step's capture — which is exactly what [002](./002-api-flows-ui.md) §9 does, and the engine knows the
+directory before the first step (§14.5 writes `run.json` into it at run start). A consumer that had
+to wait for `run:end` would show bodies only for runs that had already finished, which is the
+opposite of when they are wanted.
+
+Deriving it instead from a step's `capturePath` is what this avoids. That path is the step's own
+directory, so recovering the run's would mean stripping a step id off the end — and a sub-flow's id
+is namespaced (`auth/login`), so the strip is two segments for some steps and one for others. That is
+a path computation, and §14.5 gives every one of those to the engine.
 
 **Events are small and structured-clone-safe.** They carry ids, statuses and durations; bodies and
 uploaded files are not included, only the `capturePath` that holds them (§14.5). In the app the
