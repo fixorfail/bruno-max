@@ -2973,6 +2973,7 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `packages/bruno-cli/package.json` | add engine dependency | 1 |
 | `packages/bruno-electron/package.json` | add engine dependency | 1 |
 | `bruno-electron/src/index.js` | `require` + call `registerFlowIpc` | 2 |
+| `bruno-electron/src/index.js` | `await ipc/flow.shutdown()` in the `before-quit` chain (002 §4.2) | 1 |
 | `bruno-app/jsconfig.json` | add the `fork/*` path alias | 1 |
 | `bruno-app/…/RequestTabPanel/index.js` | import + delegate to the fork pane registry | 2 |
 | `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | import + a `default:` case delegating the label | 4 |

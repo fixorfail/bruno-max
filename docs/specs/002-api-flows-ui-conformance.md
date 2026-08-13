@@ -449,6 +449,17 @@ entirely and the app errors on open — which no unit test caught, because each 
 The second half is the opposite failure: putting `flow` in `nonReplaceableTabTypes` makes the tab
 permanent, and also singleton *per type*, so the second flow you open silently replaces the first.
 
+### U5.8 Quitting cancels a run; changing your mind does not
+
+Start a run, press ⌘Q, and dismiss the confirmation. The run is still executing and the flow watcher
+still reports file changes. Press ⌘Q again and confirm: the run's requests are aborted, its
+`status: [cancelled]` steps run their cleanup, and `summary.json` records the run `cancelled`.
+
+*Pins 002 §4.2, and 001 §11.3.* The first half is the defect this scenario exists for — hooking
+`main:start-quit-flow` looks correct and destroys a run for a quit that never happens. The second is
+what the CLI already does on Ctrl-C, and an app that skipped it would be worse than the terminal at
+the one thing 001 §11.3 guarantees.
+
 ---
 
 ## 8. Regressions not owned by a single scenario
@@ -555,6 +566,7 @@ whose `step:end` has been received, which is the drift actually worth preventing
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher that parses |
 | U5.7 | §4.2 | A tab the app's collection-scoped tab model cannot hold |
+| U5.8 | §4.2 | A cancelled quit that kills the run anyway; a confirmed one that skips cleanup |
 | R1, R2 | §8.1, §9 | Bodies on events; an unbatched stream |
 | R3 | §9 | A secret visible in the app but not in CI |
 | R4 | §11.1, §11.2 | The renderer growing its own parser |

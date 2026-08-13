@@ -207,15 +207,37 @@ Cancellation is therefore always explicit, from the run control — or from quit
 
 #### Quitting with a run in flight
 
-**The app cancels the run through 001 §11.3's path before it closes**, rather than letting the
-engine die with the process. In-flight requests are aborted, steps declaring `status: [cancelled]`
-get their cleanup within `config.cleanupGrace`, the run is recorded `cancelled`, and the window then
-closes.
+**The app cancels the run through 001 §11.3's path rather than letting the engine die with the
+process.** In-flight requests are aborted, steps declaring `status: [cancelled]` get their cleanup
+within `config.cleanupGrace`, and the run is recorded `cancelled`.
 
-This hooks the quit flow the app already has: `main:start-quit-flow` today prompts about unsaved
-requests through `providers/App/ConfirmAppClose/`. A run in flight has the stronger claim on that
-path — an unsaved request loses text the user can retype, while a killed run leaks whatever the flow
-created, on a real API.
+A run in flight has a stronger claim on the quit path than an unsaved request does — an unsaved
+request loses text the user can retype, while a killed run leaks whatever the flow created, on a real
+API.
+
+**It hangs off `app.on('before-quit')`, not off `main:start-quit-flow`.** This spec originally said
+the latter, and that is wrong: `main:start-quit-flow` fires when quit is *initiated*, and
+`providers/App/ConfirmAppClose/` lets the user dismiss the dialog and stay. Cancelling runs there
+kills them for a quit that never happens — pressing ⌘Q and changing your mind would destroy the run
+and stop the flow watcher.
+
+`before-quit` is the right seam because `bruno-electron/src/index.js` already runs a guarded async
+shutdown chain there — `closeAllWatchers()`, `ipc/mount.shutdown()`, `ipc/sqlite.shutdown()` — and
+then `app.exit(0)`. The flow host joins it as a fourth sibling, so quit waits for cleanup the same
+way it already waits for watcher teardown.
+
+**The consequence is that the window closes before cleanup finishes, not after.** `before-quit` is
+reached via `main:complete-quit-flow` → `mainWindow.destroy()` → `window-all-closed` → `app.quit()`,
+so by the time the flow host runs there is no window left to hold open. Every substantive promise
+above still holds — requests aborted, cleanup steps run, `summary.json` written — and only the
+ordering of the window disappearing differs.
+
+Holding the window until cleanup finished was considered and rejected. It needs `main:complete-quit-flow`
+to await the fork, and `ipcMain.handle` permits exactly one handler per channel, so it means editing
+an upstream handler rather than adding a line to a list. It would also freeze a visible window for up
+to `cleanupGrace`, which reads as a hang precisely when the app is supposed to be closing. A capped
+wait after the window is gone is the better trade, and the cap is a hang guard rather than a second
+policy: 001 §11.3 already bounds cleanup, and `runFlow` resolves as soon as it is done.
 
 The comparison that settles it is the CLI: Ctrl-C on `bru flow run` runs cleanup. An app that
 skipped it would be strictly worse than the terminal at the one thing 001 §11.3 exists to guarantee.

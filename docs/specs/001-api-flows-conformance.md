@@ -1276,6 +1276,7 @@ it belongs in another test suite.
 | — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |
 | — | 002 §7.2 asked the main process to resolve an environment it has no access to, and a file read would have silently emptied every secret — found implementing the Electron host | 002-C U5.1, U5.2 |
 | — | 002 §11.3 declared the IPC channel *names* a contract and pinned none of their payloads | 002-C U5 |
+| — | 002 §4.2 hooked quit at `main:start-quit-flow`, which fires when quit is *initiated* — a dismissed confirmation left the run aborted and the watcher closed. Found reviewing what to verify manually | 002-C U5.8 |
 | — | A flow tab carried no `collectionUid`, and every tab in the app belongs to a collection — the strip renders per collection, pathname dedupe needs one, the snapshot groups by one. Opening a flow errored the app — found in manual verification | 002-C U5.7 |
 | — | 002 §10 could not render a past run: `listRuns` reports counts and `readCapture` one attempt, so no entry point returned a stored run's per-step outcomes — found building the run selector | R4o |
 | — | §14.5's capture directory name is a lossy encoding of the step id (`/`→`__`, device suffix, hash truncation), so `capturedSteps` could not be recovered by walking the tree as 002 §11.2 first assumed | R4o |

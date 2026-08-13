@@ -19,9 +19,18 @@ const { buildVariables } = require('./variables');
  */
 const EVENT_FLUSH_MS = 16;
 
+/** runId -> { controller, done } — `done` is the `runFlow` promise, which quit has to wait on. */
 const running = new Map();
 const pendingEvents = new Map();
 let flushTimer = null;
+let watcher;
+
+/**
+ * A hang guard, not a policy. 001 §11.3 already bounds cleanup by `config.cleanupGrace` (default
+ * 30000 ms) and `runFlow` resolves as soon as the cleanup steps finish, so this only matters if a
+ * port never settles. Capping it lower would silently truncate the very window §4.2 promises.
+ */
+const SHUTDOWN_CAP_MS = 30000;
 
 const flushEvents = (win) => {
   flushTimer = null;
@@ -83,8 +92,11 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
 
   return new Promise((resolve, reject) => {
     let runId;
+    // The record exists before `runFlow` is called so `onEvent` can register it without depending
+    // on whether `run:start` is emitted before or after the call returns its promise.
+    const record = { controller, done: undefined };
 
-    runFlow({
+    record.done = runFlow({
       entry,
       scope,
       ports: createPorts({ collectionRoot: scope.collectionRoot }),
@@ -95,7 +107,7 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
       onEvent: (event) => {
         if (event.type === 'run:start') {
           runId = event.runId;
-          running.set(runId, controller);
+          running.set(runId, record);
           resolve({ runId });
         }
         queueEvent(win, runId, event);
@@ -122,17 +134,44 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
  * between the run ending and the click landing.
  */
 const cancelRun = ({ runId }) => {
-  const controller = running.get(runId);
-  if (!controller) {
+  const run = running.get(runId);
+  if (!run) {
     return false;
   }
 
-  controller.abort();
+  run.controller.abort();
   return true;
 };
 
+/**
+ * 002 §4.2 — quitting with a run in flight cancels it through 001 §11.3's path rather than letting
+ * the engine die with the process: in-flight requests are aborted, steps declaring
+ * `status: [cancelled]` get their cleanup, and the run is recorded `cancelled`.
+ *
+ * **This runs at `before-quit`, not at `main:start-quit-flow`.** That event fires when quit is
+ * *initiated*, and `ConfirmAppClose` lets the user dismiss the dialog and stay — so doing anything
+ * destructive there kills a run for a quit that never happens.
+ *
+ * The comparison that settles the behaviour is the CLI: Ctrl-C on `bru flow run` runs cleanup, and
+ * an app that skipped it would be strictly worse than the terminal at the one thing 001 §11.3
+ * exists to guarantee.
+ */
+const shutdown = async () => {
+  const inFlight = [...running.values()];
+  for (const { controller } of inFlight) {
+    controller.abort();
+  }
+
+  await Promise.race([
+    Promise.allSettled(inFlight.map((run) => run.done)),
+    new Promise((resolve) => setTimeout(resolve, SHUTDOWN_CAP_MS))
+  ]);
+
+  await watcher?.closeAllWatchers();
+};
+
 const registerFlowIpc = (mainWindow) => {
-  const watcher = new FlowsWatcher();
+  watcher = new FlowsWatcher();
 
   ipcMain.handle('renderer:flow-describe', (event, request) => describeFlowHandler(request));
   ipcMain.handle('renderer:flow-run', (event, request) => startRun(mainWindow, request));
@@ -146,16 +185,6 @@ const registerFlowIpc = (mainWindow) => {
     return watcher.listFlows(scope);
   });
   ipcMain.handle('renderer:flow-unwatch-scope', (event, scope) => watcher.removeWatcher(requireScope(scope)));
-
-  // 002 §4.2: quitting cancels through 001 §11.3's path, so cleanup steps get their grace window
-  // rather than the run dying with the process. Watcher teardown rides the same listener, which is
-  // what keeps this domain to the two lines 001 §13.4's manifest claims in `src/index.js`.
-  ipcMain.on('main:start-quit-flow', () => {
-    for (const controller of running.values()) {
-      controller.abort();
-    }
-    watcher.closeAllWatchers();
-  });
 };
 
 module.exports = registerFlowIpc;
@@ -165,3 +194,4 @@ module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
 module.exports.startRun = startRun;
 module.exports.cancelRun = cancelRun;
+module.exports.shutdown = shutdown;
