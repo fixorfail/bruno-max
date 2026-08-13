@@ -109,6 +109,9 @@ async function setup() {
     execCommand('npm run build:schema-types', 'Building schema-types');
     execCommand('npm run build:bruno-filestore', 'Building bruno-filestore');
     execCommand('npm run build:bruno-sqlite', 'Building bruno-sqlite');
+    // `bruno-electron` requires @bruno-max/flow at startup and resolves it through `dist/`, which
+    // is gitignored — without this the app fails to boot on a fresh clone.
+    execCommand('npm run build:bruno-max-flow', 'Building bruno-max-flow');
 
     // Bundle JS sandbox libraries
     execCommand('npm run sandbox:bundle-libraries --workspace=packages/bruno-js', 'Bundling JS sandbox libraries');
