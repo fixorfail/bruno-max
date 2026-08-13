@@ -1,0 +1,25 @@
+# R4n — the header-name denylist (§14.4). The credentials here are written straight into the flow
+# file on purpose: that is the case provenance tracking cannot catch, and the only one the denylist
+# exists for. `X-Trace-Id` is the negative control — a denylist that quietly became an allowlist
+# would empty every capture and no positive assertion would notice.
+version: 1
+
+meta:
+  name: R4n — redaction
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  redactHeaders: [X-Legacy-Key]
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    headers:
+      Authorization: Bearer sk_live_not_a_real_token
+      X-Legacy-Key: legacy-secret
+      X-Trace-Id: trace-1
+    body:
+      name: widget

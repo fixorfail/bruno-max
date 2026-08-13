@@ -15,11 +15,18 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 
 `runFlow` and `validateFlow` are implemented and the conformance suite is green — F1–F4 and the
 engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
-dialect, §9's graph, datasets and slots, §11's retry and propagation, and §12's sub-flows.
+dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's sub-flows, and §14.5's
+capture directory.
 
-Not implemented: capture (§14.5) and the three read-only entries built on it, cookie-jar scoping
-(§7.6), redaction (§14.4) and the §5.4 document schema.
-`tests/conformance/fixtures/readme.md` lists the conformance rows that go with them.
+Not implemented: the three read-only entries over the capture directory, cookie-jar scoping (§7.6),
+the §5.4 document schema, and **the primary half of §14.4's redaction**. §14.4 specifies two
+mechanisms; the header-name denylist is in `redact.ts`, and provenance tracking is not, because
+§13.2's `VariableTiers` carries no field saying which environment entries are `secret: true` and
+neither host loads environments for flows yet — there is nothing yet to track. It lands with the
+host work that supplies it; 001-C's R4n holds the rows either way.
+`config.capturePreviewBytes` is likewise unread: previews are the reporter's inline copy, and no
+flow reporter writes one yet.
+`tests/conformance/fixtures/readme.md` lists the conformance rows that go with all of these.
 
 The surface is five functions:
 
@@ -33,7 +40,7 @@ The surface is five functions:
 
 The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5,
 `openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
-§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3.
+§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4, `capture.ts` §14.5.
 
 ## Hosts
 

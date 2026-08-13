@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { randomUUID } from 'crypto';
 
+import { createCapture, type AttemptRecord, type Capture } from './capture';
 import { parseDataset } from './dataset';
 import {
   FileRef,
@@ -74,6 +75,25 @@ type RunState = {
   stoppedAt?: number;
   cleanupGrace: number;
   stop: () => void;
+  /** §14.5's artifact directory. Absent under `--no-capture`. */
+  capture?: Capture;
+  /** Only a flow with a `dataset:` nests its captures per iteration (§14.5). */
+  nestIterations: boolean;
+};
+
+/**
+ * An artifact write must never turn a passing flow red — the same argument §13.2 makes for a
+ * throwing event consumer. `start()` is the exception and is not routed through here: it runs
+ * before anything is dispatched, so a capture root that cannot be written is reported at once
+ * rather than as a run that quietly produced no record of itself.
+ */
+const recordAttempt = async (state: RunState, record: AttemptRecord): Promise<string | undefined> => {
+  if (!state.capture) return undefined;
+  try {
+    return await state.capture.attempt(record);
+  } catch {
+    return undefined;
+  }
 };
 
 /**
@@ -271,54 +291,61 @@ const executeFlow = async (
     if (materialized.unresolved.length) return { result: skip(step, prefix, 'unresolved-dependency') };
 
     const jar = { id: `${state.runId}:${run.iteration}` };
-    let attempt = 0;
-    let outcome = await runAttempt({
-      step,
-      resolved,
-      materialized,
-      scope: scopeFor(),
-      runScript,
-      dispatch: () => {
-        attempt += 1;
-        state.emit({ type: 'step:attempt', id: `${prefix}${step.id}`, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
-        return state.options.ports.executeRequest(materialized.request, {
-          ...state.flowContext,
-          stepId: `${prefix}${step.id}`,
-          iteration: run.iteration,
-          attempt,
-          cookieJar: jar,
-          timeoutMs: step.timeout,
-          signal: state.flowContext.signal
-        });
-      }
-    });
+    const stepId = `${prefix}${step.id}`;
+    let attemptsRun = 0;
+    let capturePath: string | undefined;
 
-    let attemptsRun = Math.max(attempt, 1);
-    while (
-      attemptsRun < step.retry.maxAttempts
-      && (await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scopeFor()), runScript))
-    ) {
-      await sleepFor(state.clock, retryDelay(step.retry, attemptsRun), state.flowContext.signal);
-      outcome = await runAttempt({
+    // Each attempt is captured separately (§14.5) and announces itself (§13.2), so the two live
+    // here rather than in the dispatch closure — a poll that reported only its first attempt would
+    // be indistinguishable from a hang, which is 002 §8.2's `attempt n/m` case.
+    const attemptOnce = async () => {
+      attemptsRun += 1;
+      const attempt = attemptsRun;
+      const attemptStartedAt = state.clock.now();
+      state.emit({ type: 'step:attempt', id: stepId, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
+
+      const outcome = await runAttempt({
         step,
         resolved,
         materialized,
         scope: scopeFor(),
         runScript,
-        dispatch: () => {
-          attempt += 1;
-          return state.options.ports.executeRequest(materialized.request, {
+        dispatch: () =>
+          state.options.ports.executeRequest(materialized.request, {
             ...state.flowContext,
-            stepId: `${prefix}${step.id}`,
+            stepId,
             iteration: run.iteration,
             attempt,
             cookieJar: jar,
             timeoutMs: step.timeout,
             signal: state.flowContext.signal
-          });
-        }
+          })
       });
-      attemptsRun += 1;
+
+      capturePath = await recordAttempt(state, {
+        stepId,
+        iteration: state.nestIterations ? run.iteration : undefined,
+        attempt,
+        startedAt: new Date(attemptStartedAt).toISOString(),
+        durationMs: state.clock.now() - attemptStartedAt,
+        // A step that failed `validateRequest` never dispatched, so there is no request to record
+        // as sent (§10.1); §11.2's transport error has the opposite shape and no response.
+        request: outcome.reason === 'invalid-request' ? undefined : materialized.request,
+        response: outcome.response,
+        assertions: outcome.assertions,
+        validation: outcome.validation && Object.keys(outcome.validation).length ? outcome.validation : undefined
+      }) || capturePath;
+
+      return outcome;
+    };
+
+    let outcome = await attemptOnce();
+    while (
+      attemptsRun < step.retry.maxAttempts
+      && (await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scopeFor()), runScript))
+    ) {
+      await sleepFor(state.clock, retryDelay(step.retry, attemptsRun), state.flowContext.signal);
+      outcome = await attemptOnce();
     }
 
     // `maxAttempts` is a hard cap that always applies: a step exhausts its retries when the
@@ -333,7 +360,7 @@ const executeFlow = async (
     return {
       httpStatus: outcome.response?.status,
       result: {
-        id: `${prefix}${step.id}`,
+        id: stepId,
         kind: 'operation',
         status: reason ? 'failed' : 'success',
         reason,
@@ -341,7 +368,8 @@ const executeFlow = async (
         durationMs: state.clock.now() - startedAt,
         assertions: outcome.assertions,
         validation: outcome.validation && Object.keys(outcome.validation).length ? outcome.validation : undefined,
-        outputs: outcome.outputs
+        outputs: outcome.outputs,
+        capturePath
       }
     };
   };
@@ -550,6 +578,7 @@ export const runFlow = async (options: RunOptions): Promise<RunResult> => {
       ...options.variables.envVarOverrides
     },
     cleanupGrace: 30000,
+    nestIterations: false,
     stop: () => {
       if (state.stoppedAt === undefined) state.stoppedAt = state.clock.now();
       controller.abort();
@@ -563,6 +592,22 @@ export const runFlow = async (options: RunOptions): Promise<RunResult> => {
   const flow = await loadFlow(state, options.entry);
   state.budget = new Budget(options.overrides?.concurrency || flow.config.concurrency);
   state.cleanupGrace = flow.config.cleanupGrace;
+  state.nestIterations = flow.dataset !== undefined;
+
+  // §14.5's identity file has to exist before the first step, so the capture is opened as soon as
+  // the flow's own retention and redaction settings are known and before anything is dispatched.
+  if (options.overrides?.capture?.enabled !== false) {
+    state.capture = createCapture({
+      ports: options.ports,
+      context: flowContext,
+      scopeRoot: scopeRoot(state),
+      dir: options.overrides?.capture?.dir,
+      startedAt: new Date(state.clock.now()).toISOString(),
+      retainRuns: flow.config.captureRetainRuns,
+      redactHeaders: flow.config.redactHeaders
+    });
+    await state.capture.start();
+  }
 
   // The bound belongs to whoever knows the environment, which is usually CI rather than the flow
   // file — so `--max-run-duration` overrides, and neither is set by default (§11.3).
@@ -619,8 +664,19 @@ export const runFlow = async (options: RunOptions): Promise<RunResult> => {
       skipped: steps.filter((step) => step.status === 'skipped').length,
       cancelled: steps.filter((step) => step.status === 'cancelled').length
     },
-    diagnostics: []
+    diagnostics: [],
+    captureDir: state.capture?.dir
   };
+
+  if (state.capture) {
+    try {
+      await state.capture.finish(result);
+    } catch {
+      // §14.5's interrupted state: a run.json with no summary.json beside it. A reader is already
+      // required to treat that as legible rather than corrupt, so a failed write lands somewhere
+      // with a defined meaning and the result still reaches the caller.
+    }
+  }
 
   state.emit({ type: 'run:end', result });
   return result;

@@ -19,7 +19,9 @@
  *   returns — F4's `find` predicate, F3's derived structured output, the `shouldRetry` polls — so a
  *   stub would assert the engine calls the port and nothing about the behavior they exist to pin.
  * - **`writeFile` / `listDirectory` / `removeDirectory` are an in-memory filesystem**, so §14.5's
- *   capture layout is observable without touching disk.
+ *   capture layout is observable without touching disk. `files` on the report reads it back, and
+ *   the same accessor reaches a response stub through `info.files` — which is how R4g2 asserts what
+ *   exists *while* a run is still going.
  *
  * Generated values (`{{$randomUUID}}` and friends) are **not** stubbed: R4c asserts the relations
  * between generated values, which hold for any generator and need no seeding hook.
@@ -124,6 +126,9 @@ const materializeResponse = (spec) => ({
   statusText: spec.statusText,
   headers: spec.headers || { 'content-type': 'application/json' },
   body: spec.body === undefined ? null : spec.body,
+  // Optional, exactly as in §13.2: a host supplies raw bytes when it has them, and §14.5's binary
+  // capture is only reachable through a stub that does.
+  bytes: spec.bytes,
   responseTimeMs: spec.responseTimeMs === undefined ? 1 : spec.responseTimeMs,
   size: { body: 0, headers: 0 }
 });
@@ -136,7 +141,21 @@ const createPorts = (options) => {
   let tick = 0;
   let clockNow = 0;
   const callCounts = new Map();
-  const written = new Map();
+  const written = new Map(Object.entries(options.captured || {}).map(([key, value]) => [key, Buffer.from(value)]));
+  const removed = [];
+
+  /** The in-memory capture directory, read back the way `listRuns` / `readCapture` would (002 §11.2). */
+  const files = {
+    paths: () => [...written.keys()].sort(),
+    has: (target) => written.has(target),
+    read: (target) => written.get(target),
+    json: (target) => {
+      const found = written.get(target);
+      if (!found) throw new Error(`harness: nothing was written to ${target}`);
+      return JSON.parse(found.toString('utf8'));
+    },
+    removed
+  };
 
   /**
    * §13.2 has the engine resolve and contain every path before a port is called, so `target` is
@@ -156,7 +175,7 @@ const createPorts = (options) => {
     callCounts.set(operationId, call);
 
     const entry = { operationId, stepId: ctx.stepId, iteration: ctx.iteration, attempt: ctx.attempt };
-    const info = { ...entry, call, abort: () => controller.abort() };
+    const info = { ...entry, call, abort: () => controller.abort(), files };
     const record = {
       ...entry,
       call,
@@ -224,8 +243,6 @@ const createPorts = (options) => {
     }
   };
 
-  // The capture ports are an in-memory filesystem because `EnginePorts` requires all three and
-  // §14.5's layout is the engine's to compute. Nothing asserts on it until R4g2 lands.
   const ports = {
     executeRequest,
     readFile,
@@ -244,18 +261,19 @@ const createPorts = (options) => {
       return [...entries].sort();
     },
     removeDirectory: async (target) => {
+      removed.push(target);
       for (const key of [...written.keys()]) {
         if (key === target || key.startsWith(`${target}${path.sep}`)) written.delete(key);
       }
     }
   };
 
-  return { ports, log, controller };
+  return { ports, log, controller, files };
 };
 
 const outcomeOf = (step) => (step.reason ? `${step.status}:${step.reason}` : step.status);
 
-const report = (result, log) => {
+const report = (result, log, files) => {
   const iteration = (index) => {
     const found = result.iterations[index];
     if (!found) throw new Error(`harness: the run produced no iteration ${index}`);
@@ -291,7 +309,17 @@ const report = (result, log) => {
 
     sleeps: log.sleeps,
     scripts: log.scripts,
-    reads: log.reads
+    reads: log.reads,
+
+    files,
+    captureDir: result.captureDir,
+    /** Every written path relative to the run's own directory — the layout without its timestamp. */
+    layout: () =>
+      files
+        .paths()
+        .filter((target) => target.startsWith(`${result.captureDir}${path.sep}`))
+        .map((target) => path.relative(result.captureDir, target))
+        .sort()
   };
 };
 
@@ -306,16 +334,17 @@ const report = (result, log) => {
  * ```
  */
 const runFlow = async (file, options = {}) => {
-  const { ports, log, controller } = createPorts(options);
+  const { ports, log, controller, files } = createPorts(options);
   const result = await engine.runFlow({
     entry: flowPath(file),
     scope: { workspaceRoot: FIXTURES },
     ports,
     variables: { environment: DEFAULT_VARS },
     overrides: options.overrides,
-    signal: controller.signal
+    signal: controller.signal,
+    onEvent: options.onEvent
   });
-  return report(result, log);
+  return report(result, log, files);
 };
 
 /** §13.2's read-only entry — two ports, because validation dispatches nothing. */

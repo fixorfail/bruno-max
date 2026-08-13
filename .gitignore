@@ -70,6 +70,9 @@ CLAUDE.local.md
 AGENTS.md
 *.plan.md
 
+# Flow run captures (001 §14.5)
+.bruno-runs/
+
 # packages dist
 packages/bruno-filestore/dist
 packages/bruno-requests/dist

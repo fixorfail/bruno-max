@@ -101,6 +101,9 @@ export type FlowConfig = StepFlags & {
   maxRunDuration?: number;
   cleanupGrace: number;
   retry?: Partial<RetryPolicy>;
+  /** §14.4's denylist additions and §14.5's retention bound. */
+  redactHeaders: string[];
+  captureRetainRuns: number;
 };
 
 export type NormalizedFlow = {
@@ -253,7 +256,9 @@ const normalizeConfig = (raw: unknown): FlowConfig => {
     concurrency: mapping.concurrency === undefined ? 5 : Number(mapping.concurrency),
     maxRunDuration: mapping.maxRunDuration === undefined ? undefined : Number(mapping.maxRunDuration),
     cleanupGrace: mapping.cleanupGrace === undefined ? 30000 : Number(mapping.cleanupGrace),
-    retry: mapping.retry === undefined ? undefined : (asRecord(mapping.retry) as Partial<RetryPolicy>)
+    retry: mapping.retry === undefined ? undefined : (asRecord(mapping.retry) as Partial<RetryPolicy>),
+    redactHeaders: asArray<string>(mapping.redactHeaders).map(String),
+    captureRetainRuns: mapping.captureRetainRuns === undefined ? 10 : Number(mapping.captureRetainRuns)
   };
 };
 

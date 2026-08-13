@@ -30,11 +30,13 @@ export type CapturedPart
 /**
  * `text` holds a textual body — JSON included — as sent, rather than as a re-serialized value.
  * `binary` names a sibling artifact: §14.5 writes binary payloads out with an appropriate
- * extension and never previews them.
+ * extension and never previews them. `upload` is a whole-body file source (§7.5's `bodyFile:` and
+ * binary bodies), which §14.5 captures by reference for the same reason a multipart file part is.
  */
 export type CapturedBody
   = | { kind: 'text'; contentType?: string; text: string }
     | { kind: 'binary'; contentType?: string; byteLength: number; file: string }
+    | { kind: 'upload'; sourcePath: string; filename: string; contentType: string; byteLength: number }
     | { kind: 'multipart'; parts: CapturedPart[] };
 
 export type CapturedRequest = {

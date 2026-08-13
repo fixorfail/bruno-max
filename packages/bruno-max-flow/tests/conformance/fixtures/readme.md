@@ -49,6 +49,7 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r4d-file-sources.flow.yml` · `r4d-body-file-interpolated.flow.yml` | R4d — a `!file` var, a `bodyFile:` inline layer, and a path selected by an earlier step |
 | `r4e-multipart.flow.yml` · `r4e-binary.flow.yml` · `r4e-ambiguous.flow.yml` | R4e — §7.5's three assembly rules: parts, raw bytes, and the media type a step must select |
 | `r4g-run-budget.flow.yml` | R4g — a poll that spends §11.3's budget, so the steps after it meet a stopped run |
+| `r4n-redaction.flow.yml` | R4n — credentials written straight into a flow file, which is the only case §14.4's denylist exists for |
 
 R4b's two override rows are not files: they are the `r4-output-unproduced` fixture with one field
 changed, which `harness.js`'s `variant()` applies in memory. A near-duplicate file would have to be
@@ -82,9 +83,16 @@ Two details are load-bearing rather than decorative:
 | `pair.csv` | R4c — two iterations, which is what makes "different across them" assertable |
 | `operand-row.csv` | R4c2 — the single row `row.role` and the `when:` row resolve against |
 
+R4g2 needs no fixture of its own: §14.5's layout is a property of *every* run, so `capture.spec.js`
+asserts it over the flows above — the retry one for a file per attempt, the dataset one for
+iteration nesting, the sub-flow pair for a flat `auth__login`, and `r4b-condition-false` for a
+skipped step writing no directory at all.
+
 ## What is not here
 
-R4f (cookie jars), R4g2 (capture layout), R4h (request validation) and R4m (the document schema).
-Those rows need a capture directory and the §5.4 schema, neither of which exists yet, or — for
-R4f — a host-side jar the stub port would have to implement before the engine's scoping rules
-become observable. R4i and R4l are the CLI's, and live in `packages/bruno-cli/tests/fork/flow/`.
+R4f (cookie jars), R4h (request validation), R4m (the document schema), and R4n's provenance rows.
+Those need, respectively: a host-side jar the stub port would have to implement before the engine's
+scoping rules become observable; a fixture pair and the `--dry-run` the last row asks for, since
+`validateRequest` itself already runs (`step.ts`); the §5.4 schema, which does not exist yet; and a
+`secret: true` input at the §13.2 boundary, which no host supplies. R4i and R4l are the CLI's, and
+live in `packages/bruno-cli/tests/fork/flow/`.

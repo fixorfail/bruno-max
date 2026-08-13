@@ -91,6 +91,12 @@ const builder = (yargs) =>
       type: 'number'
     })
     .option('bail', { describe: 'Stop after the first failing flow', type: 'boolean', default: false })
+    .option('capture', {
+      describe: 'Write .bruno-runs/ artifacts; --no-capture disables them',
+      type: 'boolean',
+      default: true
+    })
+    .option('capture-dir', { describe: 'Write captures here instead of <scope>/.bruno-runs', type: 'string' })
     .option('verbose', { describe: 'Expand sub-flows', type: 'boolean', default: false })
     .option('quiet', { describe: 'Summary and failures only', type: 'boolean', default: false })
     .option('silent', { describe: 'Write nothing to stdout', type: 'boolean', default: false })
@@ -160,7 +166,16 @@ const handler = async (argv) => {
         ports,
         variables,
         params: asPairs(argv.param),
-        overrides: { concurrency: argv.concurrency, maxRunDuration: argv.maxRunDuration },
+        overrides: {
+          concurrency: argv.concurrency,
+          maxRunDuration: argv.maxRunDuration,
+          capture: {
+            enabled: argv.capture,
+            // Resolved here rather than in the engine: a relative --capture-dir means relative to
+            // where the command was typed, and the engine has no working directory (§13.2).
+            dir: argv.captureDir === undefined ? undefined : path.resolve(argv.captureDir)
+          }
+        },
         signal: controller.signal,
         onEvent: reporter.onEvent
       });
