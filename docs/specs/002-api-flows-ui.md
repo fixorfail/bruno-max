@@ -3,7 +3,7 @@
 **Status:** Draft — the three questions 001 owed this spec are answered; §14 carries one of its own,
 local to `readCapture`'s options
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-12
+**Last revised:** 2026-08-13
 
 The app surface for [001](./001-api-flows.md): open a `.flow.yml`, see its graph, run it against the
 app's environment and auth, watch it execute, and diagnose a failure down to the attempt that caused
@@ -355,10 +355,39 @@ A panel beside the run control, following `RunnerResults/RunConfigurationPanel`'
 | Parameters | `params`, shown only for a library flow (001 §12.5) |
 | Capture | Whether the run writes to `.bruno-runs/` — the app's `--no-capture` (001 §14.5). §9 states what the step pane shows when it is off |
 
-**The renderer never assembles the variable tiers.** It sends the *selection* — which environment,
-which overrides — and `bruno-electron` resolves each tier and hands `RunOptions.variables` to the
-engine. 001 §13.2 is explicit that handing over a pre-merged map would let two hosts disagree about
-precedence; a renderer that merged would make a third.
+**The renderer never merges the variable tiers.** It sends each tier's variables *separately and
+unmerged*, and `bruno-electron` flattens each one and hands `RunOptions.variables` to the engine.
+001 §13.2 is explicit that handing over a pre-merged map would let two hosts disagree about
+precedence; a renderer that merged would make a third. Precedence stays where 001 §7.3 puts it — in
+the engine — and neither the renderer nor the main process ever computes it.
+
+**But the renderer sends values, not a selection, because the main process has no environment to
+resolve.** This app keeps environments in renderer state: `send-http-request`
+(`bruno-electron/src/ipc/network/index.js:1344`) takes the whole `collection` and the whole
+`environment` object as IPC arguments on *every* request, and the main process holds no map from a
+collection to its environments. A flow run is given the same three objects a request is given, and
+main flattens each into its tier with the `getEnvVars` the request path already uses.
+
+Resolving the environment in main *from a name* was the first design and is rejected on two counts:
+
+- **Secret values are not in the file.** A `secret: true` environment variable's value lives
+  encrypted in the `secrets` electron-store, keyed by collection path and environment name
+  (`bruno-electron/src/store/env-secrets.js`), not in `environments/<name>.yml`. A main-side read of
+  the file would silently produce an empty string for every secret, and the flow would fail against
+  an authenticated API for a reason nothing in the run could explain.
+- **It would make a flow disagree with a request in the same app.** The renderer's copy is what
+  every request already uses, unsaved edits included. A flow reading the file instead would run
+  against different values than the request beside it — which is the drift this feature exists to
+  remove, arriving in the one place the design was not watching.
+
+This is symmetric with the CLI rather than divergent from it: `bru` also hands the engine values it
+resolved itself (`loadEnvFromFile` for `--env`), and each host resolving its own tiers is exactly
+what 001 §13.2 asks for. What is host-specific is *where* the values come from, which was never the
+engine's business.
+
+**Each variable's `secret: true` flag survives into main**, because the renderer sends whole variable
+entries rather than a flattened map. 001 §14.4's provenance tracking needs precisely that input, and
+this is the first host able to supply it.
 
 #### Which environment, by scope
 
@@ -791,13 +820,87 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
 | `main:flow-tree-updated` | send | Watcher: a flow file added, changed or removed |
 
-All of it is registered by `registerFlowIpc` in a new `bruno-electron/src/ipc/flow.js` — the single
-`require` + call that 001 §13.4 already claims in `bruno-electron/src/index.js`. `preload.js` passes
-any channel through with no allowlist, so none of these needs an upstream edit.
+All of it is registered by `registerFlowIpc` in a new `bruno-electron/src/ipc/flow/` — the single
+`require('./ipc/flow')` + call that 001 §13.4 already claims in `bruno-electron/src/index.js`.
+`preload.js` passes any channel through with no allowlist, so none of these needs an upstream edit.
 
 The main process owns the `AbortController` per `runId`, assembles `RunOptions.variables` from the
-renderer's selection (§7.2), and supplies the three ports. The renderer holds no engine state beyond
-what the slice folds from events.
+tiers the renderer sends (§7.2), and supplies the seven ports. The renderer holds no engine state
+beyond what the slice folds from events.
+
+#### The payloads
+
+Channel *names* are useless as a contract without the arguments that go with them, and two
+independent implementers — the renderer and the e2e suite — read this table. Every payload is
+structured-clone-safe, per the same rule §8.1 puts on events.
+
+```ts
+type FlowScope = { workspaceRoot: string; collectionRoot?: string };
+
+// renderer:flow-describe  ->  FlowDescription (§11.1)
+type DescribeRequest = { entry: string; scope: FlowScope };
+
+// renderer:flow-run  ->  { runId: string }
+type RunRequest = {
+  entry: string;
+  scope: FlowScope;
+  collectionUid?: string;              // resolves the collection's .env — see below
+  tiers: {
+    globalEnvironment?: BrunoEnvironment;   // the app's active global/workspace environment
+    collectionVars?: EnvironmentVariable[]; // collection.root.request.vars.req
+    environment?: BrunoEnvironment;         // the collection's active environment
+    envVarOverrides?: Record<string, string>;
+  };
+  params?: Record<string, unknown>;
+  overrides?: {
+    concurrency?: number;
+    dataset?: string;
+    capture?: { enabled?: boolean };
+  };
+};
+
+// The shapes the renderer already holds and already sends to `send-http-request`.
+type BrunoEnvironment = { name: string; variables: EnvironmentVariable[] };
+type EnvironmentVariable = { name: string; value: unknown; enabled: boolean; secret?: boolean };
+
+// renderer:flow-cancel  ->  boolean (false when the runId is not executing here)
+type CancelRequest = { runId: string };
+
+// renderer:flow-list-runs  ->  RunIndexEntry[] (§11.2)
+type ListRunsRequest = { scopeRoot: string; flow?: string };
+
+// renderer:flow-read-capture  ->  StepCapture (§11.2)
+type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; attempt: number };
+
+// main:flow-run-event
+type RunEventBatch = { runId: string; events: FlowEvent[] };
+
+// main:flow-tree-updated — two arguments, matching `main:apispec-tree-updated`
+type FlowTreeEvent = 'addFile' | 'changeFile' | 'unlinkFile';
+type FlowTreeEntry = { pathname: string; filename: string; scopeRoot: string; collectionRoot?: string };
+```
+
+**`tiers` carries whole variable entries, not flattened maps**, so `secret: true` survives the
+crossing for 001 §14.4 and so main applies the same `getEnvVars` the request path applies. §7.2 is
+where that direction is argued.
+
+**`processEnv` is not in `tiers`.** The `.env` tier is already main's — `getProcessEnvVars`
+(`bruno-electron/src/store/process-env.js`) is populated by the dotenv watcher and keyed by
+collection uid, which is why `collectionUid` is sent and the values are not. A renderer that shipped
+`.env` contents over IPC would be forwarding main's own state back to it.
+
+**`getEnvVars` appends a `__name__` key** for `bru.getEnvName()`; it is dropped before the tier
+reaches the engine. It is Bruno's request-path convention rather than a variable an author declared,
+and leaving it in would make `{{__name__}}` resolve in the app and not in `bru`.
+
+**`main:flow-tree-updated` reports `unlinkFile`, which `apiSpecsWatcher` does not.** §4.1 requires a
+flow to leave the sidebar when the file is deleted or a branch is switched, and the API-spec watcher
+has no deletion path to copy — its watchers are per opened file rather than over a directory.
+
+**`renderer:flow-cancel` resolves `false` rather than throwing on an unknown `runId`.** §10 and
+`listRuns` both admit runs this process is not executing (a CLI run, or one from a previous launch),
+and asking to cancel one is an ordinary race between the run ending and the click landing, not an
+error worth a toast.
 
 ### 11.4 What 002 changed in 001
 
@@ -847,9 +950,23 @@ packages/bruno-app/src/fork/
       RunSelector/index.js
 ```
 
-Electron-side code is two new files upstream does not have —
-`bruno-electron/src/ipc/flow.js` and `bruno-electron/src/app/flowsWatcher.js`. The watcher starts
-from inside `registerFlowIpc`, so it rides 001's existing entry and adds nothing.
+Electron-side code is a new directory and a new file upstream does not have:
+
+```
+packages/bruno-electron/src/
+  ipc/flow/
+    index.js                           # registerFlowIpc — the channels in §11.3
+    ports.js                           # the seven ports of 001 §13.2
+    variables.js                       # §7.2's tiers, flattened
+  app/flowsWatcher.js
+```
+
+`ipc/flow/` is a directory rather than the single `ipc/flow.js` this spec first named, following
+`ipc/mock-server/`: the ports are the largest part and are the part worth unit-testing on their own,
+and `.claude/rules/electron-ipc.md` asks for handler files that stay small. `require('./ipc/flow')`
+resolves either way, so 001 §13.4's manifest row is unaffected.
+
+The watcher starts from inside `registerFlowIpc`, so it rides 001's existing entry and adds nothing.
 
 ### 12.1 The manifest delta
 

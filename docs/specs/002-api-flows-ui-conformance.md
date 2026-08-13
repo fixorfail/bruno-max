@@ -2,11 +2,11 @@
 
 **Status:** Draft — companion to [002-api-flows-ui.md](./002-api-flows-ui.md)
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-11
+**Last revised:** 2026-08-13
 
 Scenarios the UI spec's behavior was derived from, written to be implemented directly as Playwright
-specs. Start at §2 for the harness, §3–§6 for the four scenario families, §7 for the regression set,
-and §9 for which section of 002 each one pins.
+specs. Start at §2 for the harness, §3–§6 for the four scenario families, §7 for the host boundary,
+§8 for the regression set, and §10 for which section of 002 each one pins.
 
 Where [001-C](./001-api-flows-conformance.md) tests that the engine *executes* flows correctly, this
 file tests that the app *shows* what the engine reports — and, in a few places, that it does not
@@ -49,8 +49,15 @@ tests/flows/
   run.spec.ts                   # §4
   diagnostics.spec.ts           # §5
   inspect-history.spec.ts       # §6
-  regressions.spec.ts           # §7
+  regressions.spec.ts           # §8
 ```
+
+**§7's host scenarios are Jest, not Playwright**, and live beside the code they cover in
+`packages/bruno-electron/src/ipc/flow/`. They are about what crosses IPC — which tier arrives in
+which field, whether a batch mixes two runs — and driving that through a rendered UI would assert on
+a picture of the answer rather than the answer. `.claude/rules/electron-ipc.md` already asks for
+handler callbacks exported as named functions so they can be exercised without the main process;
+these are the tests that asks for.
 
 **The target API is `packages/bruno-tests`, not a mock.** These are end-to-end tests of an Electron
 app; stubbing HTTP inside the renderer would test a different application. `echo` covers ordinary
@@ -373,7 +380,64 @@ validation outcomes still render.
 
 ---
 
-## 7. Regressions not owned by a single scenario
+## 7. U5 — The host boundary
+
+002 §11.3's channels are a contract two implementers read, and every scenario below has a wrong
+implementation that a rendered UI cannot distinguish from the right one — a merged variable map
+still resolves `{{token}}`, and a batch that mixes two runs still animates a graph.
+
+### U5.1 A tier arrives as a tier
+
+`renderer:flow-run` is given an environment defining `baseUrl` and a collection variable of the same
+name. `runFlow` receives them in `variables.environment` and `variables.collectionVars`
+respectively — two populated fields, not one merged map — and the value the run interpolates is the
+one 001 §7.3's precedence selects.
+
+*Pins 002 §7.2, §11.3, and 001 §13.2.* The cheap wrong implementation merges in main and works on
+every flow where no two tiers define the same name.
+
+### U5.2 A secret variable keeps its flag across IPC
+
+An environment variable with `secret: true` reaches main with the flag intact and its value present.
+
+*Pins 002 §7.2, §11.3.* This is the input 001 §14.4's provenance tracking has never had, and a
+handler that flattened to `{name: value}` in the renderer would destroy it while looking correct —
+the run still authenticates, and the secret is simply never masked.
+
+### U5.3 `.env` comes from main, and `__name__` does not travel
+
+A run request carrying no process variables still gets the collection's `.env` in
+`variables.processEnv`, and `variables.environment` contains no `__name__` key.
+
+*Pins 002 §11.3.* Two opposite failures with one cause — being unclear about which side owns a tier.
+
+### U5.4 Cancel is scoped to a run this process owns
+
+Cancelling a live `runId` aborts that run and no other; cancelling an unknown one resolves `false`
+without throwing.
+
+*Pins 002 §11.3, §7.1, and 001 §11.3.* §10 lists runs this process is not executing, so being asked
+to cancel one is ordinary.
+
+### U5.5 A batch never mixes runs
+
+With two flows running concurrently, every `main:flow-run-event` payload carries one `runId` and only
+that run's events, in emission order.
+
+*Pins 002 §8.1, §11.3.* §8.1 permits batching and guarantees order within a batch; a single global
+buffer keyed by nothing would satisfy the first and quietly break the second.
+
+### U5.6 The watcher reports, and parses nothing
+
+Adding, editing and deleting a `.flow.yml` under a workspace and under a collection each emit one
+`main:flow-tree-updated`. A file that is not valid YAML still emits `addFile`.
+
+*Pins 002 §4.1, §11.3.* A watcher that parsed would have to decide what to show for a file that does
+not parse, and the flow that most needs opening is the broken one.
+
+---
+
+## 8. Regressions not owned by a single scenario
 
 ### R1 — Bodies are never read from events
 
@@ -428,7 +492,7 @@ whose `step:end` has been received, which is the drift actually worth preventing
 
 ---
 
-## 8. Not covered here
+## 9. Not covered here
 
 - **Engine semantics.** 001-C owns them. A scenario here that could fail because the *engine* is
   wrong is misfiled.
@@ -448,7 +512,7 @@ whose `step:end` has been received, which is the drift actually worth preventing
   drawing — that a sequence edge *looks* different from a declared one, that a slot goes through a
   glyph — which is what this file can see and R4q cannot.
 
-## 9. Traceability
+## 10. Traceability
 
 | Scenario | Pins | The wrong implementation it catches |
 |---|---|---|
@@ -474,6 +538,8 @@ whose `step:end` has been received, which is the drift actually worth preventing
 | U4.5–U4.7 | §10 | A second, weaker viewer for stored runs |
 | U4.8, U4.9 | §10, §11.2 | A run with no `summary.json` shown as failed, or hidden entirely |
 | U4.10 | §9 | Blank panels instead of an explanation |
+| U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
+| U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher that parses |
 | R1, R2 | §8.1, §9 | Bodies on events; an unbatched stream |
 | R3 | §9 | A secret visible in the app but not in CI |
 | R4 | §11.1, §11.2 | The renderer growing its own parser |

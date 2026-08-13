@@ -2,7 +2,7 @@
 
 **Status:** Draft — companion to [001-api-flows.md](./001-api-flows.md)
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-12
+**Last revised:** 2026-08-13
 
 Scenarios the spec's behavior was derived from, written to be implemented directly as tests. Start
 at §2 for the harness, §3–§6 for the four end-to-end flows, §7 for the regression set, and §9 for
@@ -1266,3 +1266,5 @@ it belongs in another test suite.
 | — | Normalization erased whether an edge was declared, so `depends: [previous]` and no `depends:` became indistinguishable — found implementing 002 §5.3 | R4q |
 | — | §8.3's `undeclared-dependency` warning was specified and never implemented | R4q |
 | — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |
+| — | 002 §7.2 asked the main process to resolve an environment it has no access to, and a file read would have silently emptied every secret — found implementing the Electron host | 002-C U5.1, U5.2 |
+| — | 002 §11.3 declared the IPC channel *names* a contract and pinned none of their payloads | 002-C U5 |
