@@ -13,7 +13,7 @@ import { DROP, FileRef, type ApiBinding, type FlowConfig, type NormalizedStep } 
 import { basenameOf, contentTypeFor, parseStructured, type FileReader } from './files';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { requestExample, requestMediaTypes, requestSchema, type ResolvedOperation } from './openapi';
-import type { Auth } from '@usebruno/schema-types/common/auth';
+import type { Auth, AuthMode } from '@usebruno/schema-types/common/auth';
 import type { MaterializedRequest, MultipartPart, RequestBody } from './types/request';
 
 export class MaterializationError extends Error {
@@ -238,15 +238,25 @@ const resolveAuth = (
   profiles: Record<string, AuthProfile>
 ): Auth => {
   const name = step.auth || binding?.auth;
-  if (!name || name === 'none') return { mode: 'none' } as Auth;
+  if (!name || name === 'none') return { mode: 'none' };
 
   const profile = profiles[name];
   if (!profile) throw new MaterializationError('unknown-auth-profile', `${step.id}: no auth profile named ${name}`);
-  // A profile is authored data, so its shape is Bruno's `Auth` by declaration rather than by
-  // construction — which is the point of §6.4: flows introduce no new auth mechanics, and the
-  // engine hands over the same structure a request carries today.
-  return interpolateValue(profile.fields, profile.scope()).value as unknown as Auth;
+
+  const { mode, ...fields } = interpolateValue(profile.fields, profile.scope()).value as {
+    mode?: AuthMode;
+    [field: string]: unknown;
+  };
+  if (!mode || mode === 'none') return { mode: 'none' };
+
+  // §6.4: authored flat, delivered as Bruno's `Auth`, which nests each mode's fields under a key
+  // named for the mode. Both hosts read the nested form — the app hands it straight to
+  // `setAuthHeaders` — so converting here is what keeps them from writing an adapter each.
+  return { mode, [authFieldKey(mode)]: fields } as Auth;
 };
+
+/** Every mode's fields live under its own name in `Auth`; only Akamai's key is not the mode string. */
+const authFieldKey = (mode: AuthMode): string => (mode === 'akamai-edgegrid' ? 'akamaiEdgegrid' : mode);
 
 const substitute = (template: string, params: Record<string, unknown>): string =>
   template.replace(/\{([^}]+)\}/g, (match, name: string) =>

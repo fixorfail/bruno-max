@@ -19,16 +19,18 @@ const applyAuth = (auth, headers, query) => {
   if (!auth || auth.mode === 'none') return;
 
   if (auth.mode === 'bearer') {
-    headers.Authorization = `Bearer ${auth.token}`;
+    headers.Authorization = `Bearer ${auth.bearer.token}`;
     return;
   }
   if (auth.mode === 'basic') {
-    headers.Authorization = `Basic ${Buffer.from(`${auth.username}:${auth.password}`).toString('base64')}`;
+    const { username, password } = auth.basic;
+    headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
     return;
   }
   if (auth.mode === 'apikey') {
-    if (auth.placement === 'queryparams') query.push({ name: auth.key, value: auth.value });
-    else headers[auth.key] = auth.value;
+    const { key, value, placement } = auth.apikey;
+    if (placement === 'queryparams') query.push({ name: key, value });
+    else headers[key] = value;
     return;
   }
   throw new Error(`the CLI does not apply ${auth.mode} auth for flows yet`);

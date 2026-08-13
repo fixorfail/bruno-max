@@ -602,6 +602,36 @@ describe('R4c2 — how a bare operand resolves', () => {
   });
 });
 
+describe('R4j — an auth profile arrives as Bruno Auth', () => {
+  // Authored flat, delivered nested (§6.4). The flat form reached `ExecuteRequest` unchanged until
+  // the app tried to hand it to `setAuthHeaders`, which reads `auth.bearer.token` — so the one
+  // shape §6.4 promises a host could reuse was the one shape it could not.
+  let auth;
+
+  beforeAll(async () => {
+    const run = await runFlow(flow('r4j-auth-shapes.flow.yml'), { responses: { createThing: CREATED } });
+    auth = run.callsFor('createThing').map((call) => call.auth);
+  });
+
+  it('nests each mode under a key named for it', () => {
+    expect(auth[0]).toEqual({ mode: 'bearer', bearer: { token: 'tok-session' } });
+    expect(auth[1]).toEqual({ mode: 'basic', basic: { username: 'ops', password: 'hunter2' } });
+    expect(auth[2]).toEqual({ mode: 'apikey', apikey: { key: 'X-Api-Key', value: 'ak_1', placement: 'header' } });
+    expect(auth[3]).toEqual({
+      mode: 'oauth2',
+      oauth2: { grantType: 'client_credentials', clientId: 'cid', clientSecret: 'sec' }
+    });
+  });
+
+  it('carries a field the mode does not define rather than dropping it', () => {
+    expect(auth[4]).toEqual({ mode: 'bearer', bearer: { token: 'tok-carrier', tokenPrefix: 'Token' } });
+  });
+
+  it('leaves `none` with no sibling key', () => {
+    expect(auth[5]).toEqual({ mode: 'none' });
+  });
+});
+
 describe('R5 — unresolved variables never reach the wire', () => {
   // Bruno's interpolator leaves an unresolved placeholder in place, which is correct for a user
   // variable and wrong for engine state (§11.2).

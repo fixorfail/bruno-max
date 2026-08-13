@@ -98,9 +98,9 @@ describe('F1.1 — happy path, all three roles behave', () => {
   // §6.4: the profile reads `{{steps.login.token}}`, which is a different value per iteration.
   it('resolves the auth profile against its own iteration', () => {
     expect(run.callsFor('getMe').map((call) => call.auth)).toEqual([
-      { mode: 'bearer', token: 'tok-admin' },
-      { mode: 'bearer', token: 'tok-editor' },
-      { mode: 'bearer', token: 'tok-viewer' }
+      { mode: 'bearer', bearer: { token: 'tok-admin' } },
+      { mode: 'bearer', bearer: { token: 'tok-editor' } },
+      { mode: 'bearer', bearer: { token: 'tok-viewer' } }
     ]);
   });
 

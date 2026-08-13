@@ -60,12 +60,10 @@ describe('F2.1 — primary carrier healthy', () => {
   it('sends each request to its own binding', () => {
     expect(run.call('createOrder').url).toBe('https://orders.example.com/orders');
     expect(run.call('createQuote').url).toBe('https://carrier-a.example.com/quotes');
-    expect(run.call('createOrder').auth).toEqual({ mode: 'bearer', token: 'tok-user' });
+    expect(run.call('createOrder').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-user' } });
     expect(run.call('createQuote').auth).toEqual({
       mode: 'apikey',
-      key: 'X-Api-Key',
-      value: 'ak_carrier_a',
-      placement: 'header'
+      apikey: { key: 'X-Api-Key', value: 'ak_carrier_a', placement: 'header' }
     });
   });
 });

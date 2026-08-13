@@ -119,10 +119,10 @@ describe('F3.3 — the auth token changes mid-flow', () => {
   it('authorizes the escalation with the credential being escalated', async () => {
     const run = await runFlow(FLOW, { responses: responses() });
 
-    expect(run.call('getOpenBatch').auth).toEqual({ mode: 'bearer', token: 'tok-user' });
-    expect(run.call('elevate').auth).toEqual({ mode: 'bearer', token: 'tok-user' });
-    expect(run.call('createRecord').auth).toEqual({ mode: 'bearer', token: 'tok-user' });
-    expect(run.call('submitSettlement').auth).toEqual({ mode: 'bearer', token: 'tok-elevated' });
+    expect(run.call('getOpenBatch').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-user' } });
+    expect(run.call('elevate').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-user' } });
+    expect(run.call('createRecord').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-user' } });
+    expect(run.call('submitSettlement').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-elevated' } });
   });
 });
 

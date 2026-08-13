@@ -1,0 +1,53 @@
+# R4j — an auth profile reaches ExecuteRequest as Bruno's `Auth`.
+#
+# Authored flat (§6.4) and delivered nested, so both hosts can hand the object to the auth code
+# they already have. `carrier` carries a field no mode defines, which the engine must pass through
+# rather than recognise (001-C §7's R4j).
+version: 1
+
+meta:
+  name: R4j — auth profile shapes
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+authProfiles:
+  session: { mode: bearer, token: tok-session }
+  operator: { mode: basic, username: ops, password: hunter2 }
+  gateway: { mode: apikey, key: X-Api-Key, value: ak_1, placement: header }
+  machine: { mode: oauth2, grantType: client_credentials, clientId: cid, clientSecret: sec }
+  carrier: { mode: bearer, token: tok-carrier, tokenPrefix: Token }
+
+steps:
+  - id: bearer_step
+    operation: regress-api#createThing
+    auth: session
+    body: { name: widget }
+
+  - id: basic_step
+    operation: regress-api#createThing
+    auth: operator
+    body: { name: widget }
+
+  - id: apikey_step
+    operation: regress-api#createThing
+    auth: gateway
+    body: { name: widget }
+
+  - id: oauth2_step
+    operation: regress-api#createThing
+    auth: machine
+    body: { name: widget }
+
+  - id: unknown_field_step
+    operation: regress-api#createThing
+    auth: carrier
+    body: { name: widget }
+
+  - id: no_auth_step
+    operation: regress-api#createThing
+    auth: none
+    body: { name: widget }

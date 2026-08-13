@@ -82,7 +82,7 @@ describe('F4.1 — happy path across three services', () => {
   // A step-level `auth:` overriding a binding's `auth: none` must not leak backwards onto the
   // binding's other steps.
   it('leaves the unauthenticated binding unauthenticated', () => {
-    expect(run.call('acceptItem').auth).toEqual({ mode: 'bearer', token: 'tok-partner' });
+    expect(run.call('acceptItem').auth).toEqual({ mode: 'bearer', bearer: { token: 'tok-partner' } });
     expect(run.call('getItemStatus').auth).toEqual({ mode: 'none' });
     expect(run.call('getHandoff').auth).toEqual({ mode: 'none' });
     expect(run.call('createSession').auth).toEqual({ mode: 'none' });
