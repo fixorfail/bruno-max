@@ -860,7 +860,6 @@ type DescribeRequest = { entry: string; scope: FlowScope };
 type RunRequest = {
   entry: string;
   scope: FlowScope;
-  collectionUid?: string;              // resolves the collection's .env — see below
   tiers: {
     globalEnvironment?: BrunoEnvironment;   // the app's active global/workspace environment
     collectionVars?: EnvironmentVariable[]; // collection.root.request.vars.req
@@ -887,7 +886,7 @@ type ListRunsRequest = { scopeRoot: string; flow?: string };
 
 // renderer:flow-watch-scope    ->  FlowTreeEntry[], the flows already on disk
 // renderer:flow-unwatch-scope  ->  void
-type WatchScopeRequest = { scopeRoot: string; collectionRoot?: string };
+type WatchScopeRequest = FlowScope;
 
 // renderer:flow-read-capture  ->  StepCapture (§11.2)
 type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; attempt: number };
@@ -897,17 +896,27 @@ type RunEventBatch = { runId: string; events: FlowEvent[] };
 
 // main:flow-tree-updated — two arguments, matching `main:apispec-tree-updated`
 type FlowTreeEvent = 'addFile' | 'changeFile' | 'unlinkFile';
-type FlowTreeEntry = { pathname: string; filename: string; scopeRoot: string; collectionRoot?: string };
+type FlowTreeEntry = { pathname: string; filename: string; workspaceRoot: string; collectionRoot?: string };
 ```
+
+**A scope is a `FlowScope` on every channel that takes one**, so the sidebar, the describe call and
+the run call all key on the same pair of paths. `ListRunsRequest.scopeRoot` is deliberately not one:
+it names 001 §14.5's capture root, which `--capture-dir` can move outside the scope entirely.
 
 **`tiers` carries whole variable entries, not flattened maps**, so `secret: true` survives the
 crossing for 001 §14.4 and so main applies the same `getEnvVars` the request path applies. §7.2 is
 where that direction is argued.
 
-**`processEnv` is not in `tiers`.** The `.env` tier is already main's — `getProcessEnvVars`
-(`bruno-electron/src/store/process-env.js`) is populated by the dotenv watcher and keyed by
-collection uid, which is why `collectionUid` is sent and the values are not. A renderer that shipped
-`.env` contents over IPC would be forwarding main's own state back to it.
+**`processEnv` is not in `tiers`.** The `.env` tier never belonged to the renderer: main reads
+`<workspaceRoot>/.env` and `<collectionRoot>/.env` at run start and layers them over `process.env`,
+which is `store/process-env.js`'s documented precedence and the two paths `scope` already carries. A
+renderer that shipped `.env` contents over IPC would be sending main a copy of main's own disk.
+
+Reading at run start rather than borrowing the dotenv watcher's cache is deliberate on two counts.
+The cache is keyed by *collection uid* and reaches the workspace `.env` only through a collection,
+so a workspace-scoped flow — which §7.2 says gets exactly the workspace `.env` — cannot be served
+from it without widening an upstream module. And a run that reads the file it is about to run
+against is the same thing `bru` does, which is one fewer way for the two hosts to disagree.
 
 **`getEnvVars` appends a `__name__` key** for `bru.getEnvName()`; it is dropped before the tier
 reaches the engine. It is Bruno's request-path convention rather than a variable an author declared,

@@ -1015,10 +1015,17 @@ rather than as the CLI and app behaving differently.
 | a step failing both request-schema validation and none of its assertions | `validation.request.valid` is false with a path-keyed error list, `assertions[]` all pass, and `reason` is `invalid-request` — one outcome does not overwrite the other |
 | the same step with capture disabled | `validation` is unchanged; it travels in the result, not the capture |
 | an `apis:` entry naming an `https://` source | `ReadSpec` is called with the source string verbatim; the engine never inspects the scheme, and the graph resolves |
+| a profile authored `{ mode: bearer, token: x }` | `MaterializedRequest.auth` is `{ mode: 'bearer', bearer: { token: 'x' } }` — Bruno's `Auth`, per-mode nested, not the flat authored form (§6.4) |
+| the same for `apikey`, `basic` and `oauth2` | the fields land under `apikey` / `basic` / `oauth2`, and `mode: none` stays `{ mode: 'none' }` with no sibling key |
+| a profile naming a field the mode does not define | it is carried under the mode's key unchanged; the engine renames nothing and drops nothing |
 
 The structured-clone row is the one that catches an otherwise invisible break: an event carrying a
 `Buffer` or a class instance works in the CLI, where the consumer is in-process, and fails only in
 the app, where every event crosses IPC.
+
+The auth rows exist because the flat-versus-nested distinction is invisible in a host that wrote its
+own adapter and fatal in one that did not. Both hosts are supposed to hand this object to code they
+already have — `setAuthHeaders` in the app — and that code reads `auth.bearer.token`.
 
 ### R4k — Reason and status vocabulary
 
@@ -1268,3 +1275,4 @@ it belongs in another test suite.
 | — | §14.4 had no scenario at all, so the denylist and the provenance half were equally untested | R4n |
 | — | 002 §7.2 asked the main process to resolve an environment it has no access to, and a file read would have silently emptied every secret — found implementing the Electron host | 002-C U5.1, U5.2 |
 | — | 002 §11.3 declared the IPC channel *names* a contract and pinned none of their payloads | 002-C U5 |
+| — | An auth profile reached `ExecuteRequest` in the flat form it was authored in rather than Bruno's nested `Auth`, so the one shape §6.4 promises hosts could reuse was the one shape they could not — found running a flow through the app's `setAuthHeaders` | R4j |

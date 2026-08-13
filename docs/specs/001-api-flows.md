@@ -4,7 +4,7 @@
 each local to one execution path and none changes a signature; the ports, the engine boundary, the
 expression dialect and the document schema are decided.
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-12
+**Last revised:** 2026-08-13
 
 Sequenced, spec-driven API request execution: a flow references OpenAPI operations instead of
 copying them, declares the data that moves between steps, and runs identically in the app and the
@@ -648,10 +648,23 @@ apis:
     auth: service-account
 ```
 
-A profile body is the **existing Bruno `Auth` shape** (the `mode` union in
+A profile body carries the **fields of the existing Bruno auth modes** (the `mode` union in
 `bruno-schema-types/src/common/auth.ts`). Every mode Bruno already supports — bearer, basic,
 oauth2, apikey, awsv4, digest, ntlm, wsse — works unchanged, and OAuth2 profiles reuse the
 existing token cache and `clear-oauth2-cache` handling. Flows introduce no new auth mechanics.
+
+**A profile is authored flat and delivered nested.** Bruno's `Auth` puts each mode's fields under a
+key named for the mode — `{ mode: 'bearer', bearer: { token } }` — which is what a request carries
+on disk and what every host's auth code reads. Writing that in a flow would mean saying `bearer`
+twice, so the format keeps the flat form above, and **the engine converts to `Auth` when it
+materializes a request** (§13.2). The two are different contracts with different readers: the flat
+one is `.flow.yml`'s, read by whoever writes a flow, and the nested one is `ExecuteRequest`'s, read
+by code that already exists in both hosts.
+
+That conversion is the whole of §6.4's "no new auth mechanics" claim. Handing over the authored
+shape instead would require each host to write its own translation to reach `setAuthHeaders`, the
+OAuth2 cache and the signing interceptors — two adapters, diverging quietly, for a mapping the
+engine can do once. 001-C's R4j pins it in both directions.
 
 **Resolution order**, first match wins: step's `auth:` → the API binding's `auth:` → the implicit
 `collection` profile → `none`.
