@@ -57,6 +57,11 @@ those ports itself. `tests/conformance/harness.js` is where they are stubbed, an
 
 ## Commands
 
+**`bru flow` runs the built bundle, not `src/`.** `bruno-cli` resolves this package through its
+`main`, so an engine change is invisible to the CLI until `npm run build` — the tests will be green
+and the command will still be running the previous engine. Rebuild, or keep `npm run watch` going,
+before trusting anything you see at the CLI.
+
 ```bash
 npm test --workspace=packages/bruno-max-flow
 npm test --workspace=packages/bruno-max-flow -- f1-role-matrix   # one scenario
