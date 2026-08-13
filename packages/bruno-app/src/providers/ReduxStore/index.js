@@ -17,6 +17,7 @@ import collectionMigrationReducer from './slices/collection-migration';
 import { draftDetectMiddleware } from './middlewares/draft/middleware';
 import { autosaveMiddleware } from './middlewares/autosave/middleware';
 import { snapshotMiddleware } from './middlewares/snapshot/middleware';
+import { forkReducers } from 'fork/registry';
 
 const isDevEnv = () => {
   return import.meta.env.MODE === 'development';
@@ -41,7 +42,8 @@ export const store = configureStore({
     openapiSync: openapiSyncReducer,
     mockServer: mockServerReducer,
     chat: chatReducer,
-    collectionMigration: collectionMigrationReducer
+    collectionMigration: collectionMigrationReducer,
+    ...forkReducers
   },
   middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(middleware)
 });

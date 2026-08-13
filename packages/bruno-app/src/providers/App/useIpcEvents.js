@@ -44,6 +44,7 @@ import {
 import { workspaceDotEnvUpdateEvent, setWorkspaceDotEnvVariables } from 'providers/ReduxStore/slices/workspaces';
 import toast from 'react-hot-toast';
 import { useDispatch, useStore } from 'react-redux';
+import { registerForkIpcEvents } from 'fork/registry';
 import { isElectron } from 'utils/common/platform';
 import { globalEnvironmentsUpdateEvent, updateGlobalEnvironments, _clearScriptGlobalEnvBaseline } from 'providers/ReduxStore/slices/global-environments';
 import { collectionAddOauth2CredentialsByUrl, collectionClearOauth2CredentialsByCredentialsId, updateCollectionLoadingState, collectionLoadedFromTree } from 'providers/ReduxStore/slices/collections/index';
@@ -131,6 +132,8 @@ const useIpcEvents = () => {
     const removeCollectionTreeUpdateListener = ipcRenderer.on('main:collection-tree-updated', _collectionTreeUpdated);
 
     const removeApiSpecTreeUpdateListener = ipcRenderer.on('main:apispec-tree-updated', _apiSpecTreeUpdated);
+
+    const removeForkListeners = registerForkIpcEvents(dispatch);
 
     const removeCollectionMigrationProgressListener = ipcRenderer.on(
       'main:collection-migration-progress',
@@ -427,6 +430,7 @@ const useIpcEvents = () => {
       removeBrunoConfigUpdateV2Listener();
       removeCollectionTreeUpdateListener();
       removeApiSpecTreeUpdateListener();
+      removeForkListeners();
       removeOpenCollectionListener();
       removeCollectionMigrationProgressListener();
       removeOpenWorkspaceListener();

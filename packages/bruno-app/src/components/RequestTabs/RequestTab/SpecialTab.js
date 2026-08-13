@@ -3,6 +3,7 @@ import GradientCloseButton from './GradientCloseButton';
 import StatusBadge from 'ui/StatusBadge';
 import { IconVariable, IconSettings, IconRun, IconFolder, IconDatabase, IconWorld, IconHome, IconFileCode, IconConfetti, IconServer2 } from '@tabler/icons';
 import OpenAPISyncIcon from 'components/Icons/OpenAPISync';
+import { ForkTabLabel } from 'fork/registry';
 
 const SpecialTab = ({ handleCloseClick, type, tabName, handleDoubleClick, hasDraft }) => {
   const getTabInfo = (type, tabName) => {
@@ -119,6 +120,9 @@ const SpecialTab = ({ handleCloseClick, type, tabName, handleDoubleClick, hasDra
             <span className="ml-1 tab-name">What's New</span>
           </>
         );
+      }
+      default: {
+        return <ForkTabLabel type={type} tabName={tabName} />;
       }
     }
   };

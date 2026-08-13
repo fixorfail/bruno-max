@@ -9,6 +9,7 @@ import GrpcRequestPane from 'components/RequestPane/GrpcRequestPane/index';
 import ResponsePane from 'components/ResponsePane';
 import GrpcResponsePane from 'components/ResponsePane/GrpcResponsePane';
 import { findItemInCollection, findItemInCollectionByPathname, areItemsLoading } from 'utils/collections';
+import { isForkTab, ForkTabPane } from 'fork/registry';
 import { cancelRequest, sendRequest } from 'providers/ReduxStore/slices/collections/actions';
 import { updateGqlDocsOpen } from 'providers/ReduxStore/slices/tabs';
 import RequestNotFound from './RequestNotFound';
@@ -442,6 +443,8 @@ const RequestTabPanel = () => {
   if (focusedTab.type === 'workspaceEnvironments') {
     return <GlobalEnvironmentSettings />;
   }
+
+  if (isForkTab(focusedTab)) return <ForkTabPane tab={focusedTab} />;
 
   if (focusedTab.type === 'mock-server') {
     const instance = resolvedMockServerInstance;

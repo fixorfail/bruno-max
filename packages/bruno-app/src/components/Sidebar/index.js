@@ -8,6 +8,7 @@ import { updateLeftSidebarWidth, updateIsDragging, toggleSidebarSearch } from 'p
 import { setLocalStorageValue, SIDEBAR_WIDTH_KEY } from 'utils/common/localStorage';
 import CollectionsSection from './Sections/CollectionsSection/index';
 import ApiSpecsSection from './Sections/ApiSpecsSection/index';
+import { forkSidebarSections } from 'fork/registry';
 import MockServersSection from './Sections/MockServersSection/index';
 import useKeybinding from 'hooks/useKeybinding';
 import { useBetaFeature, BETA_FEATURES } from 'utils/beta-features';
@@ -26,7 +27,8 @@ const Sidebar = () => {
       {
         id: 'api-specs',
         component: ApiSpecsSection
-      }
+      },
+      ...forkSidebarSections
     ];
 
     if (isMockServerEnabled) {

@@ -1,5 +1,5 @@
 const { ipcMain } = require('electron');
-const { runFlow, describeFlow, listRuns, readCapture } = require('@bruno-max/flow');
+const { runFlow, describeFlow, listRuns, readRun, readCapture } = require('@bruno-max/flow');
 const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
 const { buildVariables } = require('./variables');
@@ -60,6 +60,11 @@ const describeFlowHandler = ({ entry, scope }) => {
 const listRunsHandler = ({ scopeRoot, flow }) => {
   const { readFile, listDirectory } = createPorts({});
   return listRuns({ scopeRoot, flow, ports: { readFile, listDirectory } });
+};
+
+const readRunHandler = ({ dir, stepIds, iteration }) => {
+  const { readFile, listDirectory } = createPorts({});
+  return readRun({ dir, stepIds, iteration, ports: { readFile, listDirectory } });
 };
 
 const readCaptureHandler = ({ dir, stepId, iteration, attempt }) => {
@@ -133,6 +138,7 @@ const registerFlowIpc = (mainWindow) => {
   ipcMain.handle('renderer:flow-run', (event, request) => startRun(mainWindow, request));
   ipcMain.handle('renderer:flow-cancel', (event, request) => cancelRun(request));
   ipcMain.handle('renderer:flow-list-runs', (event, request) => listRunsHandler(request));
+  ipcMain.handle('renderer:flow-read-run', (event, request) => readRunHandler(request));
   ipcMain.handle('renderer:flow-read-capture', (event, request) => readCaptureHandler(request));
 
   ipcMain.handle('renderer:flow-watch-scope', (event, scope) => {
@@ -155,6 +161,7 @@ const registerFlowIpc = (mainWindow) => {
 module.exports = registerFlowIpc;
 module.exports.describeFlowHandler = describeFlowHandler;
 module.exports.listRunsHandler = listRunsHandler;
+module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
 module.exports.startRun = startRun;
 module.exports.cancelRun = cancelRun;
