@@ -207,3 +207,58 @@ describe('R4o — readCapture', () => {
     await expect(run.readCapture({ stepId: 'conditional', attempt: 1 })).rejects.toThrow(/no capture/);
   });
 });
+
+describe('R4o — readRun', () => {
+  it('recovers every step result the run recorded', async () => {
+    const run = await simple();
+    const stored = await run.readRun();
+
+    expect(stored.runId).toBe(run.result.runId);
+    expect(stored.state).toBe('complete');
+    expect(stored.status).toBe(run.result.status);
+    // The detail half of the split: `listRuns` reports counts, this reports the steps themselves.
+    expect(stored.result.iterations[0].steps.map((step) => step.id)).toEqual(
+      run.result.iterations[0].steps.map((step) => step.id)
+    );
+  });
+
+  it('answers which of the given steps have a capture', async () => {
+    const run = await simple();
+    const stored = await run.readRun({ stepIds: ['create', 'consume'] });
+
+    // `consume` is skipped by its condition, so it dispatched nothing and has no directory.
+    expect(stored.capturedSteps).toEqual(['create']);
+  });
+
+  it('finds a sub-flow internal by its namespaced id, which the directory name does not carry', async () => {
+    const run = await runFlow(flow('r4-subflow-slot.flow.yml'), {
+      responses: { createThing: CREATED, getThing: THING, getState: STATE }
+    });
+    const stored = await run.readRun({ stepIds: ['create', 'child/use', 'child'] });
+
+    // §14.5 writes `child/use` as `child__use`, so a reader inverting the name would answer this
+    // wrongly for a step genuinely called `child__use`. Asking by id is what makes it decidable.
+    expect(stored.capturedSteps).toEqual(['create', 'child/use']);
+  });
+
+  it('reports a run with no summary as interrupted and still names its flow', async () => {
+    const run = await simple();
+    run.files.remove(path.join(run.captureDir, 'summary.json'));
+
+    const stored = await run.readRun({ stepIds: ['create'] });
+
+    expect(stored.state).toBe('interrupted');
+    // §10: the captures are the only evidence of what happened, and it must not claim an outcome.
+    expect(stored.capturedSteps).toEqual(['create']);
+    expect(stored.status).toBeUndefined();
+    expect(stored.result).toBeUndefined();
+    // §10: the captures are the only evidence of what happened, and it must not claim an outcome.
+    expect(stored.flow).toContain('r4b-condition-false.flow.yml');
+  });
+
+  it('refuses a directory that is not a run', async () => {
+    const run = await simple();
+
+    await expect(run.readRun({ dir: path.join(CAPTURE_ROOT, 'not-a-run') })).rejects.toThrow(/not a run directory/);
+  });
+});

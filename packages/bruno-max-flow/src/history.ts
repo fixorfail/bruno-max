@@ -12,9 +12,15 @@
  */
 import * as path from 'path';
 
-import { CAPTURE_DIRNAME, RUN_DIRECTORY, attemptFile, stepCaptureDir } from './capture';
+import { ATTEMPT_FILE, CAPTURE_DIRNAME, RUN_DIRECTORY, attemptFile, stepCaptureDir } from './capture';
 import type { RunManifest, StepCapture } from './types/capture';
-import type { ListRunsOptions, ReadCaptureOptions, RunIndexEntry } from './types/options';
+import type {
+  ListRunsOptions,
+  ReadCaptureOptions,
+  ReadRunOptions,
+  RunIndexEntry,
+  StoredRun
+} from './types/options';
 import type { FlowContext, ReadFile } from './types/ports';
 import type { RunResult } from './types/result';
 
@@ -111,6 +117,53 @@ export const listRuns = async (options: ListRunsOptions): Promise<RunIndexEntry[
   return runs
     .filter((entry): entry is RunIndexEntry => entry !== undefined)
     .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+};
+
+/**
+ * 002 §11.2. The detail half of the index/detail split — every step's outcome for one run, which is
+ * what §10 needs to open a past run into the same view a live one uses.
+ *
+ * **`stepIds` is an input because the directory name is a lossy encoding of the step id.** §14.5's
+ * segment replaces `/` with `__`, suffixes a reserved device name and truncates a long id to a hash,
+ * so a name cannot be inverted — `child__use` is `child/use` or a step literally called `child__use`,
+ * and nothing on disk distinguishes them. The caller already knows the ids it is asking about (the
+ * graph `describeFlow` returned), so the answerable question is which of *those* have a capture, and
+ * the mapping stays in the engine where §14.5 puts every path computation.
+ */
+export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
+  const context = readContext(options.dir);
+  const manifest = await readJson<RunManifest>(options.ports.readFile, path.join(options.dir, 'run.json'), context);
+  if (!manifest) {
+    throw new Error(`${options.dir} is not a run directory: no run.json`);
+  }
+
+  const result = await readJson<RunResult>(options.ports.readFile, path.join(options.dir, 'summary.json'), context);
+
+  const captured = await Promise.all(
+    (options.stepIds || []).map(async (stepId) => {
+      try {
+        const entries = await options.ports.listDirectory(
+          stepCaptureDir(options.dir, stepId, options.iteration),
+          context
+        );
+        return entries.some((entry) => ATTEMPT_FILE.test(entry)) ? stepId : undefined;
+      } catch {
+        return undefined;
+      }
+    })
+  );
+
+  return {
+    runId: manifest.runId,
+    dir: options.dir,
+    flow: manifest.flow,
+    startedAt: manifest.startedAt,
+    state: result ? 'complete' : active.has(manifest.runId) ? 'running' : 'interrupted',
+    status: result?.status,
+    summary: result?.summary,
+    result,
+    capturedSteps: captured.filter((stepId): stepId is string => stepId !== undefined)
+  };
 };
 
 export const readCapture = async (options: ReadCaptureOptions): Promise<StepCapture> => {

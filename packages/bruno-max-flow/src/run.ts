@@ -630,7 +630,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
       )
     : [undefined];
 
-  state.emit({ type: 'run:start', runId, flow: options.entry, iterationCount: rows.length });
+  state.emit({ type: 'run:start', runId, flow: options.entry, iterationCount: rows.length, captureDir: state.capture?.dir });
 
   const iterations: IterationResult[] = [];
   const parallel = flow.dataset?.parallel || 1;

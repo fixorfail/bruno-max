@@ -17,4 +17,4 @@ export * from './types/capture';
 export { runFlow } from './run';
 export { validateFlow } from './validate';
 export { describeFlow } from './describe';
-export { listRuns, readCapture } from './history';
+export { listRuns, readRun, readCapture } from './history';

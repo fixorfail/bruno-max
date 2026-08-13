@@ -76,6 +76,26 @@ export type RunIndexEntry = {
   summary?: RunResult['summary'];
 };
 
+export type ReadRunOptions = {
+  /** A run directory, as `listRuns` reports it. */
+  dir: string;
+  /** The ids to ask about — §14.5's directory name cannot be inverted back to one. */
+  stepIds?: string[];
+  /** Which iteration's captures to look under, for a `dataset:` flow (§14.5). */
+  iteration?: number;
+  ports: { readFile: ReadFile; listDirectory: ListDirectory };
+};
+
+/**
+ * 002 §11.2's index/detail split: `listRuns` answers which runs exist, this answers what one did.
+ * `capturedSteps` is what makes an interrupted run render — with no `summary.json` the only evidence
+ * of what happened is which step directories exist.
+ */
+export type StoredRun = RunIndexEntry & {
+  result?: RunResult;
+  capturedSteps: string[];
+};
+
 export type ReadCaptureOptions = {
   dir: string;
   stepId: string;

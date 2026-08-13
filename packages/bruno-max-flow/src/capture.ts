@@ -60,6 +60,9 @@ export const stepCaptureDir = (runDir: string, stepId: string, iteration?: numbe
 
 export const attemptFile = (attempt: number): string => `attempt-${attempt}.json`;
 
+/** The reader's half of the name above — 002 §11.2's `capturedSteps` finds a step by its presence. */
+export const ATTEMPT_FILE = /^attempt-\d+\.json$/;
+
 const TEXTUAL = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|[^;]*\+(json|xml))/i;
 
 const EXTENSIONS: Record<string, string> = {

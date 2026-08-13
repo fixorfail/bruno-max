@@ -602,6 +602,31 @@ describe('R4c2 — how a bare operand resolves', () => {
   });
 });
 
+describe('R4j — run:start names the capture directory', () => {
+  // Reporting it only in `RunResult` would mean a consumer could not open a *running* step's
+  // capture, which is exactly what 002 §9 does — and the engine knows the directory before the
+  // first step, since §14.5 writes run.json into it at run start.
+  it('carries captureDir, matching the one the result reports', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE }
+    });
+    const started = run.result;
+    const event = run.events.find((entry) => entry.type === 'run:start');
+
+    expect(event.captureDir).toBe(started.captureDir);
+    expect(event.captureDir).toEqual(expect.any(String));
+  });
+
+  it('omits it when capture is disabled', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE },
+      overrides: { capture: { enabled: false } }
+    });
+
+    expect(run.events.find((entry) => entry.type === 'run:start').captureDir).toBeUndefined();
+  });
+});
+
 describe('R4j — an auth profile arrives as Bruno Auth', () => {
   // Authored flat, delivered nested (§6.4). The flat form reached `ExecuteRequest` unchanged until
   // the app tried to hand it to `setAuthHeaders`, which reads `auth.bearer.token` — so the one

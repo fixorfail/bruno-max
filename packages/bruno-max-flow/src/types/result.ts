@@ -100,7 +100,7 @@ export type Diagnostic = {
  * emission, and every event survives `structuredClone` — bodies live in the capture (§13.2).
  */
 export type FlowEvent
-  = | { type: 'run:start'; runId: string; flow: string; iterationCount: number }
+  = | { type: 'run:start'; runId: string; flow: string; iterationCount: number; captureDir?: string }
     | { type: 'iteration:start'; index: number; row?: Vars }
     | { type: 'step:start'; id: string; index: number; operation?: string }
     | { type: 'step:attempt'; id: string; index: number; attempt: number; status: string; durationMs: number }

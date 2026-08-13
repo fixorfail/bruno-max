@@ -150,6 +150,8 @@ const createPorts = (options) => {
     paths: () => [...written.keys()].sort(),
     has: (target) => written.has(target),
     read: (target) => written.get(target),
+    /** Simulates a process killed before it wrote a file — 002 §10's interrupted run. */
+    remove: (target) => written.delete(target),
     json: (target) => {
       const found = written.get(target);
       if (!found) throw new Error(`harness: nothing was written to ${target}`);
@@ -332,6 +334,7 @@ const report = (result, log, files, ports, readRuns) => {
     files,
     /** 002 §11.2's readers run against the ports this run wrote through — that is the round trip. */
     listRuns: readRuns,
+    readRun: (options = {}) => engine.readRun({ dir: result.captureDir, ports, ...options }),
     readCapture: (options) => engine.readCapture({ dir: result.captureDir, ports, ...options }),
     captureDir: result.captureDir,
     /** Every written path relative to the run's own directory — the layout without its timestamp. */
@@ -356,6 +359,8 @@ const report = (result, log, files, ports, readRuns) => {
  */
 const runFlow = async (file, options = {}) => {
   const { ports, log, controller, files, readRuns } = createPorts(options);
+  // Every event, in emission order — several rows of R4j and R4k are about the stream itself.
+  const events = [];
   const result = await engine.runFlow({
     entry: flowPath(file),
     scope: { workspaceRoot: FIXTURES },
@@ -363,9 +368,12 @@ const runFlow = async (file, options = {}) => {
     variables: { environment: DEFAULT_VARS },
     overrides: options.overrides,
     signal: controller.signal,
-    onEvent: options.onEvent
+    onEvent: (event) => {
+      events.push(event);
+      options.onEvent?.(event);
+    }
   });
-  return report(result, log, files, ports, readRuns);
+  return { ...report(result, log, files, ports, readRuns), events };
 };
 
 /** §13.2's read-only entry — two ports, because validation dispatches nothing. */
