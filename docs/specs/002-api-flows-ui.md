@@ -552,6 +552,18 @@ created.
 **A capture that could not be read is reported as that**, never as a step that sent nothing. The two
 are different facts about the run, and only one of them is the pane's to assert.
 
+**The body is the last element in the pane**, after the headers and the declared outputs — it is the
+thing being read, and everything above it is context for it. A textual body renders through the app's
+own `CodeEditor`, so JSON is highlighted and follows the user's theme and code-font preference; a
+bespoke highlighter here would be a second one to maintain and would match neither. JSON is
+pretty-printed on the way in, because a captured body is whatever went over the wire and that is
+usually one line.
+
+`CapturedBody`'s other three kinds are recorded **by reference** (001 §14.5) and have no content to
+show: `binary` names the sibling artifact the run wrote, `upload` names the fixture already in the
+repository, and `multipart` lists its parts. Rendering any of them as text would print a byte count
+where the reader expects a payload.
+
 **Bodies come from the capture, fetched on demand.** 001 §13.2 excludes bodies from events
 deliberately — every event crosses IPC, and attaching payloads would serialize them twice for data
 the UI needs only when a step is opened. Opening a step reads its capture through

@@ -82,16 +82,23 @@ const StyledWrapper = styled.div`
     font-size: 0.75rem;
   }
 
+  /* The body is the pane's last element (§9), so it takes the room that is left rather than a
+     fixed height — CodeMirror sizes to its content and scrolls inside this box. */
   .detail-body {
     margin-top: 0.5rem;
-    padding: 0.5rem;
-    font-size: 0.75rem;
-    background: ${(props) => props.theme.sidebar.collection.item.bg};
+    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
     border-radius: 3px;
-    max-height: 16rem;
     overflow: auto;
-    white-space: pre-wrap;
-    word-break: break-all;
+    max-height: 24rem;
+
+    .CodeMirror {
+      background: transparent;
+      height: auto;
+    }
+  }
+
+  .detail-parts {
+    margin-top: 0.5rem;
   }
 
   .detail-table {

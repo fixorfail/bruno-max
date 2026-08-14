@@ -1,5 +1,11 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+
+// The real editor pulls the store in through its CodeMirror setup; these scenarios are about which
+// capture the pane asks for and how it reports a read that failed, not about syntax highlighting.
+jest.mock('components/CodeEditor', () => ({ value }) => <pre data-testid="body">{value}</pre>);
+jest.mock('providers/Theme', () => ({ useTheme: () => ({ displayedTheme: 'dark' }) }));
+
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
@@ -16,7 +22,11 @@ const theme = themes.dark || Object.values(themes)[0];
 const node = { state: 'success', attempts: 1, assertions: [], outputs: {} };
 
 const renderPane = (props) => {
-  const store = configureStore({ reducer: { flows: flowsReducer } });
+  // `state.app.preferences` is where the code font comes from, exactly as every other
+  // CodeEditor consumer reads it.
+  const store = configureStore({
+    reducer: { flows: flowsReducer, app: () => ({ preferences: { font: {} } }) }
+  });
   return render(
     <Provider store={store}>
       <ThemeProvider theme={theme}>
@@ -53,6 +63,43 @@ describe('StepDetail', () => {
 
     expect(await screen.findByText(/could not be read/)).toBeInTheDocument();
     expect(screen.queryByText('Nothing was sent')).not.toBeInTheDocument();
+  });
+
+  it('pretty-prints a JSON body and shows it last', async () => {
+    window.ipcRenderer.invoke.mockResolvedValue({
+      request: {
+        method: 'POST',
+        url: 'https://x/pay',
+        headers: { 'content-type': 'application/json' },
+        // 002 §11.2's CapturedBody is a tagged union — the text kind carries `text`, and a captured
+        // body is whatever went over the wire, which for JSON is usually one line.
+        body: { kind: 'text', contentType: 'application/json', text: '{"amount":100,"currency":"GBP"}' }
+      }
+    });
+    renderPane({ iteration: undefined });
+
+    const body = await screen.findByTestId('body');
+    expect(body).toHaveTextContent('"amount": 100');
+    expect(body.textContent).toContain('\n');
+    // §9 puts the payload last, after the headers and the declared outputs.
+    const rendered = [...document.querySelectorAll('.detail-row, [data-testid="body"]')];
+    expect(rendered[rendered.length - 1]).toBe(body);
+  });
+
+  it('names a binary body rather than trying to show it', async () => {
+    window.ipcRenderer.invoke.mockResolvedValue({
+      response: {
+        status: 200,
+        headers: {},
+        responseTimeMs: 12,
+        body: { kind: 'binary', contentType: 'application/pdf', byteLength: 2048, file: 'attempt-1.response.pdf' }
+      }
+    });
+    renderPane({ iteration: undefined });
+    fireEvent.click(screen.getByTestId('flow-step-tab-response'));
+
+    // 001 §14.5 never inlines a binary body; it names the sibling artifact it wrote instead.
+    expect(await screen.findByText(/attempt-1\.response\.pdf/)).toBeInTheDocument();
   });
 
   it('says so when the run reported no capture directory at all', async () => {

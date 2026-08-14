@@ -1,5 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { useDispatch } from 'react-redux';
+import { useDispatch, useSelector } from 'react-redux';
+import get from 'lodash/get';
+import CodeEditor from 'components/CodeEditor';
+import { useTheme } from 'providers/Theme';
+import { safeParseJSON, safeStringifyJSON } from 'utils/common';
+import { getCodeMirrorModeBasedOnContentType } from 'utils/common/codemirror';
 import { readStepCapture } from '../../actions';
 import StyledWrapper from './StyledWrapper';
 
@@ -25,19 +30,70 @@ const Row = ({ label, children }) => (
   </div>
 );
 
+const bytes = (count) => `${count} bytes`;
+
+/**
+ * 002 §11.2's `CapturedBody`, which is a tagged union — the three non-text kinds are recorded **by
+ * reference** rather than inlined (001 §14.5), so there is a name to show and no content.
+ *
+ * The text kind goes through the app's own `CodeEditor`, which is what gives JSON its highlighting;
+ * a bespoke highlighter here would be a second one to maintain and would not follow the user's
+ * theme or code-font preference.
+ */
 const Body = ({ body }) => {
+  const { displayedTheme } = useTheme();
+  const preferences = useSelector((state) => state.app.preferences);
+
   if (!body) {
     return <div className="detail-empty">No body</div>;
   }
-  // §14.5 never inlines a binary body — it records the type and names a sibling artifact.
-  if (body.preview === undefined) {
-    return <div className="detail-empty">{`${body.contentType || 'binary'} · ${body.size ?? 0} bytes`}</div>;
+
+  if (body.kind === 'binary') {
+    return (
+      <div className="detail-empty">{`${body.contentType || 'binary'} · ${bytes(body.byteLength)} · ${body.file}`}</div>
+    );
   }
+
+  if (body.kind === 'upload') {
+    // §7.5's uploads are captured by reference: the fixture is already in the repository, and
+    // naming it is the more useful record than copying it into every run.
+    return (
+      <div className="detail-empty">{`${body.filename} · ${body.contentType} · ${bytes(body.byteLength)}`}</div>
+    );
+  }
+
+  if (body.kind === 'multipart') {
+    return (
+      <div className="detail-parts">
+        {body.parts.map((part) => (
+          <Row key={part.name} label={part.name}>
+            {part.kind === 'file' ? `${part.filename} · ${bytes(part.byteLength)}` : part.value}
+          </Row>
+        ))}
+      </div>
+    );
+  }
+
+  const mode = getCodeMirrorModeBasedOnContentType(String(body.contentType || '').toLowerCase());
+  const isJson = mode === 'application/ld+json';
+  // A captured body is whatever went over the wire, which for JSON is usually one line.
+  const value = isJson ? safeStringifyJSON(safeParseJSON(body.text), true) : body.text;
+
   return (
-    <pre className="detail-body">
-      {body.preview}
-      {body.truncated ? '\n…truncated' : ''}
-    </pre>
+    <div className="detail-body">
+      <CodeEditor
+        theme={displayedTheme}
+        font={get(preferences, 'font.codeFont', 'default')}
+        fontSize={get(preferences, 'font.codeFontSize')}
+        value={typeof value === 'string' ? value : body.text}
+        mode={mode}
+        enableVariableHighlighting={false}
+        enableBrunoVarInfo={false}
+        onEdit={() => {}}
+        onRun={() => {}}
+        readOnly
+      />
+    </div>
   );
 };
 
@@ -111,6 +167,19 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
       </div>
 
       <div className="detail-body-area">
+        {/* §9: declared outputs with their values — the inspection counterpart to §5.3's data
+            edges. The edge says a value moves; this says what it was. */}
+        {node.outputs && Object.keys(node.outputs).length ? (
+          <div className="detail-outputs">
+            <div className="detail-label">Outputs</div>
+            {Object.entries(node.outputs).map(([name, value]) => (
+              <Row key={name} label={name}>
+                {JSON.stringify(value)}
+              </Row>
+            ))}
+          </div>
+        ) : null}
+
         {/* §9: with capture disabled the request and response tabs say so, rather than showing
             empty panels. Assertion and validation outcomes still render — they arrive in
             `StepResult`, so there is no excuse for losing them. */}
@@ -208,18 +277,6 @@ const StepDetail = ({ stepId, node, runDir, iteration, captureEnabled }) => {
           </div>
         ) : null}
 
-        {/* §9: declared outputs with their values — the inspection counterpart to §5.3's data
-            edges. The edge says a value moves; this says what it was. */}
-        {node.outputs && Object.keys(node.outputs).length ? (
-          <div className="detail-outputs">
-            <div className="detail-label">Outputs</div>
-            {Object.entries(node.outputs).map(([name, value]) => (
-              <Row key={name} label={name}>
-                {JSON.stringify(value)}
-              </Row>
-            ))}
-          </div>
-        ) : null}
       </div>
     </StyledWrapper>
   );

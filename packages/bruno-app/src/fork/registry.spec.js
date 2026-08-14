@@ -18,6 +18,56 @@ const expectBothLoaded = (registry, tabs) => {
   expect(registry.forkSidebarSections).toHaveLength(1);
 };
 
+/**
+ * The registry's **eager** import graph must contain no upstream module.
+ *
+ * `providers/ReduxStore/index.js` imports this file for its reducers, and fork components
+ * legitimately import upstream ones (`StepDetail` uses `components/CodeEditor`, which reaches the
+ * store). Eagerly importing the components closes that loop, and the failure is silent: the store's
+ * module is entered while this one is mid-evaluation, `forkReducers` reads as `undefined`, and
+ * `{...undefined}` is legal — so the app builds a store with no `flows` reducer and breaks
+ * somewhere else entirely. `React.lazy` keeps the components out of this graph.
+ */
+describe('the fork registry import graph', () => {
+  const fs = require('fs');
+  const path = require('path');
+
+  const FORK_ROOT = path.join(process.cwd(), 'src', 'fork');
+  const UPSTREAM = /^(components|providers|utils|ui|themes|hooks|api|assets|pageComponents)\//;
+
+  const resolveLocal = (from, specifier) => {
+    const target = path.resolve(path.dirname(from), specifier);
+    for (const candidate of [target, `${target}.js`, path.join(target, 'index.js')]) {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    }
+    return undefined;
+  };
+
+  const eagerImports = (entry, seen = new Set()) => {
+    if (seen.has(entry)) return [];
+    seen.add(entry);
+
+    const source = fs.readFileSync(entry, 'utf8');
+    // Static imports only — a `lazy(() => import(...))` is deliberately not followed, because it is
+    // exactly what keeps the component graph out of this module's evaluation.
+    const specifiers = [...source.matchAll(/^import\s+[^;]*?from\s+'([^']+)';/gm)].map((match) => match[1]);
+
+    return specifiers.flatMap((specifier) => {
+      if (!specifier.startsWith('.')) return [{ from: entry, specifier }];
+      const local = resolveLocal(entry, specifier);
+      return local ? eagerImports(local, seen) : [];
+    });
+  };
+
+  it('reaches no upstream module', () => {
+    const offenders = eagerImports(path.join(FORK_ROOT, 'registry.js')).filter((entry) =>
+      UPSTREAM.test(entry.specifier)
+    );
+
+    expect(offenders).toEqual([]);
+  });
+});
+
 describe('the fork registry', () => {
   it('loads when the registry is evaluated first', () => {
     jest.isolateModules(() => {
