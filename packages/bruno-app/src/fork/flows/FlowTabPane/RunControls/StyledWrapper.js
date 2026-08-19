@@ -72,6 +72,17 @@ const StyledWrapper = styled.div`
       color: ${(props) => props.theme.colors.text.warning};
     }
   }
+
+  /* The step the verdict fell on, where the counts beside it account for none of it (§8.4). It is a
+     button because it goes somewhere — the step detail that explains it. */
+  .run-cause {
+    color: ${(props) => props.theme.colors.text.danger};
+    border-bottom: 1px dotted currentColor;
+
+    &:hover {
+      opacity: 0.8;
+    }
+  }
 `;
 
 export default StyledWrapper;

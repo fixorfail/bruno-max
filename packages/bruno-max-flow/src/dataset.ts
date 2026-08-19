@@ -8,6 +8,13 @@
  */
 import * as path from 'path';
 import * as YAML from 'yaml';
+
+/**
+ * `merge: true` matches the flow parser (`document.ts`), and `logLevel: 'silent'` keeps the library
+ * from writing to whatever console the host owns — §13.1 has the engine report through its return
+ * value, and a fixture with an odd construct must not print over the CLI's own output (§14.7).
+ */
+const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
 import { evaluateJsTemplateLiteral } from '@usebruno/js/src/utils';
 
 import type { Vars } from './types/ports';
@@ -50,6 +57,6 @@ export const parseDataset = (source: string, text: string): Vars[] => {
   const extension = path.extname(source).toLowerCase();
   if (extension === '.csv') return parseCsv(text);
   if (extension === '.json') return JSON.parse(text) as Vars[];
-  if (extension === '.yml' || extension === '.yaml') return (YAML.parse(text, { merge: true }) || []) as Vars[];
+  if (extension === '.yml' || extension === '.yaml') return (YAML.parse(text, YAML_OPTIONS) || []) as Vars[];
   throw new Error(`unsupported dataset format ${extension} — CSV, JSON and YAML are supported`);
 };

@@ -1,0 +1,59 @@
+# R4s — §9.1's `writers: any`. Two branches that exclude each other both produce a session token, and
+# every step after the one that ran uses it. No step descends from both writers, because only one of
+# them ever runs — which is the shape `writers: all` cannot express and this fixture exists for.
+version: 1
+
+meta:
+  name: R4s — a slot written by alternatives
+
+apis:
+  regress-api:
+    source: ../../specs/regressions-v1.yml
+    auth: session
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+authProfiles:
+  # The token goes on every request through the binding, so no step names a header (§6.4).
+  session:
+    mode: apikey
+    key: Authorization
+    value: "Token {{shared.token}}"
+    placement: header
+
+shared:
+  token: { writers: any }
+
+steps:
+  - id: probe
+    operation: regress-api#getState
+    auth: none
+
+  - id: seeded
+    operation: regress-api#createThing
+    auth: none
+    depends: [probe]
+    when: steps.probe.status eq 200
+    body: { name: seeded }
+    outputs: { token: data.id }
+    shared: [token]
+
+  - id: use_seeded
+    operation: regress-api#getThing
+    depends: [seeded]
+    pathParams: { id: thing-1 }
+
+  - id: signed_up
+    operation: regress-api#createThing
+    auth: none
+    depends: [probe]
+    when: steps.probe.status neq 200
+    body: { name: signed_up }
+    outputs: { token: data.id }
+    shared: [token]
+
+  - id: use_signed_up
+    operation: regress-api#getThing
+    depends: [signed_up]
+    pathParams: { id: thing-1 }

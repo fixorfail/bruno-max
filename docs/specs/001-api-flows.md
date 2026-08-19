@@ -4,7 +4,7 @@
 each local to one execution path and none changes a signature; the ports, the engine boundary, the
 expression dialect and the document schema are decided.
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-13
+**Last revised:** 2026-08-14
 
 Sequenced, spec-driven API request execution: a flow references OpenAPI operations instead of
 copying them, declares the data that moves between steps, and runs identically in the app and the
@@ -220,7 +220,8 @@ vars:                          # flow-scoped values; referenced bare as {{curren
   testEmail: "qa+{{$randomUUID}}@example.com"    # generated once, stable across steps
   catalog: !file ./fixtures/catalog.json         # loaded from disk — see §7.4
 
-shared: [chargeId]             # cross-branch value slots; see §9.1
+shared: [chargeId]             # cross-branch value slots; a mapping where one names its
+                               # own `writers:` rule — see §9.1
 
 dataset: ./fixtures/customers.csv   # optional; see §9.4
 
@@ -822,6 +823,14 @@ resolves identically whether it is read by a request or by a flow.
 §13.2's `RunOptions.variables` carries five fields and the chain has six ranks, which reads like a
 discrepancy and is not. Two of those fields are not tiers, and one tier is not a field:
 
+**`--global-env <name>` fills the `globalEnvironment` rank**, from the workspace's own
+`environments/<name>.yml` — the file the app edits and `bru run --global-env` already reads, so the
+two commands and the app cannot end up naming three different things. `bru` resolves it per flow's
+scope, because a selection can span two workspaces, and a name matching no file is a usage error
+reported before the first request rather than after it. A `secret: true` value is not in that file
+(002 §7.2 records why), so from `bru` it arrives empty and `--env-var`, a `.env` or the process
+environment is the answer for one.
+
 **`--env-var` overrides a variable; it does not outrank a scope.** It merges into the **environment**
 tier and wins inside it, which is exactly what `bru run` does today
 (`bruno-cli/src/commands/run.js` assigns each `--env-var` into `envVars` before the environment is
@@ -915,11 +924,19 @@ type.** A placeholder embedded in surrounding text stringifies, as it must:
       label:      "batch {{steps.get_batch.id}} (EU)"      # -> "batch B-42 (EU)"   string
 ```
 
-Without this rule nothing typed can reach a JSON body at all. YAML forces the quotes — bare
-`item_count: {{...}}` is a syntax error, because `{` opens a flow mapping — so *every* value
-crossing from a step output into a structured body would arrive as a string, and a numeric field
-would break on the first request. The rule is not an ergonomic nicety; it is what makes outputs
+Without this rule nothing typed can reach a JSON body at all. YAML forces the quotes — `{` opens a
+flow mapping, so a bare `item_count: {{...}}` is not the reference it looks like — and *every* value
+crossing from a step output into a structured body would otherwise arrive as a string, and a numeric
+field would break on the first request. The rule is not an ergonomic nicety; it is what makes outputs
 usable as request data.
+
+**An unquoted whole-value reference is a parse error** (§14.3's `parse-error`, anchored at the value).
+It is tempting to call it a YAML syntax error and leave it to the parser, but it is not one: `token:
+{{ token }}` is a well-formed mapping whose single key is the mapping `{ token }`, so the file parses,
+the flow runs, and the request goes out carrying `{"{ token }": null}` where its author wrote a
+reference. Nothing downstream can recover the intent — by then the text is gone — so the parse is
+where it has to be caught. A key that is a collection has no other use in this format, which is what
+makes the check exact rather than a heuristic over `{{`.
 
 The boundary is deliberately syntactic rather than schema-driven. "Whole value or not" is visible
 in the file and identical whether or not the operation's schema is complete, whereas coercing to
@@ -1619,6 +1636,56 @@ visibility rule adapted to slots, and it does the same job: it guarantees every 
 terminal outcome before the read happens, so a read is never a race against a branch still in
 flight. Violations are validation errors, not runtime surprises.
 
+**A slot whose writers are alternatives asks for less, and says so.** The rule above is written for a
+*join*: several branches may run, and the reader sits below all of them. The other shape is branches
+that exclude each other — one produces the value and the steps after it *on that same branch* consume
+it — where no reader can descend from every writer, because only one writer ever runs. A slot declares
+which it is:
+
+```yaml
+shared:
+  chargeId:      { writers: all }   # the join above — and the default
+  sessionToken:  { writers: any }   # alternatives: descend from one writer, not all
+```
+
+`shared: [chargeId]` remains the list form and means `writers: all`, so every existing flow keeps its
+meaning. Under `any` a reader must still descend from *a* writer — a read with none above it is
+reading nothing — and a slot no step writes stays legal under both, resolving empty as below.
+
+**`any` is declared, not inferred.** Whether two branches truly exclude each other depends on `when:`,
+which is a runtime predicate, so the validator cannot prove it and does not try. The cost is stated
+plainly: under `any` a reader below one writer while another is still in flight is a race the author
+has taken responsibility for. `all` stays the default so nobody acquires that by accident.
+
+**The auth token is why this matters at the scale flows are written.** A flow that can reach its API
+by more than one route — seeded or signed up, cached credential or fresh login — produces its session
+token on either branch and then needs it on *every* request after that. Expressed as a slot with
+`writers: any` and read from an `authProfiles:` entry bound to the api (§6.4), that is four lines in
+the file and nothing at all in the steps:
+
+```yaml
+shared:
+  sessionToken: { writers: any }
+
+authProfiles:
+  session:
+    mode: apikey
+    key: Authorization
+    value: "Token {{shared.sessionToken}}"
+    placement: header
+
+apis:
+  backend:
+    source: ./openapi.yml
+    auth: session                     # every step on this binding, unless it says `auth: none`
+```
+
+Each producing step adds `shared: [sessionToken]` beside the output it already declares. No step names
+a header, and a step that must go out unauthenticated — the probe, the login itself — says `auth:
+none`, which is the same opt-out it would need anyway. §8.4's visibility sweep covers a profile's
+fields and a binding's `defaultHeaders` exactly as it covers a body, so the credential is a data
+dependency like any other: validated, and drawn as an edge (002 §5.3).
+
 **Last writer in declaration order wins.** When more than one writer ran and produced a value, the
 slot holds the one whose step appears last in `steps:`. The join barrier orders the writes against
 the *read*, but not against *each other* — two branches running concurrently finish in whatever
@@ -2118,6 +2185,22 @@ attempt is aborted, no further attempts are scheduled, and the step fails with r
 `max-duration-exceeded`. It is off unless set; `timeout` alone bounds each request, `maxDuration`
 bounds the step.
 
+**The budget is a deadline read off the injected clock, not a timer** — the same mechanism §11.3's
+whole-run budget uses, and for the same reason: the clock is the engine's only source of time
+(§13.2), so a budget kept by a timer would elapse differently under a host that supplies its own,
+including the one where a poll's delays are the only thing that advances time.
+
+**Aborting the attempt in flight is the request timeout doing it.** Each attempt is bounded by
+whichever of `timeout` and the budget's remainder runs out first, so a step cannot sit inside one
+attempt past the budget that governs it, and the engine needs no second timer to make that true. The
+abort arrives as a transport error like any other; over budget, that is what it is reported as.
+
+**The budget answers a step that wanted to go on.** It is consulted after the retry predicate, so a
+poll that settles inside its budget is judged on what it settled as. And it outranks the last
+attempt's own reason (§14.6), because it is why the step stopped where it did: reporting
+`unexpected-status` would describe a poll that was still working when its time ran out as one that had
+settled on a bad answer.
+
 ### 11.2 Failure propagation
 
 When a step fails:
@@ -2214,6 +2297,19 @@ may still define; for a slot the engine owns and knows was never written, sendin
 When a run is aborted — Ctrl-C, `SIGTERM`, a CI timeout — in-flight requests are aborted and their
 steps recorded as **`cancelled`**. Steps that had not started are skipped with reason
 `run-cancelled`.
+
+**A polling step stops where it stands, and reports `cancelled`.** §11.1 lets a retry schedule run to
+`maxAttempts` delays of up to `maxDelay` each, so a poll that served out its schedule after the stop
+would go on sending requests for minutes into a run that was already over — and, from an app, for as
+long as the current delay lasts after a cancel that appeared to do nothing. Two things follow: the
+delay itself is interruptible, so a stop lands during a sleep rather than after it; and the step's
+verdict is the interruption rather than its last attempt, because a poll cut short before its
+condition held has not passed.
+
+**Once the run is stopped, a step that does not run says so.** A step below a cancelled one has an
+unmet dependency in the strict sense, and reporting it that way describes the graph rather than what
+happened — every step below the stop would name its parent instead of the stop. The exception is a
+step whose `depends` accepts `cancelled`, which is answering its declaration.
 
 The exception is steps whose `depends` accepts `cancelled` (§9.1): those still run, so a flow can
 clean up after an interrupted run. This is the only circumstance in which the engine schedules work
@@ -2441,6 +2537,14 @@ It remains directly runnable when named explicitly, which is what keeps it testa
 bru flow run flows/shared/login.flow.yml --param email=qa@example.com
 ```
 
+**A direct run resolves `params:` exactly as an invoking `uses:` step does** — each declared param
+takes what the caller supplied, and its `default` where the caller supplied nothing. The two paths
+have to agree or the same library flow behaves differently depending on who ran it, and the way this
+fails is quiet: `params` is a reserved root (§7.3), so a param nobody filled is not an unproduced
+`steps.*` reference — nothing skips the step and nothing reports it, and `{{params.x}}` goes out on
+the wire verbatim. A default may itself reference a variable, so a direct run resolves it against the
+run's own environment, which is what a sub-flow's caller does for it.
+
 `bru flow list` marks library flows, so the distinction is visible without opening files.
 
 ---
@@ -2471,6 +2575,13 @@ No cycle is introduced: `cli` and `electron` are top consumers and already depen
 
 The engine owns graph scheduling, materialization, connectors, sub-flow resolution, assertions,
 retry, and reporting.
+
+**It reports through its return value and its events, and writes to no console.** §13.2's ports are
+the whole of what it reaches for, and stdout is not among them: the CLI owns its output (§14.7) and
+is the half a reporter is parsed from, and in the app the same stream is an Electron main process
+nobody is reading. This binds the engine's dependencies too — a YAML or schema library that logs an
+advisory on the engine's behalf breaks the rule exactly as a `console.log` here would, so a parser
+that has a quiet mode is put in it and anything worth saying is returned as a diagnostic instead.
 
 ### 13.2 The engine boundary
 
@@ -2566,6 +2677,7 @@ type FlowContext = {
   flow: string;                        // absolute path of the .flow.yml being executed
   scope: { workspaceRoot: string; collectionRoot?: string };
   signal: AbortSignal;                 // the run's, per §11.3
+  redactHeaders?: string[];            // the run's `config.redactHeaders` — see below
 };
 
 type CookieJarHandle = { readonly id: string };
@@ -2579,6 +2691,13 @@ type StepContext = FlowContext & {
   signal: AbortSignal;                 // the attempt's — aborts on timeout, maxDuration, or the run's
 };
 ```
+
+**`redactHeaders` crosses so that a host can obey §14.4 rather than approximate it.** The engine
+applies the policy to everything *it* emits, but a host may report a request on a surface of its own
+— 002 §8.5's network panel is one — and a host that only knew the built-in denylist would unmask
+exactly the headers an author added to the list. It is the root flow's value, whatever the depth of
+a sub-flow, which is the scope the capture already uses; it is absent until the flow is loaded, which
+is before anything is dispatched.
 
 **The cookie jar crosses as an opaque handle, not as a jar.** §7.6 splits this deliberately — the
 engine owns *which* jar a request uses, each host owns what a jar *is* — and a handle is what
@@ -2677,8 +2796,21 @@ type ExecutedResponse = {
   bytes?: Buffer;                      // raw, for binary capture (§14.5) and byte assertions
   responseTimeMs: number;
   size?: { body: number; headers: number };
+  requestHeaders?: Record<string, string>;  // what the host actually wrote — see below
 };
 ```
+
+**`requestHeaders` is how "the request that was sent" gets into the capture.** A
+`MaterializedRequest` carries the headers the *step* declared; the auth profile, the body's content
+type, the cookie jar and the proxy are all the host's to apply (§13.2), and they are applied after
+the engine hands the request over. §14.5 writing the declared set alone records a request that was
+never sent — one with no `Content-Type` on a JSON body and no `Authorization` at all, which is
+exactly the request you would be inspecting a capture to check. The host reports what it wrote, the
+capture prefers it, and §14.4's masking applies on the same terms: a header the host added is no more
+exempt than one the flow declared.
+
+It is optional, and a host that omits it leaves the capture with the declared headers — the behaviour
+before this field existed.
 
 `headers` admits `string[]` because `Set-Cookie` genuinely repeats and §7.6 depends on it. `body`
 mirrors what both hosts already produce — parsed JSON where parsing succeeded, the decoded string
@@ -2778,6 +2910,7 @@ type RunResult = {
   runId: string;
   status: 'passed' | 'failed' | 'cancelled';
   iterations: IterationResult[];
+  decidedBy?: string[];                // §14.6 — the steps the verdict fell on, deduped
   summary: { total: number; passed: number; failed: number; skipped: number; cancelled: number };
   diagnostics: Diagnostic[];           // validation warnings that did not stop the run
   captureDir?: string;
@@ -2788,13 +2921,15 @@ type IterationResult = {
   row?: Vars;
   status: 'passed' | 'failed' | 'cancelled';
   steps: StepResult[];
+  decidedBy?: string[];                // this iteration's own — §14.6
 };
 
 type StepResult = {
   id: string;                          // sub-flow steps namespaced: "auth/login"
   kind: 'operation' | 'subflow';       // a `uses:` step is a container — see below
   status: 'success' | 'failed' | 'skipped' | 'cancelled';
-  reason?: StepReason;                 // §14.6
+  reason?: StepReason;                 // §14.6 — the rule that fired
+  message?: string;                    // §14.6 — the occurrence, in human words
   attempts: number;
   durationMs: number;
   assertions: { expr: string; passed: boolean; expected?: unknown; actual?: unknown }[];
@@ -2819,6 +2954,37 @@ type StepReason =
 contract, so this type is a restatement for the compiler's benefit and gains a member only when that
 table does.
 
+**`message` is the occurrence to `reason`'s rule**, the same pairing `Diagnostic` makes between its
+`code` and its message, and it exists because a reason on its own frequently names nothing to go and
+look at: `unresolved-dependency` does not say which reference was never produced, and
+`schema-validation-failed` does not say which field. Both facts are known only where the step failed,
+and a run that drops them makes the host reconstruct them from a capture — which a
+`--no-capture` run does not have, and which the *skipped* step that failed the run never wrote. It is
+present whenever the engine knows more than the reason says and absent otherwise, it is human text
+rather than a stable format, and every host displays it: §14.7's failure block, and
+[002](./002-api-flows-ui.md) §9's step detail. It can quote a response value — the failing assertion's
+actual, a rejected field — exactly as `assertions[]` already does, so §14.4's policy governs it on the
+same terms and a provenance-aware redactor has to reach it too.
+
+**A schema is validated in the document it was written in.** An operation's schema is a *fragment* of
+its OpenAPI document, and nearly every real one refers to the rest of it —
+`$ref: '#/components/schemas/Thing'` resolves against the root of whatever is being validated, which
+for a bare fragment is the fragment. So the document's definition sections travel with every schema
+the engine hands a validator: `components` for OpenAPI 3, `definitions` for Swagger 2, whichever the
+document uses. Without them the first `$ref` fails to resolve, and it fails by refusing to *compile*
+rather than by validating loosely — which is a thrown error where a check was expected.
+
+**A `oneOf` that failed because *several* branches matched says so.** The validator's sentence is the
+same either way — nothing matched, or more than one did — and the second is a statement about the
+document: two schemas that both accept the payload, which is what a pair written for human readers
+usually is, since neither declares `required` and both allow extra properties. Told only "must match
+exactly one", a reader goes looking for the fault in their response. The count is in the error and
+not in its text, so the engine puts it there.
+
+**A schema that will not compile fails its step, not the run.** It is a statement about the document
+rather than about the response, and §13.2 has no way to attach an escaping throw to a step. It is
+reported as a failed check whose error says the schema could not be compiled.
+
 **Schema validation reports separately from assertions.** §10.1's checks are the engine's, §10.2's
 are the author's, and a step can fail one while passing all of the other — which a single `reason`
 cannot express and a flattened `assertions[]` would misattribute. Keeping them apart also keeps the
@@ -2826,6 +2992,18 @@ path-keyed error list a schema mismatch actually produces, which is the thing wo
 response drifts from its spec; `reason` still names which side failed through §14.6's existing
 `invalid-request` and `schema-validation-failed`. The field travels in the result rather than in the capture so it survives capture being
 disabled — [002](./002-api-flows-ui.md) §9 renders it and 002-C U4.10 tests exactly that.
+
+**`decidedBy` names the steps the verdict fell on**, because `status` and `summary` between them
+cannot. The counts are a tally of *step statuses*, and §11.2's `failOnUnresolved` is the one rule that
+fails a run through a step that is not itself failed — so a red run can report `0 failed` with every
+step green or skipped, and no consumer can work out which skip it was: the flag is per-step and
+`StepResult` does not carry it. Step ids rather than a reason of its own, because each named step
+already carries the `reason` and `message` that say what it did; a run-level vocabulary would be a
+restatement that can disagree with them, and a run failed by both a 500 and an unresolved skip would
+have to choose between two of them. An iteration reports its own, the run reports theirs deduped in
+iteration order, and a cancelled run names nothing — the interrupt decided it, and the steps it cut
+short did nothing to be named for. §14.7's console output and [002](./002-api-flows-ui.md) §8.4's run
+summary both read it.
 
 **Sub-flow steps are ordinary members of a flat `steps[]`.** A `uses:` step produces its own
 `StepResult` with `kind: 'subflow'`, and each internal step produces one alongside it with a
@@ -2837,11 +3015,27 @@ collapse a sub-flow to one line without `--verbose` (§14.7) while the app expan
 `status` is derived from its internals by the normal §11.2 rules; its `attempts` is always 1, since
 §12.4 bars `retry:` there.
 
+**`RunResult.diagnostics` is where a run reports on itself**, as against §14.3's, which report on the
+file. Two things go here and nowhere else: an artifact write that failed (§14.5 requires that it not
+fail the run, which is not the same as not reporting it — a step whose capture never reached disk has
+no request and no response to show, and without this nothing anywhere says why), and the failure of a
+run that ended on its own account (§13.2's termination guarantee), which belongs to no step and so
+cannot be carried by one. A host that shows a run's status and not these has a run whose entire
+account of itself is one word.
+
 `RunResult` carries **no exit code**. Mapping an outcome to 0–4 is §14.2's, and the app has no use
 for it — an engine that returned one would be encoding a CLI concern into the shared package.
 
 `validateFlow` returns diagnostics and never dispatches; the same call backs `bru flow validate`
 (§14.3) and the app's inline authoring feedback, so the two cannot drift.
+
+`readFlowMeta(text)` answers one question — what a flow calls itself — from the document a host
+already has, with no ports and no I/O. It is here rather than left to the host because §5.4 gives the
+format local tags: a host that parsed `.flow.yml` with an ordinary YAML reader rejects `!file` as an
+unknown tag and concludes the file is unreadable, which is invisible in every flow that uses no
+fixture and silent in the ones that do. [002](./002-api-flows-ui.md) §4.1's sidebar names every flow
+it lists, including the ones nobody has opened, and `describeFlow` is the wrong instrument for that:
+it resolves sub-flows and OpenAPI documents, over the network where a binding names a URL.
 
 ```ts
 type ValidateOptions = {
@@ -2883,7 +3077,8 @@ running graph.
 
 ```ts
 type FlowEvent =
-  | { type: 'run:start';       runId: string; flow: string; iterationCount: number; captureDir?: string }
+  | { type: 'run:start';       runId: string; flow: string; iterationCount: number; captureDir?: string;
+                               description?: FlowDescription }
   | { type: 'iteration:start'; index: number; row?: Vars }
   | { type: 'step:start';      id: string; index: number; operation?: string }
   | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
@@ -2917,6 +3112,13 @@ directory, so recovering the run's would mean stripping a step id off the end �
 is namespaced (`auth/login`), so the strip is two segments for some steps and one for others. That is
 a path computation, and §14.5 gives every one of those to the engine.
 
+**`run:start` also carries the run's `description`** — §14.5's snapshot, reported as well as written,
+and absent for the same reason the file is: a run under `--no-capture` records nothing. A consumer
+that drew the *current* file instead would redraw the run it is watching the moment that file was
+edited, and [002](./002-api-flows-ui.md) §4.3 makes editing one a two-second operation. It is the one
+payload in this list that is not small, and it is bounded the way the others are not by being *per
+run* rather than per step — the same size argument as bodies, read the other way round.
+
 **Events are small and structured-clone-safe.** They carry ids, statuses and durations; bodies and
 uploaded files are not included, only the `capturePath` that holds them (§14.5). In the app the
 engine runs in the Electron main process and the UI in the renderer, so every event crosses IPC —
@@ -2926,6 +3128,16 @@ fetch when a step is opened.
 Ordering is guaranteed: `step:start` precedes its `step:end`, both sit inside their
 `iteration:start`/`iteration:end`, and `run:end` is last. Under `concurrency > 1` events from
 different steps interleave, so consumers key on `id` and `index` rather than assuming adjacency.
+
+**Termination is guaranteed too: once `run:start` has been emitted, `run:end` follows.** A step's
+failure is a `StepResult` and an artifact write never fails a run, so nothing here is *expected* to
+throw — but an engine defect that escapes has to land somewhere a host can put it, and without this
+it lands nowhere: `runFlow`'s promise rejects at a point where the host has already resolved its own
+(it resolves at `run:start`, so a run can be watched and cancelled while it executes), and a watching
+app is left with a run that is running forever and a cancel with nothing to cancel. The failure is
+reported as a run that failed, carrying a `run-failed` diagnostic, and the rejection still propagates
+for a host awaiting the result. A host is then wrong only if it ignores what it is told, rather than
+having been told nothing.
 
 ### 13.3 App integration
 
@@ -3058,6 +3270,7 @@ bru flow validate <path...>   Static validation; sends no requests
 | Flag | Purpose |
 |---|---|
 | `--env <name>` | Bruno environment to run against |
+| `--global-env <name>` | Workspace environment to run against — `<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses |
 | `--env-var k=v` | Override a single variable (repeatable) |
 | `--param k=v` | Supply a declared `params` value (repeatable); for running a library flow directly |
 | `--dataset <path>` | Override the flow's dataset |
@@ -3260,6 +3473,8 @@ untruncated payload is written to an artifact directory:
 .bruno-runs/
   2026-08-05T14-22-01Z-a3f9/          # startedAt, made path-safe, + the runId's first four hex
     run.json
+    flow.json                         # the graph this run executed
+    flow.yml                          # the flow's own text at run time
     summary.json
     verify_ledger/
       attempt-1.json
@@ -3329,6 +3544,32 @@ flow produced it. With only the end-of-run file, a run's identity does not exist
 so **a run in progress and a run that died cannot be attributed to a flow at all** — the first is not
 an edge case, it is every run while it is being watched (002 §10 lists both). Writing identity up
 front costs one small file and makes the directory self-describing from its first moment.
+
+**`flow.json` and `flow.yml` are the flow as it was when the run started**, written beside `run.json`
+and before the first step for the same reason it is: a run that dies has to stay readable.
+
+Without them a run directory describes its flow by *path*, and the file that path names moves on. A
+reader then has no choice but to paint the run's outcomes onto the flow's current graph, where a step
+renamed since silently loses its result, a step added since appears as one that never ran, and edges
+the run never had are drawn across it. None of that fails loudly; it just shows a run that did not
+happen. `flow.json` is the `FlowDescription` (002 §11.1) the run was started from — what a viewer
+draws — and `flow.yml` is the text it came from, for the question a description cannot answer and for
+the diff against what the file says now.
+
+**`run.json` also carries `flowHash`**, the digest of that text. It rides in the manifest rather than
+in the snapshot because `listRuns` (002 §11.2) reads only that file per run: reporting that a run
+predates the flow's current text has to cost one small read per directory, not a parse of every
+snapshot in the history. A run written before this existed has no hash, which is *unknown* rather
+than unchanged — a reader must not report an old run as matching a file nobody can prove it matches.
+
+**The engine writes them, not the host.** A `bru` run and an app run record the same thing, and the
+CLI — which has no graph of its own — would otherwise be the one to go without. The description is
+built by calling `describeFlow`, so a stored graph and a live one are the same computation over the
+same file; the cost is one describe per run, alongside the parse the run does anyway.
+
+**A snapshot that cannot be built never fails the run.** Describing resolves OpenAPI documents and
+can fail on a network the run itself may not need. Such a run proceeds and records everything else,
+and is read back the way every run was read before snapshots existed.
 
 An interrupted run — `run.json` present, `summary.json` absent — is a real state and not a corrupt
 one: the process was killed, or the machine lost power, which §11.3 covers for the cases the engine
@@ -3401,15 +3642,36 @@ about what it describes.
 | `unmet-dependency` | skipped | No parent outcome satisfied `depends` (§9.1) |
 | `condition-false` | skipped | `when:` evaluated false (§9.3) |
 | `unresolved-dependency` | skipped | A referenced output was never produced (§11.2) |
-| `run-cancelled` | skipped | The run stopped before the step started (§11.3) |
+| `run-cancelled` | skipped, or **cancelled** where the step had started | The run stopped (§11.3) |
 
 A step that failed carries exactly one reason — the **first** check to fail, in §10's evaluation
 order: request validation, then status, then response schema, then assertions. Reporting the first
 is what makes a failure actionable; a 500 that also fails four assertions is one problem, not five.
 
+**A step's reason explains the step; `RunResult.decidedBy` (§13.2) explains the run.** A reader
+looking at a red run asks which step made it red, and for `failOnUnresolved` the answer is a step
+whose own status is `skipped` — so the verdict names it rather than leaving the reader to infer it
+from a rule they cannot see the inputs to.
+
+**A reason names the rule; `StepResult.message` (§13.2) names the occurrence.** These strings are a
+closed vocabulary precisely so they can be matched on, which is the same property that keeps them
+from saying which reference, which status or which field — so the engine reports both, and a host
+that shows only the reason leaves the reader with a category where they wanted a fact. The message is
+not part of this contract: it is human text, additive, and nothing parses it. Every reason above may
+carry one, and the four skips are where it matters most — a skip has no capture to fall back on, and
+`unresolved-dependency` fails the whole run (§11.2) while looking like a step that merely did not
+happen.
+
 Request validation leads because §10.1 runs it **before dispatch**: a step that fails it never
 sends, so it has no status to be judged on and `invalid-request` and `unexpected-status` are never
 candidates for the same step.
+
+A script that **throws** fails its step, in all three positions. `shouldRetry` is the one that made
+this worth stating: it runs outside the attempt it judges, against a response §11.2 may not have —
+`undefined` after a transport error — so a predicate reaching into a body is one dropped connection
+away from throwing, and a throw there propagates past the step, past the scheduler and out of
+`runFlow`. That is not a worse error message; it is a different kind of failure, landing where no
+step can carry it (§13.2).
 
 `script-error` (§8.2) takes its place in that same order rather than overriding it, since the three
 script positions run at three different points: a `when:` condition before the request is built —
@@ -3444,6 +3706,7 @@ Checkout happy path  flows/checkout.flow.yml
   ✓ await_settlement     GET /payments/{id}      1.4s   3 attempts
   ✗ verify_ledger        GET /ledger/{id}        189ms
   ○ premium_audit        skipped · condition-false
+  ○ archive_receipt      skipped · unresolved-dependency  never produced: steps.verify_ledger.entryId
   ✓ void_payment         DELETE /payments/{id}    77ms
 
   verify_ledger · assertion-failed
@@ -3452,7 +3715,10 @@ Checkout happy path  flows/checkout.flow.yml
       actual    8900
     capture  .bruno-runs/2026-08-07T10-14-02Z/verify_ledger/
 
-  1 failed · 4 passed · 1 skipped · 2.3s
+  run failed · archive_receipt skipped · unresolved-dependency
+    never produced: steps.verify_ledger.entryId
+
+  1 failed · 4 passed · 2 skipped · 2.3s
 ```
 
 `✓` success, `✗` failed, `○` skipped, `⊘` cancelled — with an ASCII fallback (`+ x - !`) when the
@@ -3463,10 +3729,23 @@ The operation, not the URL, identifies a step: it is what the flow file names, a
 carrying interpolated ids is both long and noisy in a column. Attempt counts appear only when
 greater than one — a retry is worth seeing, and "1 attempt" on every line is not.
 
-**The failure block is the point.** For each failure: the step, its reason (§14.6), the specific
-assertion with expected and actual, and the capture path. Bodies are *not* inlined — they are in the
-capture, and a 200 KB response in a terminal buries the one line that mattered. Only failures get a
-block; a passing step is one line.
+**The failure block is the point.** For each failure: the step, its reason (§14.6), the message that
+goes with it, the specific assertion with expected and actual, and the capture path. The message is
+dropped where the block already expands it — a failed assertion is listed with its expected and
+actual just below, and printing the same sentence twice is how a block stops being read. Bodies are *not*
+inlined — they are in the capture, and a 200 KB response in a terminal buries the one line that
+mattered. Only failures get a block; a passing step is one line.
+
+**A skip carries its message on its own line**, because it never gets a block and its reason is the
+half that says least: `unresolved-dependency` fails the run (§11.2) without naming the reference, and
+a CI log is where nobody can go and click the step to find out.
+
+**A verdict that no failure block accounts for gets its own line**, naming each of §13.2's
+`decidedBy` steps that has no block above — which is the `failOnUnresolved` case and, today, only
+that. Its reason and message are repeated from the step's own line rather than referred back to it,
+because `--quiet` prints no step lines at all: without this a quiet CI run reports `run failed` over
+`0 failed` and nothing else, which is the exact log that sends someone back to re-run it locally.
+A step that already has a block is left to it — a block that says everything twice stops being read.
 
 #### Datasets and sub-flows
 

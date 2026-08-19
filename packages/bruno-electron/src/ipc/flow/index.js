@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { ipcMain } = require('electron');
 const { runFlow, describeFlow, listRuns, readRun, readCapture } = require('@bruno-max/flow');
 const FlowsWatcher = require('../../app/flowsWatcher');
@@ -22,6 +24,7 @@ const EVENT_FLUSH_MS = 16;
 /** runId -> { controller, done } — `done` is the `runFlow` promise, which quit has to wait on. */
 const running = new Map();
 const pendingEvents = new Map();
+const pendingRequests = [];
 let flushTimer = null;
 let watcher;
 
@@ -34,24 +37,44 @@ const SHUTDOWN_CAP_MS = 30000;
 
 const flushEvents = (win) => {
   flushTimer = null;
+  if (win.isDestroyed()) {
+    pendingEvents.clear();
+    pendingRequests.length = 0;
+    return;
+  }
 
   for (const [runId, events] of pendingEvents) {
     // One message per run: 001 §13.2 guarantees order within a run and nothing across two, so a
     // batch mixing them would invent an ordering the engine never promised.
-    if (events.length && !win.isDestroyed()) {
+    if (events.length) {
       win.webContents.send('main:flow-run-event', { runId, events });
     }
   }
 
+  // 002 §8.5's log is a chronological panel rather than a per-run stream, so unlike the events
+  // above it batches across runs — which is also what lets two concurrent runs interleave in it.
+  if (pendingRequests.length) {
+    win.webContents.send('main:flow-request-log-batch', { requests: [...pendingRequests] });
+  }
+
   pendingEvents.clear();
+  pendingRequests.length = 0;
+};
+
+const scheduleFlush = (win) => {
+  if (!flushTimer) {
+    flushTimer = setTimeout(() => flushEvents(win), EVENT_FLUSH_MS);
+  }
 };
 
 const queueEvent = (win, runId, event) => {
   pendingEvents.set(runId, [...(pendingEvents.get(runId) || []), event]);
+  scheduleFlush(win);
+};
 
-  if (!flushTimer) {
-    flushTimer = setTimeout(() => flushEvents(win), EVENT_FLUSH_MS);
-  }
+const queueRequestLog = (win, log) => {
+  pendingRequests.push(log);
+  scheduleFlush(win);
 };
 
 const requireScope = (scope) => {
@@ -61,9 +84,64 @@ const requireScope = (scope) => {
   return scope;
 };
 
-const describeFlowHandler = ({ entry, scope }) => {
+/**
+ * A flow file the renderer is allowed to read or write as text — 002 §4.3.
+ *
+ * The preload forwards any channel string and has no allowlist, so the two rules the raw editor
+ * depends on are enforced here: it edits **a flow**, and it edits one **inside the scope it named**.
+ * Without the second, a scope's own path is no constraint at all — `../../etc/anything.flow.yml`
+ * satisfies the extension and nothing else.
+ */
+const requireFlowInScope = (entry, scope) => {
+  requireScope(scope);
+  if (typeof entry !== 'string' || !entry.endsWith('.flow.yml')) {
+    throw new Error('not a flow file');
+  }
+
+  const root = path.resolve(scope.collectionRoot || scope.workspaceRoot);
+  const resolved = path.resolve(entry);
+  // `path.relative` rather than a prefix test: `/a/workspace-two` starts with `/a/workspace` as a
+  // string and is not inside it.
+  const relative = path.relative(root, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('flow is outside its scope');
+  }
+  return resolved;
+};
+
+/**
+ * **`content` describes a draft rather than the file on disk** — 002 §4.3's editor redraws the graph
+ * from unsaved text, so `describeFlow` has to be able to read the entry from somewhere other than
+ * the filesystem. Overlaying the *port* rather than adding a parameter to the engine is what keeps
+ * that a host concern: `describeFlow` still resolves sub-flows and OpenAPI documents through the same
+ * `readFile`, and only the entry itself is answered from memory.
+ */
+const describeFlowHandler = ({ entry, scope, content }) => {
   const { readFile, readSpec } = createPorts({ collectionRoot: scope?.collectionRoot });
-  return describeFlow({ entry, scope: requireScope(scope), ports: { readFile, readSpec } });
+  if (typeof content !== 'string') {
+    return describeFlow({ entry, scope: requireScope(scope), ports: { readFile, readSpec } });
+  }
+
+  const draft = requireFlowInScope(entry, scope);
+  const readDraft = async (target, context) =>
+    path.resolve(target) === draft ? Buffer.from(content, 'utf8') : readFile(target, context);
+
+  return describeFlow({ entry, scope, ports: { readFile: readDraft, readSpec } });
+};
+
+/** 002 §4.3 — the flow's own text, for the raw editor. */
+const readFlowSourceHandler = async ({ entry, scope }) =>
+  fs.promises.readFile(requireFlowInScope(entry, scope), 'utf8');
+
+/**
+ * The editor writes the file the watcher is already watching, so the tree update, the re-describe
+ * and the run view's refresh all follow from the write with nothing else to keep in step.
+ */
+const writeFlowSourceHandler = async ({ entry, scope, content }) => {
+  if (typeof content !== 'string') {
+    throw new Error('a flow needs text to be written');
+  }
+  await fs.promises.writeFile(requireFlowInScope(entry, scope), content, 'utf8');
 };
 
 const listRunsHandler = ({ scopeRoot, flow }) => {
@@ -99,7 +177,13 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
     record.done = runFlow({
       entry,
       scope,
-      ports: createPorts({ collectionRoot: scope.collectionRoot }),
+      ports: createPorts({
+        collectionRoot: scope.collectionRoot,
+        // A workspace-scoped flow has no collection; its scripts still need a path to resolve
+        // `require` against, and the scope root is it (002 §7.2).
+        workspaceRoot: scope.workspaceRoot,
+        onRequest: (log) => queueRequestLog(win, log)
+      }),
       variables: buildVariables({ tiers, scope }),
       params,
       overrides,
@@ -174,6 +258,8 @@ const registerFlowIpc = (mainWindow) => {
   watcher = new FlowsWatcher();
 
   ipcMain.handle('renderer:flow-describe', (event, request) => describeFlowHandler(request));
+  ipcMain.handle('renderer:flow-read-source', (event, request) => readFlowSourceHandler(request));
+  ipcMain.handle('renderer:flow-write-source', (event, request) => writeFlowSourceHandler(request));
   ipcMain.handle('renderer:flow-run', (event, request) => startRun(mainWindow, request));
   ipcMain.handle('renderer:flow-cancel', (event, request) => cancelRun(request));
   ipcMain.handle('renderer:flow-list-runs', (event, request) => listRunsHandler(request));
@@ -189,6 +275,8 @@ const registerFlowIpc = (mainWindow) => {
 
 module.exports = registerFlowIpc;
 module.exports.describeFlowHandler = describeFlowHandler;
+module.exports.readFlowSourceHandler = readFlowSourceHandler;
+module.exports.writeFlowSourceHandler = writeFlowSourceHandler;
 module.exports.listRunsHandler = listRunsHandler;
 module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;

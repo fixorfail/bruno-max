@@ -10,6 +10,7 @@ import {
   setSelectedRequest
 } from 'providers/ReduxStore/slices/logs';
 import { useResizableColumns } from 'hooks/useResizableColumns';
+import { selectDevtoolsRequests } from 'fork/registry';
 import StyledWrapper from './StyledWrapper';
 import { sortRequests } from './utils';
 
@@ -151,25 +152,7 @@ const NetworkTab = () => {
   });
 
   const { networkFilters, selectedRequest } = useSelector((state) => state.logs);
-  const collections = useSelector((state) => state.collections.collections);
-
-  const allRequests = useMemo(() => {
-    const requests = [];
-    collections.forEach((collection) => {
-      if (collection.timeline) {
-        collection.timeline
-          .filter((entry) => entry.type === 'request')
-          .forEach((entry) => {
-            requests.push({
-              ...entry,
-              collectionName: collection.name,
-              collectionUid: collection.uid
-            });
-          });
-      }
-    });
-    return requests.sort((a, b) => a.timestamp - b.timestamp);
-  }, [collections]);
+  const allRequests = useSelector(selectDevtoolsRequests);
 
   const filteredRequests = useMemo(() => {
     return allRequests.filter((request) => {

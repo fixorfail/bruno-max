@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const FlowsWatcher = require('./flowsWatcher');
 
-/** 002-C U5.6 — the watcher reports, and parses nothing. */
+/** 002-C U5.6 — the watcher reports, and reads only `meta.name`. */
 describe('FlowsWatcher', () => {
   let workspaceRoot;
   let flowsDir;
@@ -54,12 +54,64 @@ describe('FlowsWatcher', () => {
     expect(await watcher.listFlows({ workspaceRoot: path.join(workspaceRoot, 'nowhere') })).toEqual([]);
   });
 
-  it('reports a flow that does not parse', async () => {
+  it('reports a flow that does not parse, unnamed', async () => {
     fs.writeFileSync(path.join(flowsDir, 'broken.flow.yml'), 'steps: [ unterminated');
     watcher.addWatcher(win, { workspaceRoot });
 
     await until(() => sent('addFile').length === 1);
     expect(sent('addFile')[0][2].filename).toBe('broken.flow.yml');
+    expect(sent('addFile')[0][2].name).toBeUndefined();
+  });
+
+  /**
+   * §5.4's local tags are part of the format. A watcher parsing YAML on its own rejects `!file` as
+   * an unknown tag, and the flow — a perfectly good one, which `bru flow validate` passes — loses
+   * its name silently and reads in the sidebar as its filename.
+   */
+  it('names a flow that uses a local tag', async () => {
+    fs.writeFileSync(
+      path.join(flowsDir, 'seed.flow.yml'),
+      'version: 1\nmeta:\n  name: Seed a verified company\nvars:\n  documents: !file ../fixtures/documents.json\n'
+    );
+
+    const [flow] = await watcher.listFlows({ workspaceRoot });
+
+    expect(flow.name).toBe('Seed a verified company');
+  });
+
+  /** §4.1: the sidebar names a flow by `meta.name`, which it has to know before the flow is opened. */
+  it('carries the declared name, and reports it again when it changes', async () => {
+    const flowFile = path.join(flowsDir, 'checkout.flow.yml');
+    fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Checkout\n');
+
+    expect((await watcher.listFlows({ workspaceRoot }))[0].name).toBe('Checkout');
+
+    watcher.addWatcher(win, { workspaceRoot });
+    await until(() => sent('addFile').length === 1);
+
+    fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Checkout with discounts\n');
+    await until(() => sent('changeFile').length === 1);
+
+    expect(sent('changeFile')[0][2].name).toBe('Checkout with discounts');
+  });
+
+  /**
+   * §4.1 groups the sidebar by it, and 001 §12.5 makes it the difference between a flow a glob run
+   * executes and one it skips — so it has to be known for a flow nobody has opened.
+   */
+  it('carries the library flag, and drops it when the file stops declaring one', async () => {
+    const flowFile = path.join(flowsDir, 'login.flow.yml');
+    fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Login\n  library: true\n');
+
+    expect((await watcher.listFlows({ workspaceRoot }))[0].library).toBe(true);
+
+    watcher.addWatcher(win, { workspaceRoot });
+    await until(() => sent('addFile').length === 1);
+
+    fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Login\n');
+    await until(() => sent('changeFile').length === 1);
+
+    expect(sent('changeFile')[0][2].library).toBeUndefined();
   });
 
   it('reports an add, a change and a delete, and stops once unwatched', async () => {

@@ -13,6 +13,13 @@
 import * as path from 'path';
 import * as YAML from 'yaml';
 
+/**
+ * `merge: true` matches the flow parser (`document.ts`), and `logLevel: 'silent'` keeps the library
+ * from writing to whatever console the host owns — §13.1 has the engine report through its return
+ * value, and a fixture with an odd construct must not print over the CLI's own output (§14.7).
+ */
+const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
+
 import { parseDataset } from './dataset';
 import type { FlowContext, ReadFile } from './types/ports';
 
@@ -52,7 +59,7 @@ export const createFileReader = (readFile: ReadFile, ctx: FlowContext, scopeRoot
 export const parseStructured = (source: string, text: string): unknown => {
   const extension = path.extname(source).toLowerCase();
   if (extension === '.json') return JSON.parse(text);
-  if (extension === '.yml' || extension === '.yaml') return YAML.parse(text, { merge: true });
+  if (extension === '.yml' || extension === '.yaml') return YAML.parse(text, YAML_OPTIONS);
   if (extension === '.csv') return parseDataset(source, text);
   throw new FileAccessError('unsupported-file-format', `${source}: expected .json, .yml or .csv`);
 };

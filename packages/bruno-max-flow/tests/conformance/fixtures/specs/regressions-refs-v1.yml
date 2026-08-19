@@ -1,0 +1,86 @@
+openapi: 3.0.3
+# R4r's document: the shape nearly every real OpenAPI file has and no other fixture here does —
+# schemas written once under `components` and referenced from the operations. A schema lifted out of
+# it is a *fragment*, and `#/components/...` resolves against the root of whatever is validated, so a
+# fragment handed to a validator on its own cannot resolve the first `$ref` it contains.
+info: { title: Regression API with refs, version: 1.0.0 }
+servers:
+  - url: https://regress.example.com
+paths:
+  /tasks/{task_id}:
+    get:
+      operationId: getTask
+      parameters:
+        - name: task_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: The task
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+  /chains/{chain_id}:
+    get:
+      operationId: getChain
+      parameters:
+        - name: chain_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: A task, or a chain of them — the shape a real document reaches for oneOf with.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - { $ref: '#/components/schemas/TaskResponse' }
+                  - { $ref: '#/components/schemas/ChainResponse' }
+  /tasks:
+    post:
+      operationId: createTask
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaskRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskResponse'
+components:
+  schemas:
+    TaskRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+    TaskResponse:
+      type: object
+      required: [task]
+      properties:
+        # A ref inside a ref: resolving the outer one is not enough on its own.
+        task:
+          $ref: '#/components/schemas/Task'
+      additionalProperties: true
+    Task:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { type: string }
+    # Neither branch of the oneOf above declares `required`, and both allow extra properties — so
+    # both accept the same payload and `oneOf` can never be satisfied. It is the shape a document
+    # written for humans naturally takes, and the failure it produces blames the response.
+    ChainResponse:
+      type: object
+      properties:
+        chain: { type: object }
+      additionalProperties: true

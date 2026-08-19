@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
 const { runScriptInNodeVm } = require('@usebruno/js');
+const { createRedactor } = require('@bruno-max/flow');
 const { configureRequest } = require('../network');
 const { setAuthHeaders } = require('../network/prepare-request');
 const { proxySwaggerFetch } = require('../swagger-fetch');
@@ -91,11 +92,75 @@ const saveCookies = (url, headers) => {
 };
 
 /**
+ * A body larger than this is reported as absent to the network log (002 §8.5). Unlike the single
+ * response of an ordinary request, a run's bodies accumulate — one per attempt, and a poll makes
+ * twenty of those — so the whole run would otherwise sit base64-encoded in the renderer's store.
+ * The capture keeps the real bytes either way, which is where a large body is meant to be read.
+ */
+const MAX_LOGGED_BODY_BYTES = 1024 * 1024;
+
+/** The query is on the axios config, and a row keyed by a URL without it names the wrong request. */
+const loggedUrl = (url, params) => {
+  const query = params.toString();
+  if (!query) {
+    return url;
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}${query}`;
+};
+
+/**
+ * 002 §8.5. Only a string body is reported: a `binary` or `multipart` body is a Buffer here, and
+ * either rendering its bytes or restating the capture's structural summary would put a second,
+ * weaker description of a body in the app. The step pane reads the capture for those.
+ */
+const loggedRequestBody = (data) => (typeof data === 'string' && data.length <= MAX_LOGGED_BODY_BYTES ? data : null);
+
+/**
+ * 002 §8.5 — what the dispatch port tells the app about a request it just sent.
+ *
+ * Headers go through 001 §14.4's denylist with the run's own `config.redactHeaders`, taken from
+ * `ctx` so the panel and the capture mask the same set. The shape is the one the DevTools network
+ * tab already reads for an ordinary request, so nothing downstream learns that flows exist.
+ */
+const requestLog = ({ request, axiosRequest, ctx, startedAt, response, bytes, error }) => {
+  const redactor = createRedactor(ctx.redactHeaders);
+
+  return {
+    runId: ctx.runId,
+    stepId: ctx.stepId,
+    iteration: ctx.iteration,
+    attempt: ctx.attempt,
+    // Both halves of the scope: the renderer resolves a collection from the first and falls back to
+    // the second's scratch collection, the way a workspace-scoped flow's own tab already does.
+    collectionRoot: ctx.scope.collectionRoot,
+    workspaceRoot: ctx.scope.workspaceRoot,
+    timestamp: startedAt,
+    request: {
+      url: loggedUrl(axiosRequest.url, axiosRequest.params),
+      method: request.method,
+      headers: redactor.headers(axiosRequest.headers),
+      data: loggedRequestBody(axiosRequest.data)
+    },
+    response: error
+      ? { error: error.message }
+      : {
+          status: response.status,
+          statusText: response.statusText,
+          headers: redactor.headers(response.headers),
+          data: bytes.length <= MAX_LOGGED_BODY_BYTES ? response.body : null,
+          dataBuffer: bytes.length <= MAX_LOGGED_BODY_BYTES ? bytes.toString('base64') : null,
+          size: bytes.length,
+          duration: response.responseTimeMs
+        }
+  };
+};
+
+/**
  * 001 §7.6's per-run and per-iteration jar scoping is not honoured yet: `utils/cookies` is a single
  * process-wide jar, so `ctx.cookieJar` has nowhere to map to. Iterations of a dataset flow therefore
  * share cookies in the app, which 001 §7.6 says they must not.
  */
-const executeRequest = ({ collectionRoot }) => async (request, ctx) => {
+const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) => {
   const { data, contentType } = bodyForRequest(request.body);
   const headers = { ...request.headers };
   if (contentType && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
@@ -134,7 +199,17 @@ const executeRequest = ({ collectionRoot }) => async (request, ctx) => {
   }
 
   const startedAt = Date.now();
-  const response = await axiosInstance(axiosRequest);
+  let response;
+  try {
+    response = await axiosInstance(axiosRequest);
+  } catch (error) {
+    // The engine maps this rejection to `transport-error` (001 §13.2), and a request that never got
+    // a response is the case the network log is most needed for — so it is reported before the
+    // rejection travels on.
+    onRequest?.(requestLog({ request, axiosRequest, ctx, startedAt, error }));
+    throw error;
+  }
+
   const headersReceived = plainHeaders(response.headers);
   const duration = headersReceived['request-duration'];
   delete headersReceived['request-duration'];
@@ -142,15 +217,22 @@ const executeRequest = ({ collectionRoot }) => async (request, ctx) => {
   saveCookies(axiosRequest.url, headersReceived);
 
   const bytes = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data || '');
-  return {
+  const executed = {
     status: response.status,
     statusText: response.statusText,
     headers: headersReceived,
     body: parseBody(bytes, headersReceived['content-type']),
     bytes,
     responseTimeMs: Number(duration) || Date.now() - startedAt,
-    size: { body: bytes.length, headers: 0 }
+    size: { body: bytes.length, headers: 0 },
+    // Read after `setAuthHeaders` and `configureRequest`, so the capture (001 §14.5) records the
+    // request that went out rather than the one the step declared — the difference is the auth
+    // header, the content type, and anything the proxy or cookie jar added.
+    requestHeaders: plainHeaders(axiosRequest.headers)
   };
+
+  onRequest?.(requestLog({ request, axiosRequest, ctx, startedAt, response: executed, bytes }));
+  return executed;
 };
 
 /**
@@ -163,7 +245,7 @@ const executeRequest = ({ collectionRoot }) => async (request, ctx) => {
  * `script:` form from it without changing bruno-js. Running it in the node VM instead would hand a
  * user who chose the sandbox an unsandboxed script.
  */
-const runScript = (collectionRoot) => async (source, args) => {
+const runScript = ({ collectionRoot, workspaceRoot }) => async (source, args) => {
   const { jsSandboxMode } = collectionRoot ? collectionSecurityStore.getSecurityConfigForCollection(collectionRoot) : {};
   if (collectionRoot && jsSandboxMode !== 'developer') {
     throw new Error('flows cannot run scripts in a safe-mode collection: the quickjs sandbox discards the value');
@@ -173,7 +255,16 @@ const runScript = (collectionRoot) => async (source, args) => {
   await runScriptInNodeVm({
     script: '__flow.result = await (' + source + ')(...__flow.args);',
     context: { __flow: box, console },
-    collectionPath: collectionRoot,
+    /**
+     * The VM resolves `require` against this, so it is a *path* and not optional: without one it
+     * throws `The "path" argument must be of type string`, and 001 §8.2's script positions are
+     * `outputs`, `when:` and `shouldRetry` — so the failure lands as a `script-error` on the step,
+     * blaming the author's script for a host that handed the VM nothing.
+     *
+     * A workspace-scoped flow has no collection (002 §7.2), and its scope root is the workspace —
+     * the same fallback `bru` makes, so a script behaves identically in both hosts.
+     */
+    collectionPath: collectionRoot || workspaceRoot,
     scriptingConfig: {}
   });
   return box.result;
@@ -191,8 +282,8 @@ const readSpec = async (source) => {
   return { text: Buffer.from(response.bodyBase64, 'base64').toString('utf8'), from: 'network' };
 };
 
-const createPorts = ({ collectionRoot }) => ({
-  executeRequest: executeRequest({ collectionRoot }),
+const createPorts = ({ collectionRoot, workspaceRoot, onRequest }) => ({
+  executeRequest: executeRequest({ collectionRoot, onRequest }),
   readFile: async (target) => fs.promises.readFile(target),
   writeFile: async (target, data) => {
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
@@ -203,7 +294,7 @@ const createPorts = ({ collectionRoot }) => ({
   removeDirectory: async (target) =>
     fs.promises.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
   readSpec,
-  runScript: runScript(collectionRoot)
+  runScript: runScript({ collectionRoot, workspaceRoot })
 });
 
-module.exports = { createPorts, bodyForRequest, parseBody };
+module.exports = { createPorts, bodyForRequest, parseBody, MAX_LOGGED_BODY_BYTES };

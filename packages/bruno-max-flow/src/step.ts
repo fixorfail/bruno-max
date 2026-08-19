@@ -7,7 +7,7 @@
  * also fails four assertions is one problem, not five. Assertions are still evaluated and recorded
  * when an earlier check failed: the reason names what to fix, the array is what happened.
  */
-import Ajv from 'ajv';
+import Ajv, { type ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import { get } from '@usebruno/query';
 
@@ -23,15 +23,54 @@ import type { AssertionResult, SchemaResult, StepReason } from './types/result';
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
+/**
+ * A validator's message, made actionable where it is not.
+ *
+ * `oneOf` fails in two opposite ways and says the same sentence for both: nothing matched, or more
+ * than one did. The second is a statement about the *document* — two branches that both accept the
+ * payload, which is what happens when neither declares `required` and both allow extra properties —
+ * and a reader told only "must match exactly one" goes looking for the fault in their response. The
+ * count is in the error and nowhere in its text, so it is put there.
+ */
+const explain = (error: ErrorObject): string => {
+  const message = error.message || 'invalid';
+  const passing = error.keyword === 'oneOf' ? (error.params as { passingSchemas?: number[] })?.passingSchemas : undefined;
+  return passing && passing.length > 1
+    ? `${message} — ${passing.length} of them matched, so the document does not say which applies`
+    : message;
+};
+
 const validateAgainst = (schema: Record<string, any> | undefined, value: unknown): SchemaResult => {
   if (!schema) return { valid: true, errors: [] };
-  const validate = ajv.compile(schema);
+
+  let validate;
+  try {
+    validate = ajv.compile(schema);
+  } catch (cause) {
+    /**
+     * A schema the validator will not compile is a statement about the *document*, not about the
+     * response — so it is reported as a failed check on the step rather than thrown past it. Left to
+     * propagate it takes the run with it (§13.2), which is how a spec the engine could not read
+     * became a run that ended with nothing to say about any step.
+     */
+    return {
+      valid: false,
+      errors: [
+        {
+          path: '/',
+          message: `the schema could not be compiled: ${cause instanceof Error ? cause.message : String(cause)}`,
+          keyword: 'schema'
+        }
+      ]
+    };
+  }
+
   const valid = validate(value) as boolean;
   return {
     valid,
     errors: (validate.errors || []).map((error) => ({
       path: error.instancePath || '/',
-      message: error.message || 'invalid',
+      message: explain(error),
       keyword: error.keyword
     }))
   };
@@ -111,7 +150,7 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
   // so it has no status to be judged on (§10.1).
   if (step.flags.validateRequest && materialized.mediaType && materialized.request.body.kind === 'json') {
     validation.request = validateAgainst(
-      requestSchema(resolved.operation, materialized.mediaType),
+      requestSchema(resolved, materialized.mediaType),
       materialized.request.body.value
     );
     if (!validation.request.valid) {
@@ -180,7 +219,7 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
   }
 
   if (step.flags.validateSchema) {
-    const declared = responseSchema(resolved.operation, response.status);
+    const declared = responseSchema(resolved, response.status);
     if (!declared.documented && step.flags.strictSchema) {
       return {
         response,

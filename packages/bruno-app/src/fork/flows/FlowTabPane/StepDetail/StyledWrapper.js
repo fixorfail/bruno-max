@@ -4,7 +4,11 @@ const StyledWrapper = styled.div`
   display: flex;
   flex-direction: column;
   border-top: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
-  min-height: 14rem;
+  /* Never sized by flex distribution: the graph is what absorbs spare room, and a step with fifteen
+     response headers must not squeeze it out. The height is the one the split hands down; the
+     minimum here is only the floor for a render that has no split above it. */
+  flex: 0 0 auto;
+  min-height: 10rem;
   overflow: hidden;
 
   .detail-header {
@@ -29,6 +33,30 @@ const StyledWrapper = styled.div`
     &.failed {
       color: ${(props) => props.theme.colors.text.danger};
     }
+
+    /* A statement about the report rather than about the step, so it does not wear a status colour. */
+    &.unreported {
+      font-style: italic;
+    }
+  }
+
+  .detail-attempt {
+    font-size: 0.75rem;
+    color: ${(props) => props.theme.colors.text.muted};
+    background: ${(props) => props.theme.sidebar.collection.item.bg};
+    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    border-radius: 3px;
+    padding: 0.125rem 0.25rem;
+  }
+
+  /* The same two colours the graph's halo uses for the same two states, so the pane and the node
+     being read agree about what is happening to the step. */
+  .detail-spinner {
+    color: ${(props) => props.theme.colors.text.yellow};
+
+    &.retrying {
+      color: ${(props) => props.theme.colors.text.warning};
+    }
   }
 
   .detail-duration {
@@ -37,8 +65,21 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.muted};
   }
 
-  .detail-tabs,
-  .detail-attempts {
+  /* Wraps rather than truncates: a schema failure names every field it rejected, and half of that
+     list is not a shorter version of the answer. */
+  .detail-message {
+    padding: 0 1rem 0.5rem;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: ${(props) => props.theme.colors.text.muted};
+    overflow-wrap: anywhere;
+
+    &.failed {
+      color: ${(props) => props.theme.colors.text.danger};
+    }
+  }
+
+  .detail-tabs {
     display: flex;
     gap: 0.25rem;
     padding: 0 1rem;
@@ -46,6 +87,9 @@ const StyledWrapper = styled.div`
     button {
       padding: 0.125rem 0.5rem;
       font-size: 0.75rem;
+      /* The tab's name is its Playwright selector and its state value; capitalization is how it
+         reads, not what it is. */
+      text-transform: capitalize;
       color: ${(props) => props.theme.colors.text.muted};
       border-bottom: 2px solid transparent;
 
@@ -56,7 +100,12 @@ const StyledWrapper = styled.div`
     }
   }
 
+  /* The scrollport for everything below the tabs. Without the zero min-height a flex item refuses
+     to shrink below its content, so the auto overflow never engages and the rows simply overflow
+     the pane — taking the body, which §9 renders last, out of reach behind the hidden overflow. */
   .detail-body-area {
+    flex: 1;
+    min-height: 0;
     padding: 0.75rem 1rem;
     overflow: auto;
   }
@@ -82,18 +131,20 @@ const StyledWrapper = styled.div`
     font-size: 0.75rem;
   }
 
-  /* The body is the pane's last element (§9), so it takes the room that is left rather than a
-     fixed height — CodeMirror sizes to its content and scrolls inside this box. */
+  /* A definite height, so CodeMirror is the scroller and keeps virtualizing its lines. Sizing it to
+     its content puts every line of a large captured body in the DOM, and 001 §14.5 caps the size of
+     a capture nowhere. A definite height also settles the percentage chain the editor sizes itself
+     through: it is h-full over an editor-container at 100%, which resolve to nothing over a parent
+     that has no height of its own. */
   .detail-body {
     margin-top: 0.5rem;
     border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
     border-radius: 3px;
-    overflow: auto;
-    max-height: 24rem;
+    height: 18rem;
 
     .CodeMirror {
       background: transparent;
-      height: auto;
+      height: 100%;
     }
   }
 
@@ -119,8 +170,15 @@ const StyledWrapper = styled.div`
     }
   }
 
+  .detail-headers,
   .detail-outputs {
     margin-top: 0.75rem;
+  }
+
+  .detail-headers > .detail-label,
+  .detail-outputs > .detail-label {
+    display: block;
+    margin-bottom: 0.125rem;
   }
 `;
 

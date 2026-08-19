@@ -30,7 +30,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       responses: { createThing: CREATED, getState: STATE }
     });
 
-    expect(run.layout()).toEqual(['create/attempt-1.json', 'run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json', 'summary.json']);
   });
 
   it('computes every path itself, inside the scope root', async () => {
@@ -60,11 +60,14 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
     const run = await runFlow(entry, { files });
 
-    expect(run.layout()).toEqual(['run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'run.json', 'summary.json']);
+    // `flowHash` is the flow's own text, which §14.5 records so a reader can tell a run apart from
+    // what the file says now — an exact shape, so a field added without a decision fails here.
     expect(run.files.json(path.join(run.captureDir, 'run.json'))).toEqual({
       runId: run.result.runId,
       flow: entry,
-      startedAt: '1970-01-01T00:00:00.000Z'
+      startedAt: '1970-01-01T00:00:00.000Z',
+      flowHash: expect.stringMatching(/^[0-9a-f]{64}$/)
     });
   });
 
@@ -96,7 +99,8 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       expect(snapshot.manifest).toEqual({
         runId: run.result.runId,
         flow: path.join(FLOWS, 'regressions/r1-dead-service.flow.yml'),
-        startedAt: '1970-01-01T00:00:00.000Z'
+        startedAt: '1970-01-01T00:00:00.000Z',
+        flowHash: expect.stringMatching(/^[0-9a-f]{64}$/)
       });
     });
 
@@ -106,7 +110,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         .filter((target) => target.startsWith(`${run.captureDir}${path.sep}`))
         .map((target) => path.relative(run.captureDir, target));
 
-      expect(relative.sort()).toEqual(['create/attempt-1.json', 'run.json']);
+      expect(relative.sort()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json']);
       expect(run.files.json(path.join(run.captureDir, 'create/attempt-1.json'))).toMatchObject({
         stepId: 'create',
         attempt: 1
@@ -189,6 +193,8 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         'create/attempt-1.json',
         'create/attempt-2.json',
         'create/attempt-3.json',
+        'flow.json',
+        'flow.yml',
         'run.json',
         'summary.json'
       ]);
@@ -238,6 +244,8 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     expect(run.layout()).toEqual([
       'child__use/attempt-1.json',
       'create/attempt-1.json',
+      'flow.json',
+      'flow.yml',
       'run.json',
       'summary.json'
     ]);
@@ -249,6 +257,8 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
 
     expect(run.layout()).toEqual([
+      'flow.json',
+      'flow.yml',
       'iteration-0/consume/attempt-1.json',
       'iteration-0/create/attempt-1.json',
       'iteration-1/consume/attempt-1.json',
@@ -281,7 +291,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
 
     expect(run.captureDir.startsWith(`${elsewhere}${path.sep}`)).toBe(true);
-    expect(run.layout()).toEqual(['create/attempt-1.json', 'run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json', 'summary.json']);
     // The .gitignore entry names the default location, so relocating the output does not earn one.
     expect(run.files.has(path.join(FIXTURES, '.gitignore'))).toBe(false);
   });
@@ -312,7 +322,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         contentType: 'application/pdf',
         byteLength: 13
       });
-      expect(run.layout()).toEqual(['run.json', 'scan/attempt-1.json', 'summary.json']);
+      expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'run.json', 'scan/attempt-1.json', 'summary.json']);
     });
 
     it('captures each multipart part, with the file parts by reference', async () => {
@@ -399,10 +409,124 @@ describe('R4n — redaction reaches the capture directory', () => {
     expect(capture.response.headers['x-trace-id']).toBe('trace-1');
   });
 
+  // A host that reports a request on a surface of its own — 002 §8.5's network log — masks the
+  // same set the capture does only if it is told the run's policy rather than guessing it.
+  it('hands the run policy to the dispatch port', async () => {
+    const finished = await run();
+
+    expect(finished.callsFor('createThing')[0].redactHeaders).toEqual(['X-Legacy-Key']);
+  });
+
+  /**
+   * §13.2 leaves auth, content type and cookies to the host, so the headers it reports having
+   * written are the request that was actually sent — and §14.4 masks them on the same terms as any
+   * other, rather than treating host-added headers as exempt.
+   */
+  it('masks the headers the host reports writing, not only the declared ones', async () => {
+    const finished = await runFlow(flow('r4n-redaction.flow.yml'), {
+      responses: {
+        createThing: {
+          ...CREATED,
+          requestHeaders: {
+            'Authorization': 'Bearer minted_by_the_host',
+            'Content-Type': 'application/json',
+            'X-Trace-Id': 'trace-1'
+          }
+        }
+      }
+    });
+    const capture = finished.files.json(path.join(finished.captureDir, 'create/attempt-1.json'));
+
+    expect(capture.request.headers.Authorization).toBe('••••');
+    expect(capture.request.headers['Content-Type']).toBe('application/json');
+    expect(capture.request.headers['X-Trace-Id']).toBe('trace-1');
+    // The declared-only set is replaced, not merged into: what went out is the whole record.
+    expect(capture.request.headers['X-Legacy-Key']).toBeUndefined();
+  });
+
   it('does not preserve the secret\'s length', async () => {
     const capture = await captureOf();
 
     expect(capture.request.headers.Authorization).toHaveLength(4);
     expect(JSON.stringify(capture)).not.toContain('sk_live');
+  });
+});
+
+/**
+ * §14.5's flow snapshot. A run directory names its flow by path, and the file the path names moves
+ * on — so without this, reading a run back means painting its outcomes onto whatever the flow says
+ * today. Written by the engine rather than by a host, so a `bru` run records what an app run does.
+ */
+describe('the flow as it was when the run started', () => {
+  it('writes the graph and the text the run executed', async () => {
+    const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+      responses: { createThing: CREATED, getState: STATE }
+    });
+
+    const description = run.files.json(path.join(run.captureDir, 'flow.json'));
+    expect(description.nodes.map((node) => node.id)).toEqual(
+      run.result.iterations[0].steps.map((step) => step.id)
+    );
+
+    const source = run.files.read(path.join(run.captureDir, 'flow.yml')).toString('utf8');
+    expect(source).toContain('steps:');
+  });
+
+  /** Same argument as `run.json`'s: a run that died before its first step still has to be readable. */
+  it('has written it before the first step, not at the end', async () => {
+    let midRun;
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: {
+        createThing: CREATED,
+        getThing: (request, ctx, info) => {
+          midRun = info.files.paths().map((target) => path.basename(target));
+          return THING;
+        }
+      }
+    });
+
+    expect(midRun).toEqual(expect.arrayContaining(['flow.json', 'flow.yml']));
+    expect(run.files.has(path.join(run.captureDir, 'flow.json'))).toBe(true);
+  });
+
+  it('records the digest of that text in run.json', async () => {
+    const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+      responses: { createThing: CREATED, getState: STATE }
+    });
+
+    const { flowHash } = run.files.json(path.join(run.captureDir, 'run.json'));
+    const source = run.files.read(path.join(run.captureDir, 'flow.yml')).toString('utf8');
+    expect(flowHash).toBe(require('crypto').createHash('sha256').update(source).digest('hex'));
+  });
+
+  /**
+   * Reported as well as written: a watcher drawing the *current* file would redraw the run it is
+   * watching the moment someone edited that file, which 002 §4.3 makes a two-second operation.
+   */
+  it('reports the same graph on run:start', async () => {
+    let started;
+    const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+      responses: { createThing: CREATED, getState: STATE },
+      onEvent: (event) => {
+        if (event.type === 'run:start') started = event;
+      }
+    });
+
+    expect(started.description).toEqual(run.files.json(path.join(run.captureDir, 'flow.json')));
+  });
+
+  /** A run that records nothing has nothing to report either, and the event says so by omission. */
+  it('writes none of it under --no-capture, and reports none', async () => {
+    let started;
+    const bare = await runFlow(flow('r4b-condition-false.flow.yml'), {
+      responses: { createThing: CREATED, getState: STATE },
+      overrides: { capture: { enabled: false } },
+      onEvent: (event) => {
+        if (event.type === 'run:start') started = event;
+      }
+    });
+
+    expect(bare.files.paths().filter((target) => target.includes('.bruno-runs'))).toEqual([]);
+    expect(started.description).toBeUndefined();
   });
 });

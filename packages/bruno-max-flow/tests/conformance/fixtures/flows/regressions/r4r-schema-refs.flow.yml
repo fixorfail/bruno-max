@@ -1,0 +1,26 @@
+# R4r — §10.1's schema checks against a document that uses `$ref`, which is what real ones do.
+version: 1
+
+meta:
+  name: R4r — schemas written as refs
+
+apis:
+  refs-api: ../../specs/regressions-refs-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: refs-api#createTask
+    body:
+      name: widget
+
+  - id: await_task
+    operation: refs-api#getTask
+    pathParams: { task_id: task-1 }
+
+  - id: read_chain
+    operation: refs-api#getChain
+    pathParams: { chain_id: chain-1 }
+    depends: [{ on: await_task, status: [success, failed] }]

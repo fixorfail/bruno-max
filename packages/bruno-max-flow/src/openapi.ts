@@ -8,6 +8,13 @@
 import * as path from 'path';
 import * as YAML from 'yaml';
 
+/**
+ * `merge: true` matches the flow parser (`document.ts`), and `logLevel: 'silent'` keeps the library
+ * from writing to whatever console the host owns — §13.1 has the engine report through its return
+ * value, and a fixture with an odd construct must not print over the CLI's own output (§14.7).
+ */
+const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
+
 import type { FlowContext, ReadSpec } from './types/ports';
 
 export type ResolvedOperation = {
@@ -19,6 +26,17 @@ export type ResolvedOperation = {
   /** Merged path-item and operation parameters, the operation's winning. */
   parameters: Record<string, any>[];
   servers: string[];
+  /**
+   * The document's definition sections, carried alongside every operation it declares — §10.1's
+   * schema checks are the consumer.
+   *
+   * A schema lifted out of an OpenAPI document is a *fragment* of it, and nearly every real one
+   * refers to the rest: `$ref: '#/components/schemas/Thing'` resolves against the root of whatever
+   * is being validated, which for a bare fragment is the fragment. Handing a validator one on its
+   * own therefore fails on the first `$ref` — for a spec of any size, on essentially every schema —
+   * and it fails by refusing to compile rather than by validating loosely.
+   */
+  definitions: Record<string, any>;
 };
 
 export type SpecIndex = {
@@ -32,6 +50,11 @@ const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'tr
 const indexDocument = (document: Record<string, any>, source: string): SpecIndex => {
   const servers = (document.servers || []).map((server: Record<string, any>) => String(server.url));
   const operations = new Map<string, ResolvedOperation>();
+  // OpenAPI 3 keeps its schemas under `components`, Swagger 2 under `definitions`, and a `$ref`
+  // names whichever its document uses. Carrying both costs a reference and reads either.
+  const definitions: Record<string, any> = {};
+  if (document.components) definitions.components = document.components;
+  if (document.definitions) definitions.definitions = document.definitions;
 
   for (const [template, item] of Object.entries<Record<string, any>>(document.paths || {})) {
     for (const method of METHODS) {
@@ -43,6 +66,7 @@ const indexDocument = (document: Record<string, any>, source: string): SpecIndex
         template,
         operation,
         parameters: [...(item.parameters || []), ...(operation.parameters || [])],
+        definitions,
         servers: (operation.servers || item.servers || document.servers || []).map((server: Record<string, any>) =>
           String(server.url)
         )
@@ -69,7 +93,7 @@ export class SpecLoader {
     if (cached) return cached;
 
     const loading = this.readSpec(resolved, this.ctx).then((document) =>
-      indexDocument((YAML.parse(document.text, { merge: true }) || {}) as Record<string, any>, resolved)
+      indexDocument((YAML.parse(document.text, YAML_OPTIONS) || {}) as Record<string, any>, resolved)
     );
     this.cache.set(resolved, loading);
     return loading;
@@ -80,8 +104,17 @@ export class SpecLoader {
 export const requestMediaTypes = (operation: Record<string, any>): string[] =>
   Object.keys(operation.requestBody?.content || {});
 
-export const requestSchema = (operation: Record<string, any>, mediaType: string): Record<string, any> | undefined =>
-  operation.requestBody?.content?.[mediaType]?.schema;
+/**
+ * A schema fragment rooted in its own document, so the `$ref`s it is written with resolve. Ajv reads
+ * `#/...` against the root of the schema it was handed, so the definition sections travel with it.
+ */
+const rooted = (
+  schema: Record<string, any> | undefined,
+  definitions: Record<string, any>
+): Record<string, any> | undefined => (schema ? { ...schema, ...definitions } : undefined);
+
+export const requestSchema = (resolved: ResolvedOperation, mediaType: string): Record<string, any> | undefined =>
+  rooted(resolved.operation.requestBody?.content?.[mediaType]?.schema, resolved.definitions);
 
 export const requestExample = (operation: Record<string, any>, mediaType: string): unknown => {
   const content = operation.requestBody?.content?.[mediaType];
@@ -92,14 +125,14 @@ export const requestExample = (operation: Record<string, any>, mediaType: string
 };
 
 export const responseSchema = (
-  operation: Record<string, any>,
+  resolved: ResolvedOperation,
   status: number
 ): { schema?: Record<string, any>; documented: boolean } => {
-  const responses = operation.responses || {};
+  const responses = resolved.operation.responses || {};
   const entry = responses[String(status)] || responses[`${Math.floor(status / 100)}XX`] || responses.default;
   if (!entry) return { documented: false };
 
   const content = entry.content || {};
   const json = Object.entries<Record<string, any>>(content).find(([type]) => type.includes('json'));
-  return { schema: json ? json[1].schema : undefined, documented: true };
+  return { schema: json ? rooted(json[1].schema, resolved.definitions) : undefined, documented: true };
 };

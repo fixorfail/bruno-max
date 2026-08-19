@@ -7,5 +7,13 @@
  * from anywhere.
  */
 
-/** 002 §4.2's tab type, keyed on the flow's pathname. */
-export const FORK_TAB_TYPES = ['flow'];
+/**
+ * 002 §4.2's tab type and §4.3's, both keyed on the flow's pathname.
+ *
+ * They are separate types rather than one tab with a mode, because upstream dedupes a tab on
+ * pathname *and* type: a flow's run view and its raw editor are then two tabs of one file, each
+ * reopening into itself, and neither can displace the other.
+ */
+export const FORK_TAB_TYPES = ['flow', 'flow-yaml'];
+
+export const isForkTab = (tab) => FORK_TAB_TYPES.includes(tab?.type);

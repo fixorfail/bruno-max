@@ -1,7 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import flowsReducer from './flows/slice';
 import { registerFlowIpcEvents } from './flows/ipcEvents';
-import { FORK_TAB_TYPES } from './tabTypes';
+import { isForkTab } from './tabTypes';
 
 /**
  * The single delegation surface upstream files call into — 001 §13.3.
@@ -29,18 +29,44 @@ const withSuspense = (Component) => (props) => (
 const FlowSidebarSection = withSuspense(lazy(() => import('./flows/FlowSidebarSection')));
 const FlowTabPane = withSuspense(lazy(() => import('./flows/FlowTabPane')));
 const FlowTabLabel = withSuspense(lazy(() => import('./flows/FlowTabLabel')));
+const FlowTabHeader = withSuspense(lazy(() => import('./flows/FlowTabHeader')));
+const FlowYamlTabPane = withSuspense(lazy(() => import('./flows/FlowYamlTabPane')));
+const FlowYamlTabLabel = withSuspense(lazy(() => import('./flows/FlowYamlTabLabel')));
 
 export const forkReducers = {
   flows: flowsReducer
 };
 
+/**
+ * The DevTools network tab's list, collection timelines and flow requests merged — 002 §8.5. Both
+ * halves of the panel select through this, so neither has to know which sources exist.
+ */
+export { selectDevtoolsRequests } from './flows/networkRequests';
+
 export const forkSidebarSections = [{ id: 'flows', component: FlowSidebarSection }];
 
-export const isForkTab = (tab) => FORK_TAB_TYPES.includes(tab?.type);
+export { isForkTab } from './tabTypes';
+export { tabsSharingStripWith } from './tabGroup';
 
-export const ForkTabPane = ({ tab }) => (tab.type === 'flow' ? <FlowTabPane tab={tab} /> : null);
+export const ForkTabPane = ({ tab }) => {
+  if (tab.type === 'flow') {
+    return <FlowTabPane tab={tab} />;
+  }
+  return tab.type === 'flow-yaml' ? <FlowYamlTabPane tab={tab} /> : null;
+};
 
-export const ForkTabLabel = ({ type, tabName }) => (type === 'flow' ? <FlowTabLabel tabName={tabName} /> : null);
+export const ForkTabLabel = ({ type, tabName }) => {
+  if (type === 'flow') {
+    return <FlowTabLabel tabName={tabName} />;
+  }
+  return type === 'flow-yaml' ? <FlowYamlTabLabel tabName={tabName} /> : null;
+};
+
+/**
+ * The strip's header for a fork tab, standing in for upstream's `CollectionHeader` (002 §4.2). Both
+ * flow tab types share it: the strip is the feature's, not the view's.
+ */
+export const ForkTabHeader = ({ tab }) => (isForkTab(tab) ? <FlowTabHeader tab={tab} /> : null);
 
 /**
  * Registers every fork IPC listener and returns **one** disposer. The count in 002 §12.1's manifest

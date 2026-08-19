@@ -61,6 +61,14 @@ export type ExecutedResponse = {
   /** What §10.2's `res.responseTime` reads. */
   responseTimeMs: number;
   size?: { body: number; headers: number };
+  /**
+   * The headers the host actually put on the wire, if it can say — the step's own, plus whatever it
+   * added applying `MaterializedRequest.auth`, the body's content type, and its cookie jar. §13.2
+   * leaves all four to the host, so the engine cannot derive them and §14.5's capture would
+   * otherwise record a request that is not the one that was sent. Absent means the capture falls
+   * back to the declared headers, which is what a host that does not report them leaves it with.
+   */
+  requestHeaders?: Record<string, string>;
 };
 
 /** `code` is advisory: it reaches the failure message and the capture, and nothing branches on it. */

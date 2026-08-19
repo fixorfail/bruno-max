@@ -1,4 +1,4 @@
-import { flowTreeUpdated, runEventsReceived } from './slice';
+import { flowTreeUpdated, runEventsReceived, requestLogsReceived } from './slice';
 import { watchScope } from './actions';
 
 /**
@@ -20,6 +20,10 @@ export const registerFlowIpcEvents = (dispatch) => {
     dispatch(runEventsReceived(batch));
   });
 
+  const removeRequestLogListener = ipcRenderer.on('main:flow-request-log-batch', (batch) => {
+    dispatch(requestLogsReceived(batch));
+  });
+
   /**
    * §11.3: the renderer says which scopes to watch, because it is the side that knows what is open.
    * Subscribing to the *same* channels upstream already broadcasts costs no extra upstream line —
@@ -37,6 +41,7 @@ export const registerFlowIpcEvents = (dispatch) => {
   return () => {
     removeTreeListener();
     removeRunEventListener();
+    removeRequestLogListener();
     removeWorkspaceOpenedListener();
     removeCollectionOpenedListener();
   };

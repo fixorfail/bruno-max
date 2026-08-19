@@ -144,7 +144,8 @@ describe('fixture corpus', () => {
     });
 
     it('writes only slots declared at flow level', () => {
-      const slots = flow.shared || [];
+      // §9.1 declares slots as a list, or as a mapping when one of them names its own `writers:` rule.
+      const slots = Array.isArray(flow.shared) ? flow.shared : Object.keys(flow.shared || {});
       for (const step of flow.steps || []) {
         const written = Array.isArray(step.shared)
           ? step.shared

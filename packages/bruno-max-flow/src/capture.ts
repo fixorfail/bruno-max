@@ -19,6 +19,7 @@ import type {
   CapturedPart,
   CapturedRequest,
   CapturedResponse,
+  FlowSnapshot,
   RunManifest,
   StepCapture
 } from './types/capture';
@@ -33,6 +34,17 @@ import type { AssertionResult, RunResult, StepResult } from './types/result';
 export const CAPTURE_DIRNAME = '.bruno-runs';
 
 export const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
+
+/** §14.5's snapshot of the flow the run executed — the graph a viewer draws, and the text it came from. */
+export const FLOW_DESCRIPTION_FILE = 'flow.json';
+export const FLOW_SOURCE_FILE = 'flow.yml';
+
+/**
+ * What `run.json` records so a reader can tell a run apart from the flow's current text without
+ * reading either. Content rather than mtime: a file restored from a backup, or checked out again,
+ * is the same flow.
+ */
+export const flowDigest = (source: string): string => createHash('sha256').update(source).digest('hex');
 
 /** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus the runId's first four hex. */
 const runDirectoryName = (startedAt: string, runId: string): string =>
@@ -128,12 +140,22 @@ const capturedRequestBody = (body: RequestBody): CapturedBody | undefined => {
   }
 };
 
-const capturedRequest = (request: MaterializedRequest, redactor: Redactor): CapturedRequest => {
+/**
+ * `sentHeaders` is what the host reports having actually written (§13.2's `requestHeaders`), and it
+ * wins: a capture of "the request" that omitted the content type and the auth header the host added
+ * is a record of something that was never sent. Redaction applies either way — §14.4 governs the
+ * artifact, not the provenance of what goes into it.
+ */
+const capturedRequest = (
+  request: MaterializedRequest,
+  redactor: Redactor,
+  sentHeaders?: Record<string, string>
+): CapturedRequest => {
   const query = new URLSearchParams(request.query.map((entry) => [entry.name, entry.value])).toString();
   return {
     method: request.method,
     url: query ? `${request.url}?${query}` : request.url,
-    headers: redactor.headers(request.headers),
+    headers: redactor.headers(sentHeaders || request.headers),
     body: capturedRequestBody(request.body)
   };
 };
@@ -193,8 +215,11 @@ export type AttemptRecord = {
 export type Capture = {
   /** Where the run's directory lives, for `RunResult.captureDir`. */
   readonly dir: string;
-  /** Prunes to retention, writes `run.json`, and ignores the capture root on first creation. */
-  start(): Promise<void>;
+  /**
+   * Prunes to retention, writes `run.json` and — when the flow could be described — the snapshot
+   * beside it, and ignores the capture root on first creation.
+   */
+  start(snapshot?: FlowSnapshot): Promise<void>;
   /** Returns the step's directory, for `StepResult.capturePath`. */
   attempt(record: AttemptRecord): Promise<string>;
   finish(result: RunResult): Promise<void>;
@@ -268,14 +293,29 @@ export const createCapture = (setup: CaptureSetup): Capture => {
   return {
     dir,
 
-    start: async () => {
+    /**
+     * The snapshot is optional because recording history must never be able to fail a run: a flow
+     * that executes but cannot be described (an OpenAPI document that would not load, say) still
+     * runs, and records everything else. What it loses is the ability to be read back against the
+     * flow as it was, which 002 §10 reports rather than papering over.
+     */
+    start: async (snapshot) => {
       const created = await prune(setup, root);
       const manifest: RunManifest = {
         runId: setup.context.runId,
         flow: setup.context.flow,
-        startedAt: setup.startedAt
+        startedAt: setup.startedAt,
+        flowHash: snapshot && flowDigest(snapshot.source)
       };
       await writeJson(setup, path.join(dir, 'run.json'), manifest);
+
+      if (snapshot) {
+        await Promise.all([
+          writeJson(setup, path.join(dir, FLOW_DESCRIPTION_FILE), snapshot.description),
+          setup.ports.writeFile(path.join(dir, FLOW_SOURCE_FILE), Buffer.from(snapshot.source, 'utf8'), setup.context)
+        ]);
+      }
+
       if (created) await ignoreCaptureRoot(setup);
     },
 
@@ -296,7 +336,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
         attempt: record.attempt,
         startedAt: record.startedAt,
         durationMs: record.durationMs,
-        request: record.request && capturedRequest(record.request, redactor),
+        request: record.request && capturedRequest(record.request, redactor, record.response?.requestHeaders),
         response: record.response && capturedResponse(record.response, redactor, artifact),
         assertions: record.assertions,
         validation: record.validation

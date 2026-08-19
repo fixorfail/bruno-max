@@ -13,6 +13,7 @@
  * example belong to the *reporter's* inline copy — that is what "storage is split" means.
  * Redaction (§14.4) has already been applied, so nothing reading these filters anything.
  */
+import type { FlowDescription } from './describe';
 import type { AssertionResult, StepResult } from './result';
 
 /** A file part is captured by reference (§7.5): its content is already in the repository. */
@@ -76,4 +77,30 @@ export type RunManifest = {
   runId: string;
   flow: string;
   startedAt: string;
+  /**
+   * Digest of the flow's own text as it was when the run started.
+   *
+   * It rides in the manifest rather than in the snapshot beside it because `listRuns` reads only
+   * this file per run: telling a reader that a run predates the flow's current text has to cost one
+   * small read per directory, not a parse of every snapshot in the history.
+   *
+   * Absent on a run written before the snapshot existed, which is *unknown* rather than unchanged —
+   * a reader must not report an old run as matching.
+   */
+  flowHash?: string;
+};
+
+/**
+ * The flow as it was when the run started — 001 §14.5, added because a run directory that names its
+ * flow by path alone describes a file that has since moved on.
+ *
+ * `description` is what a viewer draws: 002 §10 paints a run's step outcomes onto a graph, and
+ * painting them onto *today's* graph silently drops a renamed step's result, invents a
+ * never-started node for one added since, and draws edges the run never had. `source` is for the
+ * human question the description cannot answer — what did this file actually say — and for the diff
+ * against what it says now.
+ */
+export type FlowSnapshot = {
+  description: FlowDescription;
+  source: string;
 };

@@ -1,6 +1,19 @@
 import get from 'lodash/get';
 import find from 'lodash/find';
-import { describeStarted, describeSucceeded, describeFailed, flowsLoaded, pastRunLoaded } from './slice';
+import {
+  describeStarted,
+  describeSucceeded,
+  describeFailed,
+  flowsLoaded,
+  pastRunLoaded,
+  sourceLoaded,
+  sourceLoadFailed,
+  sourceDescribed,
+  sourceDescribeFailed,
+  sourceSaving,
+  sourceSaved,
+  sourceSaveFailed
+} from './slice';
 
 /**
  * Everything that crosses 002 §11.3's channels. The renderer sends a selection and values; the main
@@ -65,6 +78,64 @@ export const describeFlow = (flow) => async (dispatch) => {
   }
 };
 
+/**
+ * 002 §4.3 — the same description, from text that is not on disk yet.
+ *
+ * The engine is asked rather than the renderer parsing the draft itself, for the reason §11.1 gives
+ * for the saved file: a graph the app derived on its own could differ from the one the CLI executes,
+ * and the whole point of drawing it while editing is to see what will run.
+ */
+export const describeFlowDraft = (flow, content) => async (dispatch) => {
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+
+  try {
+    const description = await ipc().invoke('renderer:flow-describe', { entry: flow.pathname, scope, content });
+    dispatch(sourceDescribed({ pathname: flow.pathname, description }));
+  } catch (error) {
+    dispatch(sourceDescribeFailed({ pathname: flow.pathname, error: error.message }));
+  }
+};
+
+/** §4.3: the flow's own text, for the raw editor. */
+export const readFlowSource = (flow) => async (dispatch) => {
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+
+  try {
+    const content = await ipc().invoke('renderer:flow-read-source', { entry: flow.pathname, scope });
+    dispatch(sourceLoaded({ pathname: flow.pathname, content }));
+  } catch (error) {
+    dispatch(sourceLoadFailed({ pathname: flow.pathname, error: error.message }));
+  }
+};
+
+/**
+ * §4.3: writing the editor's text back.
+ *
+ * The content is read from the store at the moment of the write rather than passed in, because the
+ * two callers — the save key and the auto-save timer — both fire against text that may have moved on
+ * since they were scheduled. Recording *what was written* is what makes the dirty comparison honest
+ * for the keystrokes that landed during the write.
+ */
+export const saveFlowSource = (flow) => async (dispatch, getState) => {
+  const { pathname } = flow;
+  const source = getState().flows.sources[pathname];
+  if (!source || source.content === source.saved) {
+    return;
+  }
+
+  const content = source.content;
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+  dispatch(sourceSaving({ pathname }));
+
+  try {
+    await ipc().invoke('renderer:flow-write-source', { entry: pathname, scope, content });
+    dispatch(sourceSaved({ pathname, content }));
+  } catch (error) {
+    dispatch(sourceSaveFailed({ pathname, error: error.message }));
+    throw error;
+  }
+};
+
 export const runFlow = ({ flow, configuration }) => async (dispatch, getState) => {
   const state = getState();
   const collection = flow.collectionRoot
@@ -104,6 +175,10 @@ export const listFlowRuns = (flow) => async () =>
  * §10: opening a stored run. `stepIds` comes from the graph because 001 §14.5's directory name is a
  * lossy encoding of a step id and cannot be inverted — the engine answers which of the ids we hold
  * have a capture (002 §11.2).
+ *
+ * A run that recorded a snapshot answers from *its own* ids instead, and this list is the fallback
+ * for runs written before snapshots: the ids here are today's graph, so a step renamed since the run
+ * is not among them and its captures would be unreachable.
  */
 export const openPastRun = ({ flow, entry, stepIds }) => async (dispatch) => {
   const stored = await ipc().invoke('renderer:flow-read-run', { dir: entry.dir, stepIds });

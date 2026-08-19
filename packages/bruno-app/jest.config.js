@@ -23,7 +23,8 @@ module.exports = {
   testEnvironment: 'jsdom',
   setupFilesAfterEnv: ['@testing-library/jest-dom'],
   setupFiles: [
-    '<rootDir>/jest.setup.js'
+    '<rootDir>/jest.setup.js',
+    '<rootDir>/src/fork/jest.setup.js'
   ],
   testMatch: [
     '<rootDir>/src/**/*.spec.[jt]s?(x)',

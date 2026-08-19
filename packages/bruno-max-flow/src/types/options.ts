@@ -1,6 +1,7 @@
 /**
  * The entry API's options — 001 §13.2, plus 002 §11.1 and §11.2's read-only entries.
  */
+import type { FlowDescription } from './describe';
 import type { Vars, EnginePorts, ReadOnlyPorts, ListDirectory, ReadFile } from './ports';
 import type { FlowEvent, RunResult, RunStatus, StepStatus } from './result';
 
@@ -74,6 +75,15 @@ export type RunIndexEntry = {
   state: 'complete' | 'running' | 'interrupted';
   status?: RunStatus;
   summary?: RunResult['summary'];
+  /**
+   * Whether the flow's text has changed since this run — 001 §14.5's `flowHash`, compared against the
+   * file as it is now.
+   *
+   * **Three-valued on purpose.** `undefined` is *unknown*: the run predates the snapshot, or the flow
+   * is no longer on disk to compare against. Collapsing that into `false` would tell a reader that
+   * the oldest runs in their history match a file nobody can prove they match.
+   */
+  flowChanged?: boolean;
 };
 
 export type ReadRunOptions = {
@@ -94,6 +104,16 @@ export type ReadRunOptions = {
 export type StoredRun = RunIndexEntry & {
   result?: RunResult;
   capturedSteps: string[];
+  /**
+   * The flow as it was when this run started (001 §14.5), when the run recorded one.
+   *
+   * A viewer draws *this* rather than the flow's current graph: painting a run's outcomes onto
+   * today's nodes drops a step that has since been renamed, invents a never-started node for one
+   * added since, and draws edges the run never had (002 §10).
+   */
+  description?: FlowDescription;
+  /** The flow's own text at run time — the diff against what it says now. */
+  source?: string;
 };
 
 export type ReadCaptureOptions = {

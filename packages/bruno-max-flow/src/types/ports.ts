@@ -24,6 +24,13 @@ export type FlowContext = {
   scope: { workspaceRoot: string; collectionRoot?: string };
   /** The run's signal, per §11.3. */
   signal: AbortSignal;
+  /**
+   * `config.redactHeaders` — the run's extension of §14.4's denylist, from the root flow, exactly
+   * as the capture uses it. A host that reports a request anywhere of its own (002 §8.5) has to
+   * apply the run's policy rather than a guess at it, and `createRedactor` turns this into one.
+   * Absent until the flow is loaded, which is before anything is dispatched.
+   */
+  redactHeaders?: string[];
 };
 
 /**

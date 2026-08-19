@@ -1,0 +1,37 @@
+# R4h — §11.1's `maxDuration`. The step polls on a schedule whose delays add up to more than the
+# budget it is given, so the budget is what ends it: `maxAttempts` is deliberately far out of reach,
+# and the predicate never stops asking.
+version: 1
+
+meta:
+  name: R4h — a step's own budget
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: await_ready
+    operation: regress-api#getThing
+    pathParams: { id: "{{steps.create.thingId}}" }
+    maxDuration: 5000
+    retry:
+      maxAttempts: 50
+      delay: 2000
+      shouldRetry: |
+        (res) => res.body.data.name !== 'ready'
+
+  - id: follow_up
+    operation: regress-api#getState
+    depends:
+      - on: await_ready
+        status: [success, failed]

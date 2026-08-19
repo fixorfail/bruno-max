@@ -299,7 +299,7 @@ export const materialize = async (
   const raw = mediaType !== undefined && !isStructured(mediaType) && mediaType !== 'multipart/form-data';
 
   const seed = mediaType && !raw
-    ? merge(seedFromSchema(requestSchema(resolved.operation, mediaType)), requestExample(resolved.operation, mediaType))
+    ? merge(seedFromSchema(requestSchema(resolved, mediaType)), requestExample(resolved.operation, mediaType))
     : undefined;
 
   const authored = {

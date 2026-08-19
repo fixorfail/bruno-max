@@ -54,13 +54,22 @@ const createReporter = ({
     const detail = step.status === 'skipped' ? `skipped · ${step.reason}` : duration(step.durationMs);
     const attempts = step.attempts > 1 ? `  ${step.attempts} attempts` : '';
     const why = step.status === 'failed' ? `  ${step.reason}` : '';
-    line(`  ${painted} ${step.id.padEnd(24)} ${detail}${attempts}${why}`);
+    // A skip gets its message on its own line, because a skip has no failure block to carry it and
+    // `unresolved-dependency` on its own names nothing to go and fix (§14.6). A failure's message is
+    // in the block below, where the assertions and schema errors that go with it already are.
+    const note = step.status === 'skipped' && step.message ? `  ${paint(90, step.message)}` : '';
+    line(`  ${painted} ${step.id.padEnd(24)} ${detail}${attempts}${why}${note}`);
   };
 
   const failureBlock = (step) => {
     line();
     line(`  ${paint(31, step.id)} · ${step.reason}`);
-    for (const assertion of step.assertions.filter((entry) => !entry.passed)) {
+    const failedAssertions = step.assertions.filter((entry) => !entry.passed);
+    // §14.6's message, except where the lines below already are it: an `assertion-failed` message is
+    // the same comparison the block expands underneath, and a block that says everything twice
+    // stops being read.
+    if (step.message && !failedAssertions.length) line(`    ${step.message}`);
+    for (const assertion of failedAssertions) {
       line(`    ${assertion.expr}`);
       line(`      expected  ${JSON.stringify(assertion.expected)}`);
       line(`      actual    ${JSON.stringify(assertion.actual)}`);
@@ -93,6 +102,27 @@ const createReporter = ({
         iteration.steps.filter((step) => step.status === 'failed')
       );
       for (const step of failures) failureBlock(step);
+
+      /**
+       * §11.2's `failOnUnresolved` fails a run through a step that is *skipped*, so a red run can
+       * have no failure block at all and a summary line reading `0 failed`. §13.2's `decidedBy` names
+       * the steps the verdict fell on; the ones with a block above already said it.
+       *
+       * The reason and message are repeated from the step's own line because `--quiet` prints no
+       * step lines, and a CI log that names a step without saying what it did is a lookup nobody can
+       * perform after the fact.
+       */
+      const steps = result.iterations.flatMap((iteration) => iteration.steps);
+      const decided = (result.decidedBy || [])
+        .filter((id) => !failures.some((step) => step.id === id))
+        .map((id) => steps.find((step) => step.id === id))
+        .filter(Boolean);
+
+      for (const step of decided) {
+        line();
+        line(`  ${paint(31, `run ${result.status}`)} · ${step.id} ${step.status} · ${step.reason}`);
+        if (step.message) line(`    ${step.message}`);
+      }
 
       if (level < LEVELS.quiet) return;
       const { summary } = result;

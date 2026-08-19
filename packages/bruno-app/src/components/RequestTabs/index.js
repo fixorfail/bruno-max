@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import find from 'lodash/find';
-import filter from 'lodash/filter';
 import classnames from 'classnames';
 import { IconChevronRight, IconChevronLeft } from '@tabler/icons';
 import { useSelector, useDispatch } from 'react-redux';
@@ -12,6 +11,9 @@ import StyledWrapper from './StyledWrapper';
 import DraggableTab from './DraggableTab';
 import CreateTransientRequest from 'components/CreateTransientRequest';
 import ActionIcon from 'ui/ActionIcon/index';
+import { isForkTab } from 'fork/tabTypes';
+import { tabsSharingStripWith } from 'fork/tabGroup';
+import { ForkTabHeader } from 'fork/registry';
 
 const RequestTabs = () => {
   const dispatch = useDispatch();
@@ -45,7 +47,7 @@ const RequestTabs = () => {
 
   const activeTab = find(tabs, (t) => t.uid === activeTabUid);
   const activeCollection = find(collections, (c) => c?.uid === activeTab?.collectionUid);
-  const collectionRequestTabs = filter(tabs, (t) => t.collectionUid === activeTab?.collectionUid);
+  const collectionRequestTabs = tabsSharingStripWith(tabs, activeTab);
 
   const isScratchCollection = useMemo(() => {
     return activeCollection ? workspaces.some((w) => w.scratchCollectionUid === activeCollection.uid) : false;
@@ -115,7 +117,7 @@ const RequestTabs = () => {
       )}
       {collectionRequestTabs && collectionRequestTabs.length ? (
         <>
-          {activeCollection && (
+          {isForkTab(activeTab) ? <ForkTabHeader tab={activeTab} /> : activeCollection && (
             <CollectionHeader
               collection={activeCollection}
               isScratchCollection={isScratchCollection}

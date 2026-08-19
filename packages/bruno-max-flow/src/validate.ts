@@ -197,16 +197,41 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
       return;
     }
 
-    if (!flow.shared.includes(reference.name)) {
+    const slot = flow.shared[reference.name];
+    if (!slot) {
       error('undeclared-slot', `${where} reads ${reference.text}, which no shared: block declares`, step.id);
       return;
     }
+
     const writers = slotWriters.get(reference.name) || [];
-    const off = writers.filter((writer) => writer !== step.id && !ancestors.get(step.id)?.has(writer));
+    const upstream = (writer: string) => writer === step.id || Boolean(ancestors.get(step.id)?.has(writer));
+
+    /**
+     * §9.1's two shapes. Under `all` — the default — every writer must be upstream, so the read
+     * cannot race a branch still in flight. Under `any` the writers are alternatives, and one of them
+     * being upstream is the whole of what can be asked: no step descends from every writer when only
+     * one of them ever runs.
+     *
+     * A slot nobody writes stays legal either way. §9.1 resolves it empty rather than skipping the
+     * reader, and a flow whose fallback branch is the only writer is exactly that case seen early.
+     */
+    if (slot.writers === 'any') {
+      if (writers.length && !writers.some(upstream)) {
+        error(
+          'slot-not-downstream',
+          `${where} reads ${reference.text}, and none of its writers (${writers.join(', ')}) is upstream of this step`,
+          step.id
+        );
+      }
+      return;
+    }
+
+    const off = writers.filter((writer) => !upstream(writer));
     if (off.length) {
       error(
         'slot-not-downstream',
-        `${where} reads ${reference.text}, but ${off.join(', ')} writes it off this step's branch`,
+        `${where} reads ${reference.text}, but ${off.join(', ')} writes it off this step's branch`
+        + ` — declare the slot \`writers: any\` if its writers are alternatives (§9.1)`,
         step.id
       );
     }

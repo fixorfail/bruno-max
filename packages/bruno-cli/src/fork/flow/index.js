@@ -8,7 +8,9 @@
 const fs = require('fs');
 const path = require('path');
 const { runFlow, validateFlow } = require('@bruno-max/flow');
+const { parseEnvironment } = require('@usebruno/filestore');
 
+const { getEnvVars } = require('../../utils/bru');
 const { createPorts } = require('./ports');
 const { createReporter } = require('./output');
 
@@ -70,6 +72,27 @@ const scopeFor = (file) => {
   return { workspaceRoot, collectionRoot };
 };
 
+/**
+ * 002 §7.2's workspace environment, which the app selects in the run configuration and `bru` names
+ * with `--global-env` — the same flag and the same file `bru run` reads, because they are the same
+ * environment and a second spelling of it would be a second thing to keep in step.
+ *
+ * Resolved per flow rather than once for the selection: `scopeFor` walks up from each file, and a
+ * selection can span two workspaces.
+ *
+ * **Secret values are not in the file.** A `secret: true` variable's value lives in the app's
+ * encrypted store (002 §7.2), so it arrives empty here exactly as it does for `bru run --global-env`
+ * — the CLI's answer for a secret is `--env-var`, a `.env`, or the process environment.
+ */
+const workspaceEnvironment = (name, workspaceRoot) => {
+  const file = path.join(workspaceRoot, 'environments', `${name}.yml`);
+  if (!fs.existsSync(file)) {
+    throw new Error(`environment not found: ${forDisplay(file)}`);
+  }
+
+  return getEnvVars(parseEnvironment(fs.readFileSync(file, 'utf8'), { format: 'yml' }));
+};
+
 const asPairs = (values) =>
   Object.fromEntries(
     [].concat(values || []).map((entry) => {
@@ -83,6 +106,10 @@ const builder = (yargs) =>
   yargs
     .positional('action', { describe: 'run or validate', choices: ['run', 'validate'] })
     .positional('paths', { describe: 'flow files or directories', type: 'string' })
+    .option('global-env', {
+      describe: 'Workspace environment to run with, by name — <workspace>/environments/<name>.yml',
+      type: 'string'
+    })
     .option('env-var', { describe: 'Override a single variable (repeatable)', type: 'string' })
     .option('param', { describe: 'Supply a declared params value (repeatable)', type: 'string' })
     .option('concurrency', { describe: 'Override config.concurrency', type: 'number' })
@@ -103,6 +130,7 @@ const builder = (yargs) =>
     .option('color', { describe: 'Colourise output', type: 'boolean', default: true })
     .option('unicode', { describe: 'Use box-drawing status markers', type: 'boolean', default: true })
     .example('$0 flow run flows/checkout.flow.yml', 'Run one flow')
+    .example('$0 flow run flows/ --global-env staging', 'Run every flow against a workspace environment')
     .example('$0 flow validate flows/', 'Validate every flow in a directory');
 
 const verbosityOf = (argv) => {
@@ -134,6 +162,27 @@ const handler = async (argv) => {
     processEnv: { ...process.env }
   };
 
+  /**
+   * Resolved once per scope, and before anything runs: a name that matches no file is a usage
+   * error, and finding that out after the first flow has already sent requests is the version of
+   * this nobody wants.
+   */
+  const environments = new Map();
+  if (argv.globalEnv) {
+    try {
+      for (const file of flows) {
+        const { workspaceRoot } = scopeFor(file);
+        if (!environments.has(workspaceRoot)) {
+          environments.set(workspaceRoot, workspaceEnvironment(argv.globalEnv, workspaceRoot));
+        }
+      }
+    } catch (error) {
+      console.error(error.message);
+      process.exit(EXIT.usage);
+      return;
+    }
+  }
+
   let worst = EXIT.pass;
   const worsen = (code) => {
     worst = Math.max(worst, code);
@@ -164,7 +213,7 @@ const handler = async (argv) => {
         entry: file,
         scope,
         ports,
-        variables,
+        variables: { ...variables, globalEnvironment: environments.get(scope.workspaceRoot) },
         params: asPairs(argv.param),
         overrides: {
           concurrency: argv.concurrency,
@@ -194,4 +243,4 @@ const handler = async (argv) => {
   process.exit(worst);
 };
 
-module.exports = { builder, handler, selectFlows, exitCodeFor, EXIT };
+module.exports = { builder, handler, selectFlows, workspaceEnvironment, exitCodeFor, EXIT };

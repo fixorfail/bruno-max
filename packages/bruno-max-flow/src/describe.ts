@@ -127,7 +127,7 @@ const slotEdges = (flow: NormalizedFlow, prefix: string): FlowEdge[] => {
 };
 
 const slotsOf = (flow: NormalizedFlow): FlowDescription['slots'] =>
-  flow.shared.map((name) => ({
+  Object.keys(flow.shared).map((name) => ({
     name,
     writers: flow.steps.filter((step) => step.shared.some((entry) => entry.slot === name)).map((step) => step.id),
     readers: flow.steps

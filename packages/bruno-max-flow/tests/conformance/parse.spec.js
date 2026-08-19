@@ -7,7 +7,7 @@
  */
 const path = require('path');
 
-const { parseDocument, normalizeFlow, FileRef, DROP } = require('../../src/document');
+const { parseDocument, normalizeFlow, readFlowMeta, FileRef, DROP } = require('../../src/document');
 const { runFlow, validate, variant, FLOWS } = require('./harness');
 
 const flow = (name) => `regressions/${name}`;
@@ -125,6 +125,93 @@ describe('R4p — a syntax error yields no model', () => {
     const entry = path.join(FLOWS, 'regressions', 'r4p-broken3.variant.flow.yml');
 
     await expect(runFlow(entry, { files: { [entry]: broken } })).rejects.toThrow(/:4:1 /);
+  });
+});
+
+/**
+ * The one YAML subtlety this format walks into by construction: `{{...}}` is §7.3's interpolation
+ * syntax and `{` opens a flow mapping, so an unquoted reference is read as a nested map. Everything
+ * about it is silent — the file parses, the flow runs, and the request carries `{"{ token }": null}`
+ * where the author wrote a reference.
+ */
+describe('R4p — an unquoted interpolation', () => {
+  const unquoted = `${wrap('')}
+authProfiles:
+  bearer:
+    mode: bearer
+    token: {{ token }}
+`;
+
+  it('is a parse error anchored at the value that caused it', () => {
+    const parsed = parseDocument(unquoted);
+
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0].message).toMatch(/quoted/);
+    // `wrap` is three lines and the template adds a blank one, so the token is on line 8.
+    expect(parsed.errors[0].line).toBe(8);
+    expect(parsed.model).toEqual({});
+  });
+
+  it('leaves a quoted one alone', () => {
+    const parsed = parseDocument(unquoted.replace('{{ token }}', '"{{ token }}"'));
+
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.model.authProfiles.bearer.token).toBe('{{ token }}');
+  });
+
+  /**
+   * The parser reports; it does not print. Its own advisory for this goes through
+   * `process.emitWarning`, which lands in the CLI's output — whose format §14.7 defines — or in an
+   * Electron main process where nobody is reading it.
+   */
+  it('says nothing on the host console, here or on a document that parses', () => {
+    const emitWarning = jest.spyOn(process, 'emitWarning').mockImplementation(() => {});
+
+    try {
+      parseDocument(unquoted);
+      parseDocument(`${wrap('')}vars:\n  ok: value\n`);
+
+      expect(emitWarning).not.toHaveBeenCalled();
+    } finally {
+      emitWarning.mockRestore();
+    }
+  });
+});
+
+/**
+ * 002 §4.1's sidebar name. A host that parsed the file itself would need §5.4's local tags to know
+ * `!file` is not an error — and would silently name every flow using one after its file instead.
+ */
+describe('R4p — reading meta without describing', () => {
+  it('reads the declared name, trimmed', () => {
+    expect(readFlowMeta('version: 1\nmeta:\n  name: "  Seed a company  "\n')).toEqual({
+      name: 'Seed a company'
+    });
+  });
+
+  it('reads it from a flow carrying a local tag, which a plain parser calls an error', () => {
+    const withFixture = `${wrap('')}vars:\n  documents: !file ../fixtures/documents.json\n`;
+
+    expect(readFlowMeta(withFixture)).toEqual({ name: 'probe' });
+  });
+
+  /**
+   * 002 §4.1 groups the sidebar by it, and the sidebar lists flows nobody has opened — so it has to
+   * come from the same cheap parse the name does rather than from `describeFlow`.
+   */
+  it('reads the library flag, and reports none where it is not declared', () => {
+    expect(readFlowMeta('version: 1\nmeta:\n  name: login\n  library: true\n')).toEqual({
+      name: 'login',
+      library: true
+    });
+    expect(readFlowMeta('version: 1\nmeta:\n  library: false\n')).toEqual({});
+    expect(readFlowMeta('version: 1\nmeta:\n  name: login\n')).toEqual({ name: 'login' });
+  });
+
+  it('has none for a flow that declares none, and none for one that does not parse', () => {
+    expect(readFlowMeta('version: 1\n')).toEqual({});
+    expect(readFlowMeta('version: 1\nsteps:\n  - id: a\n   bad indent\n')).toEqual({});
+    expect(readFlowMeta('meta:\n  name: "   "\n')).toEqual({});
   });
 });
 

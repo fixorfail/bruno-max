@@ -131,7 +131,10 @@ const materializeResponse = (spec) => ({
   // capture is only reachable through a stub that does.
   bytes: spec.bytes,
   responseTimeMs: spec.responseTimeMs === undefined ? 1 : spec.responseTimeMs,
-  size: { body: 0, headers: 0 }
+  size: { body: 0, headers: 0 },
+  // §13.2's optional report of what the host actually wrote. A stub sets it to stand in for the
+  // headers a real host adds after materialization — auth, content type, cookies.
+  requestHeaders: spec.requestHeaders
 });
 
 const createPorts = (options) => {
@@ -220,6 +223,9 @@ const createPorts = (options) => {
       body: request.body,
       json: request.body && request.body.kind === 'json' ? request.body.value : undefined,
       auth: request.auth,
+      // §11.1's per-attempt bound, which a step's own `maxDuration` narrows as it runs out.
+      timeoutMs: ctx.timeoutMs,
+      redactHeaders: ctx.redactHeaders,
       request,
       startedAt: ++tick,
       settledAt: undefined
@@ -278,6 +284,12 @@ const createPorts = (options) => {
     clock,
     listDirectory,
     writeFile: async (target, data) => {
+      // §14.5's writes are allowed to fail without failing the run, which is a property worth
+      // asserting rather than assuming: `failWrites` makes a scenario's writes refuse.
+      const refusal = options.failWrites && options.failWrites(target);
+      if (refusal) {
+        throw new Error(typeof refusal === 'string' ? refusal : `refused to write ${target}`);
+      }
       written.set(target, Buffer.from(data));
     },
     removeDirectory: async (target) => {
@@ -366,6 +378,8 @@ const runFlow = async (file, options = {}) => {
     scope: { workspaceRoot: FIXTURES },
     ports,
     variables: { environment: DEFAULT_VARS },
+    // §12.5's params, as a host running a library flow directly supplies them.
+    params: options.params,
     overrides: options.overrides,
     signal: controller.signal,
     onEvent: (event) => {

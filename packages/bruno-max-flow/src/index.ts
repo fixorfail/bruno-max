@@ -15,6 +15,13 @@ export * from './types/describe';
 export * from './types/capture';
 
 export { runFlow } from './run';
+// §14.4's masking, for a host reporting a request on a surface of its own (002 §8.5). Exported so
+// the policy has one implementation rather than one per host.
+export { createRedactor, MASK } from './redact';
+export type { Redactor } from './redact';
 export { validateFlow } from './validate';
+// 002 §4.1's sidebar name, read from a flow's text without describing it — so a host listing flows
+// never parses `.flow.yml` itself and never has to know §5.4's local tags.
+export { readFlowMeta } from './document';
 export { describeFlow } from './describe';
 export { listRuns, readRun, readCapture } from './history';

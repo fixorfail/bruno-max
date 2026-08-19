@@ -115,6 +115,50 @@ describe('the failure block', () => {
     expect(text()).toContain('.bruno-runs/2026-08-07T10-14-02Z/verify_ledger/');
   });
 
+  /**
+   * §14.6's message. `assertion-failed` names the rule that fired; the message is the only thing in
+   * a CI log that says which call, which field, which value — and a block that omitted it would send
+   * the reader to a capture directory the machine may not have kept.
+   */
+  it('carries the message that goes with the reason', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    runThrough(reporter, {
+      ...failedRun,
+      iterations: [
+        {
+          index: 0,
+          status: 'failed',
+          steps: [step({ status: 'failed', reason: 'unexpected-status', message: 'expected a successful status, got 503' })]
+        }
+      ]
+    });
+
+    expect(text()).toContain('expected a successful status, got 503');
+  });
+
+  /** A skip has no failure block, so its message rides its own line or is lost. */
+  it('explains a skip on its step line', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    runThrough(reporter, {
+      ...failedRun,
+      iterations: [
+        {
+          index: 0,
+          status: 'failed',
+          steps: [
+            step({
+              status: 'skipped',
+              reason: 'unresolved-dependency',
+              message: 'never produced: steps.create_payment.token'
+            })
+          ]
+        }
+      ]
+    });
+
+    expect(text()).toContain('never produced: steps.create_payment.token');
+  });
+
   // Only failures get a block; a passing step is one line, and a 200 KB response in a terminal
   // buries the one line that mattered.
   it('inlines no response body', () => {
@@ -122,6 +166,67 @@ describe('the failure block', () => {
     runThrough(reporter);
 
     expect(lines.filter((line) => line.includes('create_payment'))).toHaveLength(1);
+  });
+});
+
+/**
+ * §11.2's `failOnUnresolved` is the one rule that fails a run through a step that is not itself
+ * failed — so the run is red, every count reads green, and no failure block is printed at all.
+ */
+describe('the verdict', () => {
+  const skipDecided = {
+    ...failedRun,
+    decidedBy: ['archive_receipt'],
+    summary: { total: 2, passed: 1, failed: 0, skipped: 1, cancelled: 0 },
+    iterations: [
+      {
+        index: 0,
+        status: 'failed',
+        steps: [
+          step(),
+          step({
+            id: 'archive_receipt',
+            status: 'skipped',
+            reason: 'unresolved-dependency',
+            message: 'never produced: steps.create_payment.token'
+          })
+        ]
+      }
+    ]
+  };
+
+  /**
+   * `--quiet` prints no step lines and this run has no failure block, so anything naming the step
+   * here came from the verdict — which is the property, stated without depending on wording.
+   */
+  it('names the step a red run with no failed step fell on, and what it did', () => {
+    const { reporter, text } = capture({ tty: false, env: {}, verbosity: 'quiet' });
+    runThrough(reporter, skipDecided);
+
+    expect(text()).toContain('archive_receipt');
+    expect(text()).toContain('unresolved-dependency');
+    expect(text()).toContain('never produced: steps.create_payment.token');
+  });
+
+  /** A failed step already has a block; naming it twice is how a block stops being read. */
+  it('does not repeat a step its failure block already named', () => {
+    const { reporter, lines } = capture({ tty: false, env: {}, verbosity: 'quiet' });
+    runThrough(reporter, { ...failedRun, decidedBy: ['verify_ledger'] });
+
+    const named = lines.filter((entry) => entry.includes('verify_ledger') && entry.includes('assertion-failed'));
+    expect(named).toHaveLength(1);
+  });
+
+  it('says nothing about the steps of a run that passed', () => {
+    const { reporter, lines } = capture({ tty: false, env: {}, verbosity: 'quiet' });
+    runThrough(reporter, {
+      ...failedRun,
+      status: 'passed',
+      decidedBy: [],
+      iterations: [{ index: 0, status: 'passed', steps: [step()] }]
+    });
+
+    expect(lines.filter((entry) => entry.includes('create_payment'))).toHaveLength(0);
   });
 });
 

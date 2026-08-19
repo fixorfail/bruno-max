@@ -3,7 +3,7 @@
 **Status:** Draft — the three questions 001 owed this spec are answered; §14 carries one of its own,
 local to `readCapture`'s options
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-13
+**Last revised:** 2026-08-14
 
 The app surface for [001](./001-api-flows.md): open a `.flow.yml`, see its graph, run it against the
 app's environment and auth, watch it execute, and diagnose a failure down to the attempt that caused
@@ -37,7 +37,7 @@ statement here looks like it invents a rule, it is quoting one.
 | **§5** | The graph — nodes, layout, the five edge kinds, sub-flows |
 | **§6** | Diagnostics, and what a broken flow does |
 | **§7** | Running — the control, configuration, what the app supplies |
-| **§8** | Watching a run — events, node states, concurrency, iterations |
+| **§8** | Watching a run — events, node states, concurrency, iterations, the DevTools network tab |
 | **§9** | Inspecting a step |
 | **§10** | Past runs from `.bruno-runs/` |
 | **§11** | **The engine boundary** — `describeFlow`, the capture reader, IPC, what 002 changed in 001 |
@@ -135,19 +135,51 @@ most-churned components in the app; injecting a foreign node type into it means 
 upstream's hottest file, re-merged forever, for an adjacency that a group header communicates nearly
 as well. A single fork-owned section keeps the entire surface in a file upstream does not have.
 
+The section is titled **API Flows**, matching upstream's *API Specs* beside it: the sidebar names
+features, and a bare *Flows* reads as a folder someone happened to create.
+
 ```
-FLOWS
+API FLOWS
   Workspace
-    e2e-checkout.flow.yml
-    shared/
-      login.flow.yml                 (library)
+    Checkout, end to end                 (meta.name)
+    Libraries
+      login.flow.yml                     (meta.library: true, and declares no name)
   payments
-    refund.flow.yml
+    Refund a settled payment             (meta.name)
 ```
 
-Library flows (001 §12.5 — a flow declaring `params:`) are marked, because they are excluded from
-glob runs and running one requires supplying parameters. This is the app's equivalent of
-`bru flow list` marking them.
+**A flow reads by the `meta.name` it declares, and by its filename when it declares none** — in the
+sidebar and on its tab alike, so the two never disagree about what a flow is called. `meta.name` is
+the author's own sentence about what the flow does and is the better label wherever there is room for
+one; the filename is a fallback rather than an identity, which is also why nothing keys on it. §4.3's
+raw editor keeps the filename in its tab regardless: that tab is a view of the *file*.
+
+**Library flows (001 §12.5 — a flow declaring `meta.library: true`) are listed last within their
+scope, under a `Libraries` label.** They are a different kind of thing to run: a glob run skips them,
+and running one directly means supplying its `params:` first — so a single interleaved list answers
+"what can I run here" with a mixture of flows and the parts other flows are built from. This is the
+app's equivalent of `bru flow list` marking them, and it replaces the per-row tag that did the job
+before: a label over the group and a badge on every row inside it say the same thing twice.
+
+Only the libraries are labeled. The scope's own header already names what the flows above it are, and
+a second header over them would be a heading per item type where one of the two types is the
+exception — the same reason §5.1's markers mark what a step *has* rather than labeling every step
+with what it is.
+
+**The flag comes from the watcher's tree entry** (§11.3), beside `meta.name` and for the same reason:
+this section lists flows nobody has opened, and `describeFlow` — the app's only other source of it —
+resolves each flow's sub-flows and OpenAPI documents, which `readSpec` fetches over the network.
+Reading it from a description instead put the mark on a flow only after it had been opened, which is
+exactly when the reader no longer needs telling.
+
+**The section lists the active workspace's flows only** — its own `flows/`, and those of the
+collections the workspace holds. §11.3 has the renderer name the scopes to watch and nothing stops
+watching one, so the store accumulates every scope opened since launch; a section rendering all of
+them shows one workspace's flows under another's name and does not change when the workspace does. A
+collection-scoped flow is matched by its collection rather than by the workspace root recorded in its
+scope, because a collection's scope records the collection's own path there. Watching is deliberately
+left running: §4.2 keeps a run alive across a closed tab, and a workspace switch is no more a reason
+to stop reporting one.
 
 **A flow's row carries its run status**, and so does its tab label: a running indicator while the run
 executes, and a pass/fail mark when it ends, cleared the next time the flow is opened. §4.2 keeps a
@@ -168,11 +200,23 @@ scope's `flows/` directory, emitting tree events the renderer folds into a slice
 renames in the sidebar without the app being restarted, and a `git checkout` that swaps a branch's
 flows is reflected the same way.
 
-**The watcher parses nothing.** `apiSpecsWatcher` parses each file to extract `info.title`; the flow
-watcher reports path, filename and mtime only, and the display name comes from `describeFlow` (§11)
-when the flow is opened. A malformed flow must still appear in the sidebar so it can be opened and
-its diagnostics read — a watcher that parsed would have to decide what to show for a file that does
-not parse, which is a question §6 already answers better.
+**The watcher reads `meta.name` through the engine (001 §13.2's `readFlowMeta`), not with a parser of
+its own.** 001 §5.4's local tags are part of the format, and an ordinary YAML reader rejects `!file`
+as an unknown tag — so a watcher parsing for itself would report every flow carrying a fixture as
+unreadable and name it after its file, a failure with no error anywhere and no sign but a name that
+looks like the one a flow gets when it declares none.
+
+**The watcher reads `meta.name` and nothing else.** `apiSpecsWatcher` parses each file to extract
+`info.title`, and the flow watcher does the same one-field read for the same reason: the sidebar names
+every flow it lists, including the ones nobody has opened. Everything else the app draws still comes
+from `describeFlow` (§11) when the flow is opened, and taking the name from there instead would mean
+resolving each listed flow's sub-flows and OpenAPI documents — which §11.3's `readSpec` will fetch
+over the network — to render a directory listing.
+
+The read is tolerant, and its failure is ordinary rather than exceptional: a malformed flow must still
+appear in the sidebar so it can be opened and its diagnostics read (§6), and it appears under its
+filename with no name of its own. That is the same answer as for a flow that simply declares none, so
+the watcher never has to decide what to show for a file that does not parse.
 
 ### 4.2 The flow tab
 
@@ -190,6 +234,25 @@ A collection-scoped flow uses its collection's uid. **A workspace-scoped flow us
 scratch collection**, which is exactly how upstream's own `workspaceOverview` and
 `workspaceEnvironments` tabs exist (`slices/workspaces/actions.js:668`) — so this borrows a
 mechanism rather than inventing one.
+
+**The borrowed collection is invisible.** It is a mechanism for holding the tab, not a statement
+about where the flow lives, and left alone it surfaces twice: the strip groups tabs by collection, so
+a workspace-scoped flow opens beside the workspace's permanent **Overview** and **Environments**
+tabs; and the header renders the collection it is handed, so the same flow gets the *workspace's*
+header and its switcher. So the strip groups by collection **and** by whether the tab is a flow — the
+two never mix, in either direction — and a flow tab's header reads **API Flows** and carries no
+switcher. There is nothing to switch: which flows exist is §4.1's question, and which one is open is
+the strip's.
+
+**It does carry the environment selector, at the end of the row where a collection's header keeps
+it.** §7.2's control has to live somewhere, and this header is what stands in for the one that
+normally holds it — so putting it anywhere else would ask someone to learn a second place for a
+control they already use daily. It is the app's own selector, in its own two states: the colour of the
+environment in force, and the dashed *No Environment* the app draws everywhere else for nothing
+selected.
+
+The name matches §4.1's sidebar section, which is titled *API Flows* rather than *Flows* for the same
+reason API Specs is: the sidebar names features, and a bare noun reads as a folder.
 
 **Flows are deliberately *not* in `nonReplaceableTabTypes`.** That list is singleton *per type*, so
 adding `flow` would collapse every flow in a collection into a single tab. The dedupe a flow wants is
@@ -248,13 +311,106 @@ reopens through the ordinary tab-restore path and §10's selector shows the run 
 that was cancelled by the quit — read from disk like any other. Persisting results in the snapshot
 would be a second store of data the captures own, and the two would drift.
 
-The tab has two views over the same flow, toggled in its header:
+The tab shows the **graph** (§5), with the run record (§8–§10) as a pane below it, so a step's
+outcome is visible beside the node that produced it.
 
-- **Graph** (default) — §5.
-- **Document** — the raw `.flow.yml`, read-only, with diagnostics anchored into it (§6).
+**The raw `.flow.yml` is a separate tab rather than a second view here** — §4.3. An earlier draft of
+this section had a read-only Document view toggled in this tab's header, on the reasoning that source
+and graph are two readings of one file. What that misses is that the source is also *editable*, and
+an editable surface inside the run tab makes every one of the run tab's controls ambiguous: running a
+flow means running the file, and the file is now something this tab can be ahead of. Separating them
+keeps this tab about the flow as it exists and gives editing a place that can say what it is.
 
-The run record (§8–§10) is a pane below both, so a step's outcome is visible beside the graph node
-or the source line that produced it.
+### 4.3 Editing the YAML
+
+**A flow can be edited as raw YAML, and this is deliberately the non-standard way in.** A flow's own
+surfaces are where a flow is meant to be built; this exists for the edit they do not cover, for
+reading what a generated flow actually says, and for the fix that is faster to type than to click.
+Everything about how it is reached and marked follows from that: it is not what you get by opening a
+flow.
+
+**It is reached from a menu on the flow's row**, right-aligned, revealed on hover — the same menu
+shape upstream's own sidebar rows carry, holding one item, `Edit Yaml`. Hover-reveal rather than a
+permanent control because the row already ends in §4.1's run mark, which is ambient status the menu
+must not crowd out; the menu takes its space at all times and only becomes visible when the pointer
+is on the row, so the mark never moves. An open menu stays visible wherever the pointer goes, because
+reaching an item in a popover means leaving the row that opened it.
+
+**Its tab is marked** — a pencil, and the file name in italic. A raw editor that looked like the run
+view in the strip would be indistinguishable from one at a glance, and the two do different things to
+the same file. It is a **distinct tab type** from §4.2's, keyed on the same path: upstream dedupes a
+tab on pathname *and* type, so a flow's run view and its editor are two tabs of one file, each
+reopening into itself, and neither displacing the other.
+
+The view is split horizontally, dragged, with the **graph above** and the **editor below**:
+
+| Half | Content |
+|---|---|
+| Top | §5's graph, the same component the run tab draws, without run state |
+| Bottom | The file's text, in the app's own editor (`components/CodeEditor`) in YAML mode |
+
+**The editor is the one §9's step pane uses**, not the API-spec panel's. That one hard-codes
+`height: calc(100vh - 9rem)` on its CodeMirror because it is a full-page editor; inside a pane the
+split has sized, it renders taller than the box showing it and therefore scrolls nothing — the lines
+past the fold are unreachable rather than scrolled to. An editor placed in a dragged split has to
+take its height from its container, which is what this one does.
+
+**The editor's own parse knows §5.4's tags.** It asks the narrow question — is this a document at
+all — and it asks it in the renderer, which cannot run the engine's parser (001 §13.1 makes it a Node
+package). A plain YAML reader answers *no* for every flow using a `!file` fixture, and the answer
+gates both the redraw and auto-save: the graph stops following a draft the CLI validates happily, and
+the pane says the file is invalid. The renderer therefore carries the tag list, and nothing else about
+the format.
+
+**The graph redraws from the draft, before it is saved.** That is the reason the two halves are in
+one view: the question being answered is "what did that edit do to the flow", and answering it from
+the last saved version answers a different one. It is drawn from `describeFlow` given the draft text
+(§11.1), never from a parse the renderer did itself — a graph the app derived on its own could differ
+from the one the CLI executes, which is the disagreement §11.1 exists to rule out.
+
+**It redraws when the draft is a YAML document, and holds when it is not.** Deliberately the narrow
+test: a flow that parses but declares a step twice is invalid *as a flow* and still draws, with its
+diagnostics on the nodes, exactly as §6 requires of the run view — being told what is wrong with a
+flow is most of what this view is for. Text that does not parse has no document to describe at all,
+and the view says so rather than blanking the graph, because a graph that vanished mid-keystroke
+would take the reference point with it.
+
+**Saving follows the app's own `autoSave` preference**, the setting that already governs every other
+editable thing here — a feature with its own save behaviour is a second answer to a question the user
+has already answered once. With it on, the draft is written after the configured interval, each
+keystroke restarting the countdown; with it off, ⌘/Ctrl+S and a Save button beside the state. The
+button appears only when auto-save is off: two controls answering "is this saved" would disagree the
+moment one of them was mid-flight.
+
+**Auto-save writes only a draft that parses.** The alternative — writing the buffer on a timer — puts
+a half-typed line in a file the watcher is reporting, the run view is describing, and a run may be
+about to execute, so a flow briefly becomes unrunnable because someone paused mid-word. A draft that
+does not parse stays in the editor and says it is unsaved, which is true.
+
+**The state is stated in words** — *Saved*, *Unsaved changes*, *Saving…*, or the error a save failed
+with. This view writes to a file the rest of the app is watching, so what has and has not reached
+disk is the one thing it must not be coy about.
+
+**The draft belongs to the flow, not to the tab** — the same rule §4.2 applies to run state, for the
+same reason: an unsaved edit discarded by a tab switch is the one kind of state loss no editor is
+allowed.
+
+**The run view keeps describing the file on disk.** The editor's graph is the draft's; §11.1's stored
+description, which the run tab draws and a run would execute, is the file's. Folding the draft into it
+would redraw the run tab from text no run can reach, and abandoning the edit would leave that drawing
+behind, since only a watcher event clears the entry. Two descriptions of one flow is the honest shape:
+they differ exactly while the editor is ahead of the file, and saving is what makes them agree —
+through the watcher, which clears the stored description on the change the save causes.
+
+Two limits, stated rather than discovered:
+
+- Diagnostics are on the graph's nodes and **not anchored into the editor's gutter**. §6's line
+  anchors exist and this view is where they would pay off most; using them here is future work.
+- **The editor does not reload a file changed underneath it.** It reads the flow when it opens and
+  the watcher's change events do not reach it, so an edit made elsewhere — another tool, a branch
+  switch — is invisible until the tab is reopened, and saving over it is silent. Upstream's own
+  editors keep a draft across an external change for the same reason (the draft is the thing you were
+  working on), but they reload when there is *no* draft, and this view does not yet.
 
 ## 5. The graph
 
@@ -268,7 +424,17 @@ method and path — `POST /payments`, not `payments-api#createPayment`. The refe
 says; the method and path are what the step *does*, and resolving them is the whole point of having
 an engine describe the flow rather than reading the YAML.
 
-Markers, shown only when the step carries the thing they mark:
+**A node's text wraps inside its box, and is laid out as HTML for that reason.** SVG `<text>` does not
+wrap — not by any attribute — so a step id or a path longer than the box ran out of it and across
+whatever it met, and the longest names are the ones most worth reading. The text is therefore drawn
+through a `foreignObject`, where CSS wraps it, including mid-word when a single token is wider than
+the box: an unspaced step id has no break opportunity to take, and a rule that only breaks *between*
+words leaves it overflowing exactly as before. The box is sized for a name over two lines and an
+operation over two; past that the text is clipped by the box rather than escaping it, which keeps a
+graph readable when one step is named like a sentence.
+
+**The markers sit on a footer bar along the bottom of the box**, shown only when the step carries the
+thing they mark:
 
 | Marker | Means | 001 |
 |---|---|---|
@@ -282,24 +448,117 @@ The negative-test marker exists because a step that passes on a 403 is otherwise
 from one that passes on a 200, and mistaking the first for the second is how a broken authorization
 check reads as green.
 
+They were drawn over the box's top-right corner, which is where the step's *name* is — and the names
+worth reading are the long ones. A bar of their own gives them a fixed place to be looked for, room
+for the next marker this spec adds, and room beside them for the one thing the box never said.
+
+**That thing is the binding: on a flow that binds more than one API, the footer is tinted in that
+binding's colour.** 001 §6 lets a flow drive several services — `seed-verified-company` drives a
+backend and a test harness — and which of them a step calls decides what a failure means and who
+owns it. It was nowhere on the drawing: the operation line says `POST /companies/{pk}` whichever
+service that is. Colour is what makes the *shape* of it legible, and the shape is the point: this
+stretch is all one service, and then it is not.
+
+**The colour alone, with the key and the bar's hover behind it.** The alias was drawn on the bar
+beside the markers and is not any more: on a graph where every box carries one, the label is a word
+repeated eighteen times to say what two colours already said, and the box's own scarce line is worth
+more than the redundancy. The alias is on the legend and on the bar's hover, so it stays one glance
+away without being on screen eighteen times.
+
+The palette is assigned in file order from a fixed list and **never cycles** — past it a binding
+takes no colour rather than a second one's, since two services sharing a colour is worse than one
+having none. Its first three slots are validated for every pair against both the light and the dark
+surface, which is the range that matters: a flow driving four or more services is not one this spec
+has seen. The run's own colours (§8.2 — green, red, yellow) are not in play at all: a binding painted
+in one of them would report an outcome.
+
+**A key sits over the graph**, top right, outside the scrolling box, titled `API` — and with the
+alias off the bar it is the drawing's only statement of which colour is which service. §5.2's drawing is
+far wider than its box, so a key drawn *into* the picture is off-screen for every rank but the first —
+which is the state a legend exists to prevent.
+
+**A flow binding one API is keyed too, with no colour beside it.** The colour is what is conditional,
+not the key: there is nothing for one tint to distinguish, but *which* service a flow drives is a
+question every one of these graphs is asked and none of them answers — the operation line is a path,
+and a path names no host. The row carries no swatch in that case, and none for a binding past the
+palette either: a chip in the key that no bar on the drawing wears is a colour the reader goes
+looking for. The `API` title is what keeps a lone alias from reading as a caption on the flow.
+
+The bindings are read off the drawn nodes rather than from the flow's `apis:` block, so a binding
+declared and never called takes neither a colour nor a legend row for a service no box belongs to.
+
 ### 5.2 Layout
 
-**Ranks by longest path from a root; order within a rank by declaration order in `steps:`.**
+**Ranks by longest path from a root, computed by the engine; order within a rank chosen to minimise
+crossings; edges routed around the steps they pass.**
 
-Longest-path ranking places a step below every one of its dependencies, which is the property that
-makes the drawing readable as execution order. Ordering *within* a rank by file order is the same
-argument 001 §9.1 makes for last-writer-wins on shared slots: file order is stable and inspectable,
-where any ordering derived from the run (completion time, duration) would redraw the graph
-differently on a loaded machine than on an idle one, and moving nodes between runs is the fastest
-way to make a visualization untrustworthy.
+Longest-path ranking places a step after every one of its dependencies, which is the property that
+makes the drawing readable as execution order. **The ranks stay the engine's** (§11.1): the layout
+requires each edge to span `rank(to) - rank(from)` layers, which makes 001's assignment the only
+tight solution and keeps a layout engine from re-deriving one of its own. That is not a formality —
+dagre's own `longest-path` ranker measures to a *sink*, which slides a short branch rightward until
+it abuts the join it feeds and draws a different graph from the one the CLI executes.
 
-**The linear case degenerates to a single column, by construction.** A flow with no explicit
-`depends` has one step per rank, so it renders as a vertical list — which is what 001 §9.1's
-implicit-sequence rule is for. Branching is visible precisely because it is the exception.
+Order *within* a rank is whatever crosses least. It was file order, on the argument that file order
+is stable and inspectable where anything derived from the run (completion time, duration) would
+redraw the graph differently on a loaded machine than on an idle one. **That argument survives
+intact and its conclusion does not**: a crossing-minimised order is derived from the description,
+not from the run, so the property that matters — the same file draws the same graph, every run, on
+any machine (002-C U1.10) — still holds. What is given up is that the first-declared of two siblings
+is the upper one, which buys the drawing far more than it costs: on `seed-verified-company` it is the
+difference between a readable branch and two chains woven through each other.
 
-Panning and zooming are not provided in v1. Flows are tens of steps; the graph is laid out to the
-tab's width and scrolls vertically like any other document. If a real flow arrives that needs a
-viewport, that is evidence for the graph library this spec declines to add (§13).
+**Edges are routed, not drawn straight.** An edge is a polyline through the free lanes between ranks,
+with its corners rounded, and both ends attached along the vertical borders of the boxes they join —
+so an edge spanning six ranks travels above or below the five steps between rather than through them,
+two edges between the same pair stay two visible lines, and eleven edges out of one step leave at
+eleven heights rather than from one point. This is the single largest thing wrong with a hand-rolled
+graph and the reason §13's rejection was revisited: measured on `seed-verified-company` (18 steps),
+the straight-bezier version put 40 of its 63 edges through a box they did not connect, 174 crossings
+in total; routing takes both to zero.
+
+A hidden data edge is still laid out (§5.3): a toggle is a view of one drawing rather than a second
+drawing, and a graph that re-laid itself around what is currently ticked would move every box under
+the reader's cursor.
+
+**Ranks advance left to right; steps sharing a rank stack downward.** A step box carries a name, an
+operation and a status line, so it is three times wider than it is tall. Spending the rank axis on
+the *short* dimension is spending the one that is scarce: a twelve-step flow becomes twelve stacked
+boxes with 220px of empty margin either side, and the graph pushes the step detail (§9) off the
+bottom of the tab in exactly the case — a long flow — where you most want both. Along the wide axis
+the same flow fits in a strip the pane can scroll sideways, and the graph keeps its height.
+
+It also matches the direction the thing being drawn runs. A request flows left to right in every
+sequence diagram anyone reading this has seen, and branch-and-rejoin reads as a widening and a
+narrowing rather than as an indent.
+
+**The linear case degenerates to a single row, by construction.** A flow with no explicit `depends`
+has one step per rank, so it renders as a left-to-right chain — which is what 001 §9.1's
+implicit-sequence rule is for. Branching is visible precisely because it is the exception: a rank
+with two steps is the only thing that ever uses the vertical axis.
+
+A rank narrower than the widest one is **centred** against it, so a branch reads as spreading from
+the step before it rather than hanging off its top edge — as is a step against the steps it joins,
+which is what makes a fork and its rejoin symmetrical.
+
+Panning and zooming are not provided in v1. Flows are tens of steps; the graph is drawn at its own
+size and scrolls inside its box, in both directions. It is deliberately never scaled to fit — a
+twelve-step flow shrunk to the tab's width is unreadable, and a graph you cannot read is worse than
+one you have to scroll. If a real flow arrives that needs a viewport, that is evidence for the graph
+library this spec declines to add (§13).
+
+**The view follows the step in flight, while nothing is selected.** Scrolling rather than scaling is
+what keeps a long flow legible, and its cost is that the run walks off the right edge of the box:
+§8.2's halo answers *which* step is executing and says nothing at all to a reader looking at a part
+of the drawing the run has already left. So the graph scrolls itself to the running step — by the
+minimum that brings it inside the box rather than by centring it, so consecutive ranks nudge the view
+along instead of swinging the whole drawing on every `step:start`, and so a node already in view does
+not move it at all. Selecting a step (§9) ends the follow for as long as the selection stands: the
+pane below is reading that step's response, and a view that slid away from it would be moving the
+drawing out from under the thing it is explaining. Under `concurrency > 1` (§8.3) the earliest node
+in the layout is followed and held until it leaves the in-flight set: a view that re-chose on every
+event would swing between branches on events that say nothing about where to look, and a poll's
+attempts would each move it again.
 
 ### 5.3 Edges
 
@@ -310,8 +569,8 @@ Five kinds, and the distinctions are load-bearing rather than decorative:
 | **Implicit sequence** | Solid, muted | It is not in the file. Drawing it identically to a declared edge hides the one thing about 001 §9.1 that surprises authors. |
 | **Explicit `depends`** | Solid | Declared structure. |
 | **Status-conditioned** | Solid, labeled with the status set | `[failed]` on the edge into a fallback branch is the difference between a branch that runs and one that never does. Unlabeled means the default `[success]`. |
-| **Data (connector)** | Dashed, labeled with the output name | 001 §8.1's declared outputs — the feature's core claim is that data paths are named and drawable. This is where that is cashed. |
-| **Shared slot** | Dashed, to and from a slot glyph | 001 §9.1's slots deliberately do not name a producer, so they cannot be drawn as a step-to-step edge without asserting a relationship the format denies. |
+| **Data (connector)** | Dashed, labeled with the output name — `✗` on it when the run produced no value | 001 §8.1's declared outputs — the feature's core claim is that data paths are named and drawable. This is where that is cashed. |
+| **Shared slot** | Dashed, to and from a slot glyph in a lane below the graph — **drawn on demand**, see below | 001 §9.1's slots deliberately do not name a producer, so they cannot be drawn as a step-to-step edge without asserting a relationship the format denies. |
 
 **These five are drawing treatments, not five values of `FlowEdge.kind`** (§11.1). Three of them —
 implicit sequence, explicit `depends`, status-conditioned — are the `'sequence'` and `'depends'`
@@ -323,10 +582,68 @@ ordinary one, which is precisely the mistake U1.3 exists to catch.
 An `any` join (001 §9.1) is marked at the receiving node, because `all` and `any` differ in whether
 the step runs at all and the incoming edges look identical otherwise.
 
+**Where several edges join one pair of steps, their labels stack.** 001 §8.1 draws a connector per
+output, so a step consuming two of a producer's values is joined to it twice. Routing gives each its
+own lane where there is room for one (§5.2) and the same lane where there is not — labels placed
+identically then land on top of each other and read as one illegible word rather than as two values. They stack away from the path rather than spreading along
+it: the path is short, shared and shrinks with the layout, so labels distributed along one drift over
+the nodes at either end and collide again on the next flow. Each stays its own label, with its own
+mark and its own hover.
+
 **Data edges are toggleable and on by default.** On a flow where most steps consume the previous
 one's output, control and data edges are largely parallel and the drawing is quieter with data
 hidden; on a flow with real fan-out they are the interesting half. Neither default is right for both,
 so it is a control rather than a decision.
+
+**Slot edges are a layer of their own, and it is off by default.** This is the one default on that
+toolbar that is not a preference. A slot is read by every step that references it, and an
+`authProfiles` entry interpolating `{{shared.userAuthToken}}` makes *every authenticated step* a
+reader — on `seed-verified-company` that is one slot with 14 participants, and slot edges are 34 of
+the flow's 63 edges. Drawn together they are a line from almost every box on the drawing to one
+glyph, which says less than drawing none of them: the measurement that prompted this was 155 of 174
+box-crossings coming from that layer alone. What the graph keeps unconditionally is §5.1's `⌸` marker
+— *this step shares state* — and what the layer adds is *which values, with whom*.
+
+**A slot's glyph sits in a lane below the ranks, and no two glyphs share a spot.** The lane is walked
+left to right in barycentre order with each glyph placed past the end of the last, and every glyph
+carries its slot's name and, on hover, its writers and readers. The first version centred each glyph
+on the span of its participants and drew them all on one line, which for four slots spanning the same
+flow put four glyphs at one coordinate — one square where four should be. A glyph is placed under the
+middle of the steps that use it because that is the only positional information a slot has: it says
+where on the drawing this value is being passed around.
+
+**Focusing a step draws that step's slots whatever the toggle says**, and only that step's own edges.
+Hovering a node focuses it; failing that, the step §9's pane is reading is focused. The glyph names
+the other participants, so nothing is hidden — answering *what does this step share* with fourteen
+lines answers a question nobody asked.
+
+**Everything not touching the focused step recedes rather than disappearing.** With sixty edges on a
+drawing, "how much is going on" is answered and "which of these is mine" is not; dimming answers the
+second without giving up the first, which is why the rest fades instead of being removed. Both ends
+of a lit edge stay lit — a line into a faded box says a value went somewhere and not where — and a
+line fades further than a box, because a box that faded as far would take its step's name with it and
+the reader would lose their place. The lane grows the drawing downward as slots appear, so no step
+ever moves in response to what is being looked at.
+
+**While a run is on the graph, a data edge names the value that travelled along it on hover.** The
+edge and its label say a value moved and what it was called; which value it *was* is otherwise only in
+§9's pane, behind selecting the producing step and opening a tab — a long way round for the question
+reading a graph is mostly made of. It is a hover rather than a second label because an output is a
+response fragment, not a word: a value long enough to need a viewer is cut, and §9 is where it gets
+read in full. Nothing is claimed before the producing step ends.
+
+**A data edge whose value never arrived is marked `✗` beside its label, and names the reference on
+hover.** The edge is where this belongs: 001 §11.2 reports the *consumer* as `unresolved-dependency`
+and 001 §8.1 makes the absent key on the *producer* the definition of "not produced", so the failure
+is a property of the path between them and of neither node alone — which is why §8.2's red run can
+otherwise draw nothing but green and grey nodes. The hover text is the consumer's own message (001
+§14.6), shown verbatim rather than reworded here, so the graph, the node and §9's pane cannot end up
+saying three different things about one missing value.
+
+**The mark follows the run, not the file.** The consumer's reason says which step's references went
+unproduced and the producer's recorded outputs say which one of them is missing — both reported by the
+engine — so a step referencing two values and failing on one marks one edge. A renderer that inferred
+"missing" from the graph alone would be deciding what a flow means, which §11 puts out of bounds.
 
 **An undeclared dependency is drawn as a data edge in a warning style.** 001 §8.3 permits raw
 `steps.<id>.body` access and has `validateFlow` report it as an undeclared-dependency warning.
@@ -337,7 +654,8 @@ by something the author looks at.
 ### 5.4 Sub-flows
 
 A `uses:` step is one node, collapsed, marked `⊂`. Expanding it draws the sub-flow's own graph inline
-beneath, with its steps under their namespaced ids (`auth/login`, per 001 §13.2 and §14.5).
+after it — its own block of ranks, continuing rightward — with its steps under their namespaced ids
+(`auth/login`, per 001 §13.2 and §14.5).
 
 Collapsed is the default because 001 §12 makes a sub-flow opaque by contract: the parent declares
 `with:` and consumes `exports:`, and cannot reference internal step ids. A view that expanded by
@@ -361,8 +679,28 @@ Diagnostics surface in three places, each carrying the stable `code` (001 §14.6
   `depends` that caused it.
 - **The graph** — a badge on the node whose `stepId` the diagnostic names. A cyclic dependency or a
   non-ancestor reference is a statement about structure, and the structure is what is drawn.
-- **A list in the tab header** — counts by severity, expanding to the full set. Diagnostics with no
-  `stepId` and no position — a bad `apis:` binding, a scope-root escape — have nowhere else to go.
+- **A list in the tab header** — errors, listed. Diagnostics with no `stepId` and no position — a bad
+  `apis:` binding, a scope-root escape — have nowhere else to go, and an error is the answer to why
+  the run control is disabled, so it belongs where it cannot be missed.
+- **The run's own diagnostics (001 §13.2), listed with the errors.** These are a different thing
+  wearing the same word: §14.3's describe the file, a run's describe what happened while it executed —
+  a capture that could not be written, or the failure a run that died on its own could not attach to
+  any step. Nothing else in this view can carry them, because they belong to no step: no node will
+  badge them and no step pane will show them. They are listed rather than hidden behind a hover,
+  because unlike a file's warning they are about the run in front of you and there is no second place
+  to go looking.
+- **A count at the end of the toolbar** — warnings, whose list opens on hover. A warning does
+  not block the run, and 001 §5.4's posture means a flow written by a newer Bruno carries one
+  indefinitely, as does one whose author accepted an undeclared dependency. Listed beside the errors
+  they pushed the drawing down on every open and read as something to deal with before running, which
+  is what the error list means and what a warning is specifically not. The count is the standing
+  statement; the list is a hover away, and it opens *over* the graph rather than in front of it. It
+  takes focus as well as a pointer, or the list is unreachable from the keyboard.
+
+  It sits with the view's other controls — the data-edge toggle, the run selector — at the right end
+  of their row, rather than floating over the drawing. They are the same kind of thing: what this view
+  is showing, and what it has to say about it. Over the graph it was the one control that moved with
+  the drawing, and it occupied a corner of the drawing to do it.
 
 **A flow that does not parse still opens.** The tab shows the document view with the parse error
 anchored, an empty graph, and a disabled run control. The failure mode to avoid is a file that cannot
@@ -387,7 +725,7 @@ A panel beside the run control, following `RunnerResults/RunConfigurationPanel`'
 
 | Control | Maps to |
 |---|---|
-| Environment | The `environment` tier of `RunOptions.variables` — see the scope split below |
+| Environment | The `environment` tier of `RunOptions.variables` — see the scope split below. On §4.2's header rather than in this panel, where a collection keeps it |
 | Variable overrides | `envVarOverrides` — the app's `--env-var` |
 | Dataset | `overrides.dataset` (001 §9.4) |
 | Concurrency | `overrides.concurrency` (001 §9.2) |
@@ -445,8 +783,28 @@ workspace `.env` — nothing else.**
 | `processEnv` | collection `.env` | workspace `.env` |
 | `envVarOverrides` | run configuration | run configuration |
 
-The Environment control for a workspace flow is therefore `EnvironmentSelector`'s **Global** tab, not
-a new selector.
+The Environment control for a workspace flow is therefore the app's own workspace-environment
+selection, not one the flow keeps privately: it selects the active environment through
+`selectGlobalEnvironment`, exactly as the selector in a collection's header does, and `tiersFor` reads
+that selection and needs no notion of a flow having chosen one.
+
+**It sits on §4.2's flow header rather than in this panel**, at the end of the row, because that is
+where a collection's header keeps it — this is the one control here that someone already knows the
+location of, and the run configuration is not that location. The rest of this table is a flow's own.
+
+**It is upstream's list, composed rather than copied.** `EnvironmentListContent` — the body of the
+selector a collection's header shows — is written against environments rather than against a
+collection, so search, colour badges, the active tick and the *No Environment* row come with it, as
+does its stylesheet. What is not reused is the selector *around* it: that opens on a Collection tab and
+keys its configure and create paths off `collection.uid`, and the collection a workspace flow borrows
+(§4.2) is the workspace's scratch one, whose environments must never show through as chrome. Its
+configure, create and import actions land where all three happen — the workspace's environments.
+
+A flow tab borrows a collection to exist and then hides that collection's chrome, and the environment
+selector went with it — so before this there was nowhere to make the choice while looking at a flow,
+and a run silently used whatever was last selected elsewhere in the app. Selecting *no* environment
+stays available: a flow taking every value from a `.env` or an override has made a choice, not an
+omission.
 
 **Workspace environments and global environments are one mechanism in this app, not two.**
 `renderer:get-global-environments` serves them from `workspaceEnvironmentsManager` when a
@@ -472,6 +830,15 @@ step gets the app's proxy settings, client certificates, cookie jar and OAuth2 t
 flows implementing any of it. This is the concrete payoff of 001's port design and the reason a flow
 run in the app can differ from one in CI only in configuration, never in mechanism.
 
+**`RunScript` runs against the flow's scope root, which for a workspace flow is the workspace.** The
+VM resolves `require` against a path and refuses to start without one, so a host handing it nothing
+turns every one of 001 §8.2's script positions — an `outputs` script, a `when:` condition, a
+`shouldRetry` — into a `script-error` on the step, blaming the author's script for something the host
+did. A workspace-scoped flow has no collection by construction (§7.2), so this is not an edge case
+there; `bru` already falls back the same way, which is what keeps a script's behaviour identical in
+both hosts. The safe-mode refusal above stays keyed to a real collection, since that setting is a
+collection's.
+
 ## 8. Watching a run
 
 ### 8.1 The event stream
@@ -485,6 +852,11 @@ run at `concurrency: 5` with polling steps emits `step:attempt` at request rate;
 one dispatch per frame is the difference between a smooth graph and a renderer that spends the run
 in reconciliation.
 
+**A run in this view always ends**, because 001 §13.2 guarantees `run:end` follows `run:start`. The
+slice has no timeout of its own and needs none: a run's terminal state is an event like any other, and
+inventing one here — a spinner that gives up after N minutes — would be the app deciding a run's
+outcome from the outside, which §8.2 gives the engine.
+
 Batching preserves order within the batch, which is all 001 §13.2 guarantees anyway — it promises
 `step:start` before `step:end` and both inside their iteration, and explicitly requires consumers to
 key on `id` and `index` rather than assume adjacency.
@@ -496,8 +868,8 @@ A node is in exactly one state, and the four terminal ones are 001 §14.6's, unr
 | State | From | Shown |
 |---|---|---|
 | pending | before `step:start` | outline only |
-| running | `step:start` | animated border |
-| retrying | `step:attempt` beyond the first | `attempt n/m` on the node |
+| running | `step:start` | a halo travelling around the box |
+| retrying | `step:attempt` beyond the first | the same halo, in the retry colour, plus `attempt n/m` on the node |
 | `success` | `step:end` | green, with status code and duration |
 | `failed` | `step:end` | red, with the reason (001 §14.6) |
 | `skipped` | `step:end` | muted, with the reason |
@@ -509,9 +881,34 @@ working, `unresolved-dependency` is usually a real failure that 001 §11.2 delib
 skip. A UI that showed a uniform grey "skipped" would erase the distinction the vocabulary exists to
 draw.
 
+**The message that goes with it (001 §14.6) is on the node's hover.** A node has room for a state and
+a reason and no more, and the message is a sentence — but the reason alone routinely names nothing to
+act on. `unresolved-dependency` is the case that forces this: the run's verdict is *failed* while
+every node it drew is green or grey, and the one fact that explains both — which reference was never
+produced — is on the skipped node and nowhere else. Hover rather than a fifth line, so the graph does
+not resize itself around whichever step happened to fail; §9's pane shows the same message in full for
+the step being read, and §5.3 marks the data edge the missing value should have travelled along.
+
+**Both markers answer to the run as well as to the node.** A node's state is the last thing the
+engine said about that step, so one that announced `step:start` and never announced its end reads
+`running` for as long as the tab is open — true of the report, and false about the world the moment
+the run ends. 001 §13.2 guarantees the stream terminates, so the run's own terminal state is the
+engine's answer to *is anything still in flight*, and it is the one an in-flight marker asks. Nothing
+is invented to cover the gap: the node keeps the status it was given, and §9's pane says plainly that
+the run ended without the step reporting rather than repeating `running` beside a run that is over.
+
 **`retrying` is a first-class state for the same reason.** 001 §11.1 makes polling the mechanism for
 waiting on asynchronous state, and a 20-attempt poll that renders as "running" for a minute is
 indistinguishable from a hang.
+
+**The halo moves, and its colour separates the two states.** Motion is what distinguishes a request
+in flight from a step drawn in a state it reached and stopped in — a static border says the same
+thing about a step that is working and one that is wedged. It turns *around the box* rather than
+pulsing it, so a graph with several steps in flight under `concurrency > 1` (§8.3) reads as several
+things happening rather than as a flashing diagram. The retry colour is what makes a poll legible
+from across the graph without reading the attempt count on the node, which is the distinction this
+state exists for. Under `prefers-reduced-motion` the ring holds still: the colour still says the step
+is in flight, and only the motion goes.
 
 ### 8.3 Concurrency and iterations
 
@@ -532,17 +929,153 @@ and the flow's own status word. 001 §14.6 keeps flow status (`passed`/`failed`/
 distinct from step status (`success`/…) precisely so a summary is unambiguous about what it
 describes; the UI uses the same two vocabularies in the same two places.
 
+**A verdict the counts do not account for names the step it fell on**, as a control that selects that
+step. The counts tally step statuses, and 001 §11.2's `failOnUnresolved` fails a run through a step
+that is *skipped* — so this line can read `failed` over `0 failed` with every node in the graph green
+or grey, which is the one run outcome the whole view otherwise explains nowhere. Selecting the step
+opens §9's pane on it, where its reason and 001 §14.6's message are, and the graph highlights the node
+on the way: one click from the verdict to the sentence.
+
+**The steps come from 001 §13.2's `decidedBy`, and the displayed iteration's rather than the run's.**
+Scanning the steps for `unresolved-dependency` instead would name one that opted out of the rule —
+`failOnUnresolved` is per-step and `StepResult` does not carry it — which is the same class of mistake
+as computing a status here. §8.3 draws one iteration at a time, so a cause from another row would
+point at a node that ran perfectly well in the one on screen. A step the graph already draws red gets
+no mention: it says it itself, in the place that shows what it was.
+
+### 8.5 Flow requests in the DevTools network tab
+
+**Every request a flow sends appears in the app's DevTools network tab, beside the ones sent from a
+request tab.** A flow is the app sending HTTP, and a panel that lists what the app sent is either
+complete or misleading — a user who opens it mid-run and sees nothing concludes the flow never
+dispatched, which is exactly the failure it would be used to diagnose.
+
+Nothing about the panel makes this automatic. It lists a collection's `timeline`, which is appended
+by the `responseReceived` reducer on the `send-http-request` path; §7.3 deliberately routes a flow
+through `configureRequest` directly rather than through that handler, so a flow's requests reach no
+collection and the panel has no source for them. The dispatch port therefore reports each request
+it sends, on `main:flow-request-log-batch`, and the panel selects over both sources.
+
+**The port reports, not the engine.** 001 §13.2 keeps bodies out of `FlowEvent` so a large response
+is not serialized twice per step, and adding a request event would undo that for every host
+including `bru`, which has no panel to feed. The port is the app's own request path and already
+holds the request and the response; reporting from there costs the engine nothing and leaves the CLI
+unchanged.
+
+**A flow request is mapped into the timeline entry the panel already reads**, so nothing downstream
+of the merge learns that flows exist. Two fields need a rule of their own:
+
+| Field | Value |
+|---|---|
+| collection | The collection owning the flow; for a workspace-scoped flow (§7.2), the workspace's **scratch collection** |
+| row identity | `runId:stepId:iteration:attempt` — an attempt is the finest selectable thing, so a 20-attempt poll (§11.1) is 20 rows |
+
+**Every row names a collection, including a workspace-scoped flow's.** The obvious alternative —
+leaving those rows unattributed, since the flow genuinely belongs to no collection — is what the
+details panel cannot take: it resolves a collection from the row and hands it to the response viewer,
+which dereferences `collection.uid`, so an unattributed row crashes the renderer rather than reading
+as anonymous. Borrowing the scratch collection is the same answer §4.2 already gives for the flow's
+own *tab*, and for the same reason: everything in this app belongs to a collection, and a
+workspace-level thing belongs to the workspace's scratch one. A row whose named collection has since
+been **closed** takes the same fallback. Nothing displays the collection, so nothing misreads it.
+
+**Headers are masked with the run's own policy** — 001 §14.4's denylist extended by
+`config.redactHeaders`, the same set the capture masks. The panel is a second reporting surface, not
+an exemption from the one rule 002-C R3 pins; a masked token that the network tab printed in full
+would not be masked at all. Applying the *run's* policy rather than the built-in denylist is why
+`FlowContext` carries `redactHeaders` (§11.4).
+
+Three limits, each stated rather than discovered:
+
+- **A body larger than 1 MiB is reported as absent, with its size.** Unlike the single response of
+  an ordinary request, a run's bodies accumulate — one per attempt — and the capture holds the real
+  bytes, which is where §9 already sends you to read one.
+- **Only a textual request body is reported.** `binary` and `multipart` bodies are the two the
+  capture describes structurally (001 §14.5); restating that summary here would put a second, weaker
+  description of a body in the app.
+- **A request that got no response shows an empty status.** That is what happened, and the step's
+  own `transport-error` reason (001 §14.6) is on the node.
+
+The log is capped at 500 entries and is not persisted — the snapshot middleware serializes a curated
+subset that does not include it, so this surface is in-memory and local to the running app. Anything
+worth keeping is in the capture.
+
 ## 9. Inspecting a step
 
-Selecting a node opens the step detail pane:
+Selecting a node opens the step detail pane, and **clicking the selected node again clears the
+selection** — the click that made the statement is the one that takes it back. Nothing else does: the
+pane has no close control of its own, and a graph with no way back to nothing-selected is one whose
+§5.3 focus and §5.2 follow can both be entered and never left.
 
 | Tab | Content |
 |---|---|
-| Request | The materialized request — method, resolved URL, headers, body — as sent (001 §7) |
+| Request | The materialized request — method, resolved URL, headers, body — as sent (001 §7, §13.2's `requestHeaders`) |
 | Response | Status, headers, body, duration |
-| Assertions | Each `assert:` entry with `expected` and `actual`, from `StepResult.assertions` |
-| Validation | Request-schema and response-schema outcomes (001 §10.1) |
-| Attempts | One row per attempt when there was more than one |
+| Assertions | Each `assert:` entry with `expected` and `actual`, as recorded for the attempt |
+| Validation | Request-schema and response-schema outcomes (001 §10.1), as recorded for the attempt |
+
+**The pane shows one attempt, and the attempt is chosen on its header rather than on a tab.** 001
+§14.5 writes one capture per attempt, holding that attempt's request, response, assertion outcomes
+and schema-validation outcomes — so all four tabs are attempt-scoped and one selection governs them
+together. A fifth tab listing the attempts put the choice in one place and its effect in another: you
+selected attempt 3, remained on a tab that showed only a list of attempts, and nothing appeared to
+happen. The chooser therefore sits between the step's id and its outcome, beside what it re-keys. It
+carries no label, because it always shows a value and that value names what it is.
+
+**Every tab is the chosen attempt's, or none of them is.** Reading the verdict from `StepResult`
+while reading the request and response from a capture is the mix that makes a poll unreadable: 001's
+engine builds `StepResult` from the attempt that *settled* the step, so a poll that failed twice and
+then passed showed a passing assertion beside attempt 1's failing response. 001 §14.5 already records
+each attempt's own outcomes for exactly this reason, and §11.2 types them onto `StepCapture`.
+
+**It opens on the final attempt** — the one the step's own outcome was built from, so opening a step
+is opening its verdict, and a poll that settled on attempt 12 opens on the response that settled it
+rather than on the first of eleven that did not. While the step is still running the final attempt is
+the one in flight, whose capture has not been written yet, so the pane follows the newest attempt that
+*has* one and a poll's responses appear as they arrive; choosing an attempt stops the following. The
+in-flight attempt is offered as well, and reads as "Attempt n has not finished" rather than as a
+failed read — the same readiness rule stated below.
+
+**A step still in flight turns a spinner beside its attempt selector.** §9's header shows a step's
+status and duration only once they are the step's own (below), so a running step's header would
+otherwise be indistinguishable from a finished step's whose events this pane missed. It stays up
+across a poll's retries for the reason §8.2 gives for the halo: `retrying` is the same request still
+in flight, and a spinner that stopped between attempts would say it had landed. The two surfaces use
+one pair of colours, so the pane and the node being read never disagree about what is happening.
+
+**The reason's message (001 §14.6) sits above the tabs**, where it is read whichever one is open — and
+it has to be, because the steps whose message matters most have no tab that could carry it. A skip
+never dispatched: its request, response, assertions and validation tabs are four ways of reporting the
+same absence, and the message is then the only thing on the pane that says anything about why.
+
+**Four things stay the step's: its status and reason, that reason's message, its duration, and its
+declared outputs.** No per-attempt form of them exists to show — 001's engine measures the duration
+across every attempt and the delays between them, and §11.2 keeps the outcome and the outputs out of
+the captures deliberately, because copying them into each would let the copies disagree. On the final attempt they *are* that
+attempt's, which is why the pane opens there and shows them without qualification; on an earlier
+attempt they describe a different call, so the header drops the status, its message and the duration,
+and the response tab drops the outputs. The step's verdict is on its node in the graph throughout, which is why
+withholding it here costs nothing.
+
+**A step whose capture was never written says that, rather than that one could not be read.** 001
+§14.5 lets an artifact write fail without failing the run, so a step can have dispatched, been judged
+and have nothing on disk — and `StepResult.capturePath` is how the run says which. Reading anyway
+renders a file that was never written as a read this pane got wrong, and points at the wrong half of
+the problem: the reason is on the run's diagnostics above, which is where the pane sends the reader.
+
+**Under capture-disabled runs there is no attempt to choose.** The chooser is absent, and the
+assertion and validation tabs render `StepResult`'s step-level outcomes — the one case where they are
+not an attempt's, and the case where nothing else exists to show.
+
+**"As sent" is meant literally, and it is why 001 §13.2 grew `requestHeaders`.** A step's declared
+headers are rarely the ones that went out: the content type comes from the body, the `Authorization`
+from the resolved auth profile, cookies from the jar — all applied by the host, after the engine has
+handed the request over. A pane showing the declared set displays nothing at all for the common step
+that declares no headers, while the request it is describing carried several.
+
+**Headers are labelled and grouped**, on both tabs, with an explicit statement when the capture holds
+none. Unlabelled rows sat flush against Method and URL and read as more of the same list, which is
+the other half of a header section that appears to be missing.
 
 **A capture is read the way it was written.** 001 §14.5 nests a run's captures under `iteration-N`
 only for a `dataset:` flow, so `readCapture` is given an `iteration` only when `describeFlow`
@@ -552,21 +1085,61 @@ created.
 **A capture that could not be read is reported as that**, never as a step that sent nothing. The two
 are different facts about the run, and only one of them is the pane's to assert.
 
+**A capture is not read until the attempt that writes it has settled.** 001 §14.5 writes an
+attempt's file *after* the attempt returns — `step:attempt` announces the request going out, the
+capture is recorded when it comes back — so the window between the two is a period in which the file
+legitimately does not exist. The pane's readiness comes from the node the events fold into: a step
+still in flight has a capture for every attempt *before* its current one, a step that has stopped has
+one per attempt it made, and a step that made none (skipped, or cancelled before it dispatched) never
+will. Those three cases read as **waiting**, **readable**, and **nothing was sent** respectively.
+
+This is the one place where §11.2's "a missing capture is a caller error" is a rule the *caller* has
+to keep. The failure it prevents is specific and was observed: selecting a step and then starting the
+run puts `run:start`'s capture directory in front of a pane that has not seen any step finish, so the
+read fires against an empty directory, fails, and — because nothing re-reads on `step:end` — stays
+failed until the pane is closed and reopened. Deriving readiness from node state is also what makes
+the recovery automatic: the same event that ends the step changes the input the read is keyed on.
+
 **Bodies come from the capture, fetched on demand.** 001 §13.2 excludes bodies from events
 deliberately — every event crosses IPC, and attaching payloads would serialize them twice for data
 the UI needs only when a step is opened. Opening a step reads its capture through
 `renderer:flow-read-capture` (§11.2); the pane shows a loading state for the moment that takes.
 
-What the events *do* carry — status, reason, attempts, duration, assertion results, declared outputs
-— renders immediately, so a step's verdict never waits on a file read.
+What the events *do* carry — status, reason, attempts, duration, declared outputs — renders
+immediately, so a step's verdict never waits on a file read. The assertion and validation *tabs* do
+wait, because which attempt's outcomes they show is the question the capture answers.
+
+**The split between the graph and the pane is dragged, and remembered.** §5's graph and this pane
+compete for one screen, and which one you want bigger changes with what you are doing — following a
+20-node graph, or reading a response body. A fixed share is wrong for both. The handle clamps so
+neither side can be dragged away entirely, double-click hands the pane back to its default, and the
+size persists across tabs and launches, because re-dragging it for every flow is what a preference
+exists to avoid.
+
+The stored size is **re-clamped when the window shrinks**: a pane dragged tall in a maximized window
+would otherwise reopen in a small one having eaten the graph, and the graph is what the tab is for.
 
 **Declared outputs are shown with their values**, as the run's answer to "what did this step
 contribute". This is the inspection counterpart to §5.3's data edges: the edge says a value moves,
 the pane says what it was.
 
+They belong to the **response tab, directly above the body**, because the body is what 001 §8.1 read
+them out of — a value and the bytes it was extracted from are read together or neither is worth much.
+Above the tab strip instead they are on every tab, most of which have nothing to do with them, and
+furthest from the one thing that explains them. They arrive in `StepResult`, so they render on a
+capture-disabled run too — the same reason assertion and validation outcomes survive one.
+
 **Under `--no-capture`'s equivalent** — capture disabled in run configuration — the request and
 response tabs state that captures were disabled rather than showing empty panels. Assertion and
 validation outcomes still render, because they arrive in `StepResult`.
+
+**Whether a run has captures is a property of that run, read from the run**, never from the run
+control. 001 §13.2 reports `captureDir` at `run:start` and omits it when capture was off, and §11.2's
+stored runs carry the directory they were read from, so the directory's presence *is* the answer for
+a live run and a past one alike. Reading the checkbox instead ties what a *finished* run can show to a
+setting for the *next* one: unchecking it to configure the next run blanks the captures of the run
+you are looking at, and §10's stored runs — which were written by a different process on a different
+day — inherit whatever the control happens to say now.
 
 Redaction (001 §14.4) is applied by the engine before emission and before writing captures, so the
 app displays what it is given and has no `--show-sensitive` equivalent. A secret hidden in CI output
@@ -631,6 +1204,31 @@ records why it was needed.
 
 The selector's default is the current or most recent run for that flow, so opening a flow after a
 failed run shows the failure rather than an empty graph.
+
+**A live run pins its graph too.** 001 §13.2 reports the snapshot at `run:start`, and the tab draws
+it for the run in progress exactly as it does for a stored one. Without it, saving an edit while a run
+executes redraws the running graph from the new file — the watcher clears the stored description on
+the save, so the tab would follow the edit rather than the run it is watching. Under a capture-disabled
+run there is no snapshot to report and the view falls back to the file, which is the same degradation
+§9 states for that case.
+
+**A past run draws the graph it executed, not the flow's current one.** 001 §14.5 records the
+description at run start, and §11.2 returns it; the tab draws that in preference to the live
+description whenever a stored run is open. Drawing today's graph instead is not a cosmetic mismatch —
+it drops a renamed step's outcome, shows a step added since as one that never ran, and draws edges
+the run never had, all silently. §4.3 makes editing a flow a first-class action, so this stopped being
+a rare case the moment raw editing existed. A run written before snapshots has none, and falls back
+to the current graph exactly as it did before.
+
+**And a run whose flow has since changed says so in the selector** — `flow edited since`, from
+§11.2's `flowChanged`. The graph it opens into is that older flow's, which is otherwise
+indistinguishable from the current one in a list of timestamps. Only a definite change is marked:
+`flowChanged` is three-valued, and a run that predates the digest is *unknown*, not unchanged.
+
+The same snapshot fixes a quieter failure in §9. `readRun` asks which steps have captures, and the
+ids it asks about used to come from today's graph — so a renamed step's captures became unreachable,
+since 001 §14.5's directory name is a lossy encoding that cannot be inverted. With a snapshot the
+reader asks about the ids the run actually had.
 
 ---
 
@@ -705,7 +1303,7 @@ second implementation of the scheduling order. Turning ranks into coordinates is
 stays in fork UI code.
 
 **A sub-flow's internals are ranked within their own flow, not continued from the caller's.** Its
-first step is rank 0. §5.4 draws the expansion as its own graph inline beneath the container node,
+first step is rank 0. §5.4 draws the expansion as its own graph inline after the container node,
 so those ranks are the ones that picture needs; continuing the caller's numbering would make a
 sub-flow's layout depend on how deep in the parent it happened to be invoked, and the same library
 flow would draw differently in two callers. The `parent` field is what relates the two.
@@ -740,6 +1338,7 @@ type RunIndexEntry = {
   state: 'complete' | 'running' | 'interrupted';
   status?: RunResult['status'];        // 001 §14.6's vocabulary, only when state is 'complete'
   summary?: RunResult['summary'];      // likewise — both come from summary.json
+  flowChanged?: boolean;               // run.json's flowHash vs the flow now; undefined = unknown
 };
 
 type ReadRunOptions = {
@@ -751,7 +1350,9 @@ type ReadRunOptions = {
 
 type StoredRun = RunIndexEntry & {
   result?: RunResult;                  // summary.json — absent on a running or interrupted run
-  capturedSteps: string[];             // the subset of `stepIds` that has a capture
+  capturedSteps: string[];             // the steps with a capture — see below
+  description?: FlowDescription;       // flow.json — the graph this run executed (001 §14.5)
+  source?: string;                     // flow.yml — its text at run time
 };
 
 type ReadCaptureOptions = {
@@ -804,8 +1405,8 @@ type CapturedPart =
 
 **A `StepCapture` is one attempt, not one step.** `ReadCaptureOptions` already takes an `attempt`,
 and 001 §14.5 captures each retry separately because "a step that polled ten times records ten
-attempts, which is usually the only way to see what changed between them." §9's **Attempts** tab is
-a row per call to this function, and a step-shaped return would have to carry all ten payloads to
+attempts, which is usually the only way to see what changed between them." §9's attempt chooser is one
+call to this function per attempt, and a step-shaped return would have to carry all ten payloads to
 answer a question about one.
 
 **It is self-describing, and that is what makes an interrupted run readable.** §10 opens a run with
@@ -888,6 +1489,12 @@ the names would answer confidently and sometimes wrongly. The caller already hol
 about — the graph `describeFlow` returned — so the decidable question is which of *those* have a
 capture, and the id-to-segment mapping stays in the engine, where §14.5 puts every path computation.
 
+**A run's own snapshot supersedes that input.** 001 §14.5's `flow.json` holds the graph the run
+executed, so its node ids are the ids that could have captures — and they are the right ones to ask
+about, because the caller's list is *today's* graph and a step renamed since would leave its captures
+unreachable. `stepIds` stays the fallback for runs written before snapshots; the argument above is
+why it exists at all, not an argument for preferring it when the run knows better.
+
 The capture layout is a 001 contract (§14.5). A parser in the renderer would be a second reader of a
 format the CLI writes, and the two would drift the first time the layout gained a field — the same
 argument 001 §13.1 makes about request dispatch, applied to the artifact.
@@ -896,7 +1503,9 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 
 | Channel | Direction | Purpose |
 |---|---|---|
-| `renderer:flow-describe` | invoke | `describeFlow` for one flow |
+| `renderer:flow-describe` | invoke | `describeFlow` for one flow, or for draft text (§4.3) |
+| `renderer:flow-read-source` | invoke | One flow's own text, for §4.3's editor |
+| `renderer:flow-write-source` | invoke | Write one flow's text back |
 | `renderer:flow-run` | invoke | Start a run; resolves with the `runId` |
 | `renderer:flow-cancel` | invoke | Abort a run by `runId` |
 | `renderer:flow-list-runs` | invoke | `listRuns` for a scope |
@@ -905,6 +1514,7 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 | `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
 | `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
+| `main:flow-request-log-batch` | send | A batch of requests the dispatch port sent (§8.5) |
 | `main:flow-tree-updated` | send | Watcher: a flow file added, changed or removed |
 
 **The renderer says which scopes to watch**, because it is the side that knows which workspaces and
@@ -924,6 +1534,20 @@ loading or simply empty.
 All of it is registered by `registerFlowIpc` in a new `bruno-electron/src/ipc/flow/` — the single
 `require('./ipc/flow')` + call that 001 §13.4 already claims in `bruno-electron/src/index.js`.
 `preload.js` passes any channel through with no allowlist, so none of these needs an upstream edit.
+
+**That missing allowlist is why §4.3's three channels validate their own path.** They are the only
+ones that name a file the *user* chose rather than one the engine or the watcher produced, and two
+rules make them safe to expose: the target is a `.flow.yml`, and it resolves inside the scope named
+in the same call. The second is not decorative — without it a scope root constrains nothing, since
+`../../elsewhere/x.flow.yml` satisfies the extension and reaches anywhere on disk. Containment is
+tested by resolving the path and asking `path.relative`, not by comparing prefixes, because
+`/workspace-two` starts with `/workspace` as a string.
+
+**`renderer:flow-describe` takes an optional `content`,** and when it is given, the *port* is
+overlaid rather than the engine being told about drafts: `readFile` answers the entry from memory and
+everything else — sub-flows, OpenAPI documents — from disk exactly as before. `describeFlow` is
+unchanged and cannot tell the difference, which is what keeps "the graph you are editing" and "the
+graph that will run" the same computation.
 
 The main process owns the `AbortController` per `runId`, assembles `RunOptions.variables` from the
 tiers the renderer sends (§7.2), and supplies the seven ports. The renderer holds no engine state
@@ -982,9 +1606,42 @@ type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; att
 // main:flow-run-event
 type RunEventBatch = { runId: string; events: FlowEvent[] };
 
+// main:flow-request-log-batch — §8.5. Batched across runs, unlike the events above: the panel is
+// chronological rather than per-run, and two concurrent runs belong interleaved in it.
+type RequestLogBatch = { requests: RequestLog[] };
+type RequestLog = {
+  runId: string;
+  stepId: string;
+  iteration: number;
+  attempt: number;
+  /** Absent for a workspace-scoped flow; the renderer then resolves the workspace's scratch collection. */
+  collectionRoot?: string;
+  workspaceRoot: string;
+  /** When the request was sent. */
+  timestamp: number;
+  request: { url: string; method: string; headers: Record<string, string>; data: string | null };
+  response:
+    | { error: string }
+    | {
+        status: number;
+        statusText: string;
+        headers: Record<string, string | string[]>;
+        /** null past §8.5's size limit; `size` still reports what arrived. */
+        data: unknown | null;
+        dataBuffer: string | null;
+        size: number;
+        duration: number;
+      };
+};
+
 // main:flow-tree-updated — two arguments, matching `main:apispec-tree-updated`
 type FlowTreeEvent = 'addFile' | 'changeFile' | 'unlinkFile';
-type FlowTreeEntry = { pathname: string; filename: string; workspaceRoot: string; collectionRoot?: string };
+// `name` is the flow's `meta.name` and `library` its `meta.library`, each absent when the flow
+// declares none or does not parse (§4.1) — both read by one cheap parse that resolves nothing
+type FlowTreeEntry = {
+  pathname: string; filename: string; name?: string; library?: boolean;
+  workspaceRoot: string; collectionRoot?: string
+};
 ```
 
 **A scope is a `FlowScope` on every channel that takes one**, so the sidebar, the describe call and
@@ -1021,19 +1678,24 @@ error worth a toast.
 
 ### 11.4 What 002 changed in 001
 
-Writing this spec found three things in 001 that had to change. **All are applied**; they are
+Writing this spec found four things in 001 that had to change. **All are applied**; they are
 recorded here because the reasoning belongs with the spec that produced it, and because a reviewer
 comparing the two documents should know which parts of 001 moved and why.
 
-Only one is a change to a *contract* — and it is additive, so 001 §15's compatibility rules are not
+Two are changes to a *contract* — and both are additive, so 001 §15's compatibility rules are not
 engaged.
 
 - **§14.5 — `run.json`, written at run start** (`runId`, flow path, `startedAt`), beside the
-  `summary.json` written at the end. This is the contract change. A run's identity was recoverable
+  `summary.json` written at the end. This is a contract change. A run's identity was recoverable
   only from a file that does not exist until the run finishes, so neither an in-progress run nor an
   interrupted one could be attributed to its flow at all — and listing the run currently being
   watched is §10's ordinary case, not an edge. 001-C's R4g2 covers the writer; 002-C's U4.8 and U4.9
   cover the reader.
+- **§13.2 — `FlowContext.redactHeaders`**, the run's `config.redactHeaders` from the root flow, the
+  same value and the same scope the capture is given. The other contract change. §14.4's policy
+  governs a *host* surface too once a host has one (§8.5), and a host applying the built-in denylist
+  alone would silently unmask exactly the headers an author added to the list. 001-C's R4n covers it
+  alongside the capture assertions it belongs with.
 - **§5.1 — one environment tier, not two.** It described workspace-scoped flows resolving "against
   workspace and global environments (both of which Bruno already has)". Those are one mechanism
   (§7.2). Left alone, a reader looks for a workspace environment scope that does not exist and an
@@ -1053,10 +1715,17 @@ All renderer code lives under `packages/bruno-app/src/fork/`, the directory 001 
 ```
 packages/bruno-app/src/fork/
   registry.js                          # the delegation surface upstream calls into
+  tabTypes.js                          # leaf: the fork's tab types, imported by upstream's strip
+  tabGroup.js                          # leaf: §4.2's grouping rule
+  hooks/
+    useVerticalSplit/index.js          # §9's draggable graph/detail split
   flows/
     slice.js                           # flows, describe results, run state keyed by flow path
     ipcEvents.js                       # registers the listeners in the table above
+    collectionScope.js                 # which collection a flow's tab and rows belong to
+    networkRequests.js                 # §8.5's merged devtools list
     FlowSidebarSection/index.js
+    FlowTabHeader/index.js             # §4.2's "API Flows" header, replacing CollectionHeader
     FlowTabPane/
       index.js
       FlowGraph/
@@ -1066,6 +1735,12 @@ packages/bruno-app/src/fork/
       RunControls/index.js
       RunSelector/index.js
 ```
+
+**`useVerticalSplit` is a deliberate near-duplicate of upstream's `hooks/useDragResize`**, which does
+the same job on the horizontal axis. Widening that hook to take an axis is the better call in a
+repository that owns its code, and the wrong one here: it is an upstream edit re-merged at every
+pull, against a few dozen fork-owned lines that never conflict. The two keep the same controlled
+shape — caller owns the persisted value, hook owns the drag state — so reading one teaches the other.
 
 Electron-side code is a new directory and a new file upstream does not have:
 
@@ -1087,12 +1762,31 @@ The watcher starts from inside `registerFlowIpc`, so it rides 001's existing ent
 
 ### 12.1 The manifest delta
 
-001 §13.4's table is the contract for the whole feature. Run & observe adds **one file and two
-lines** to it:
+001 §13.4's table is the contract for the whole feature. Run & observe adds **three files** to it:
 
 | Upstream file | Edit | Lines |
 |---|---|---|
 | `packages/bruno-app/src/providers/App/useIpcEvents.js` | import, register fork IPC listeners, and call the returned disposer in the teardown | 3 |
+| `packages/bruno-app/src/components/Devtools/Console/index.js` | import, and select the request list through the registry (§8.5) | 2 |
+| `packages/bruno-app/src/components/Devtools/Console/NetworkTab/index.js` | the same import and selection | 2 |
+| `packages/bruno-app/src/components/RequestTabs/index.js` | imports, the strip's grouping rule, and the header a fork tab gets instead (§4.2) | 5 |
+| `packages/bruno-app/package.json` | the `@dagrejs/dagre` dependency the graph's layout needs (§5.2) | 1 |
+| `packages/bruno-app/jest.config.js` | a second `setupFiles` entry, pointing at the fork's own test setup | 1 |
+
+**The two new rows are the cost of §5.2's layout engine, and the second one is a registry again.**
+A dependency has to be declared by the package that imports it (`.claude/rules/architecture.md`), so
+the `package.json` line has no fork-owned home; it is one line at the least churn-prone point of a
+file whose conflicts are already routine. The `jest.config.js` line buys the same saving the IPC
+registry does: jsdom ships no `structuredClone`, which dagre calls, and the shim lives in
+`src/fork/jest.setup.js` rather than in upstream's `jest.setup.js` — so the fork's *next* test-environment
+gap costs no upstream edit at all.
+
+**§4.3 adds nothing to this table, and that is the registry earning its keep.** A whole second tab
+type — its own pane, its own label, its own IPC channels, a menu on the sidebar row — reaches the app
+through delegation points that already exist and dispatch on nothing: `SpecialTab`'s `default:` case
+hands any unrecognized type to `ForkTabLabel`, `RequestTabPanel` asks `isForkTab`, `preload.js`
+forwards any channel. The indirection was paid for once by the first flow tab; the second cost zero
+upstream edits, which is exactly the saving §12 predicted and the reason to keep paying it that way.
 
 **Two of those lines are inseparable, and the reason is structural.** Every listener in that file is registered as
 `const removeXListener = ipcRenderer.on(...)` and then called in the `useEffect`'s returned cleanup
@@ -1100,6 +1794,33 @@ function. A single registration line without the matching teardown line would le
 hot reloads and re-mounts. The fork registers all of its listeners in one call returning one
 disposer, so the count stays flat however many channels §11.3 grows — the third line is the `import`,
 which 001 §13.4's table now counts for every delegation.
+
+**A third upstream file was avoided, and the avoidance is the design.** Every response the app had
+ever rendered belonged to a collection, so `ResponsePane/QueryResult/QueryResultPreview` dereferences
+`collection.uid` freely; §8.5's rows were the first that could arrive without one, and guarding that
+component was the first fix reached for. It was withdrawn: the guard is a third upstream edit
+re-merged forever, and §8.5's scratch-collection rule makes the state it guards against unreachable
+instead. The rule of thumb it came from — when the choice is between changing an upstream file and
+making the state that needs the change impossible, the second is cheaper at every future merge —
+holds beyond this instance. (The guard is still a real upstream defect: the timeline's own body block
+passes a possibly-undefined `item` into the same component. It belongs in a PR to `usebruno/bruno`,
+not in the fork.)
+
+**The `RequestTabs` edit is the second half of §4.2's borrowed collection.** Borrowing one is what
+lets a flow be a tab at all; it is also an implementation detail the user should never see, and
+unmodified it leaks twice. The strip groups by `collectionUid`, so a workspace-scoped flow opens
+beside the workspace's permanent **Overview** and **Environments** tabs; and `CollectionHeader`
+renders the collection it is handed, so the same flow gets the *workspace's* header, complete with a
+workspace switcher. Neither has anything to do with the flow. The grouping rule becomes collection
+**and** side-of-the-fork — symmetric, so the workspace's strip gains no flows either — and a fork tab
+brings its own header. Both go through leaf modules (`fork/tabTypes`, `fork/tabGroup`) rather than
+the registry, so upstream's tab strip does not pull the fork's component tree in.
+
+**The two DevTools lines each *replace* a block rather than add one.** Both files built the same
+list from collection timelines in their own `useMemo`; both now select it from the fork registry,
+which merges §8.5's flow requests in. The duplication going is why the edit is a net deletion — and
+a merge that reintroduces upstream's memo shows up as flow requests vanishing from the panel, which
+002-C U2.12 catches.
 
 **Which scopes to watch costs no upstream line at all.** §11.3 has the renderer name them, and the
 fork learns what is open by subscribing to `main:workspace-opened` and `main:collection-opened` —
@@ -1121,17 +1842,32 @@ Everything else lands on hooks 001 §13.4 already claims: the pane registry, the
 the reducer map, the sidebar-section list, and the two tab-type constants. `Sidebar/index.js` builds
 its sections in a `useMemo` array, so the spread there is genuinely one line at a stable point.
 
-**No new dependency.** The graph is hand-rolled SVG (§5.2), so `bruno-app/package.json` is untouched
-and the rendering choice costs nothing at merge time. §13 records what that trades away.
+**One new dependency, and it is a considered reversal.** The graph's *rendering* is still hand-rolled
+SVG; its layout is `@dagrejs/dagre` (§5.2), which is a line in `bruno-app/package.json` and a row in
+the manifest below. §13 records why the original rejection was revisited and what the reversal is
+worth.
 
 ## 13. Rejected alternatives
 
-**A graph library — React Flow, or dagre for layout alone.** Both give pan, zoom, minimap and edge
-routing immediately, and either would be the right base for the visual builder. Rejected for v1 on
-two grounds: it adds a dependency to an upstream `package.json`, and this spec's graph is a *view* of
-a document, where a library's value is concentrated in interactive editing. Revisit it with the
-builder spec, which is where the interaction budget actually gets spent — reconsidering then costs a
-rewrite of one component, since §11.1 keeps the graph model in the engine.
+**A graph library — React Flow, or dagre for layout alone.** ~~Rejected for v1~~ — **reversed for
+layout, on evidence.** The original argument was that a library's value is concentrated in
+interactive editing and this graph is a *view* of a document, so a dependency on an upstream
+`package.json` bought pan, zoom and a minimap nobody had asked for. What that argument missed is that
+**edge routing is not an interaction feature**: it is what makes a static drawing legible, and the
+hand-rolled layout had none. The first real flow to arrive — `seed-verified-company`, 18 steps, 63
+edges — put 40 of those edges through boxes they did not connect, because an edge spanning six ranks
+was drawn as one curve from the producer's right edge to the consumer's left. Waypoint routing,
+crossing-minimised ordering within a rank and per-edge ports are each a hard algorithm and together
+they are a layout engine; writing one to avoid a dependency is the worse trade.
+
+`@dagrejs/dagre` rather than React Flow: layout only, no React, no viewport, no interaction model.
+The drawing stays this fork's own SVG, so §5.1's `foreignObject` text, §8.2's halo and §5.3's edge
+treatments are unaffected, and **the engine keeps deciding ranks** (§5.2, §11.1) — dagre is
+constrained to reproduce 001's ranking rather than to invent one. That containment is what makes the
+reversal cheap to undo: the seam is one module, `layout.js`.
+
+React Flow remains rejected, and remains the right base for the visual builder — which is where the
+interaction budget actually gets spent.
 
 **Flows nested inside the collection tree.** Better adjacency, rejected on fork cost — §4.1.
 
@@ -1145,6 +1881,17 @@ and cost a second implementation of a 001 contract — §11.1 and §11.2.
 **Live-run-only, with captures left to the CLI.** The smallest possible spec, and it fails goal 4: a
 step that goes red in the app would send you to a terminal to find out why, which is the problem §1
 describes.
+
+**A `request` event on `FlowEvent`, feeding §8.5's panel from the event stream.** It needs no new
+channel and no new port argument. Rejected because it puts bodies back on the event stream that 001
+§13.2 deliberately keeps them off — every host would serialize them, `bru` included, for a panel only
+one host has. The dispatch port already holds the request and the response, so reporting from there
+costs the engine nothing.
+
+**Pushing flow requests into the collection's `timeline` instead.** The panel would need no change at
+all. Rejected because a workspace-scoped flow has no collection (§7.2), so it would either drop those
+requests or invent an attribution for them — and it would make a flow's requests indistinguishable
+from a request tab's inside a collection's own state, which the autosave and snapshot paths also read.
 
 **An editable document view.** Making the YAML pane editable is a small change to the component and a
 large change to the spec — it needs the lossless round-trip rules of 001 §15 and

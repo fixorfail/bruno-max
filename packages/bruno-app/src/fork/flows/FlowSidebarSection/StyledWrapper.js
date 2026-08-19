@@ -15,6 +15,17 @@ const StyledWrapper = styled.div`
     letter-spacing: 0.04em;
   }
 
+  /* §4.1's libraries, under the scope they belong to. Between the group label's indent and the
+     rows' own, so it reads as inside the group and over the rows rather than beside either. */
+  .flow-subgroup-label {
+    padding: 0.25rem 0.75rem 0.125rem 1.125rem;
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.8;
+  }
+
   .flow-row {
     display: flex;
     align-items: center;
@@ -33,17 +44,36 @@ const StyledWrapper = styled.div`
     white-space: nowrap;
   }
 
-  .flow-tag {
-    color: ${(props) => props.theme.colors.text.muted};
-    font-size: 0.625rem;
-    border: 1px solid currentColor;
-    border-radius: 2px;
-    padding: 0 0.25rem;
+  /* The row's right edge — the run mark and the menu, which share it (§4.3). */
+  .flow-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    margin-left: auto;
+  }
+
+  /*
+   * §4.3: the menu is revealed by hovering the row, the way upstream's own sidebar rows reveal
+   * theirs. Visibility rather than display, because the row already carries the run mark: a control
+   * that took its space only on hover would shift the mark sideways as the pointer crossed the row.
+   *
+   * An open menu stays visible wherever the pointer goes — reaching for an item in a popover means
+   * leaving the row that opened it.
+   */
+  .flow-menu {
+    display: flex;
+    align-items: center;
+    visibility: hidden;
+    color: ${(props) => props.theme.sidebar.dropdownIcon.color};
+  }
+
+  .flow-row:hover .flow-menu,
+  .flow-menu.is-open {
+    visibility: visible;
   }
 
   /* §4.1: ambient run status on the row, so a run you walked away from is still reported. */
   .flow-run-mark {
-    margin-left: auto;
     width: 6px;
     height: 6px;
     border-radius: 50%;

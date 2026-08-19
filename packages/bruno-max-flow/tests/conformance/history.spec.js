@@ -262,3 +262,84 @@ describe('R4o — readRun', () => {
     await expect(run.readRun({ dir: path.join(CAPTURE_ROOT, 'not-a-run') })).rejects.toThrow(/not a run directory/);
   });
 });
+
+/**
+ * The flow as it was — 001 §14.5's snapshot, read back. The failure this closes is silent: a run
+ * whose flow has since been edited was drawn onto the current graph, so a renamed step's outcome and
+ * captures simply vanished from the view and a step added since appeared as one that never ran.
+ */
+describe('R4o — a run is read against the flow it executed', () => {
+  it('returns the graph and the text the run was started from', async () => {
+    const run = await simple();
+    const stored = await run.readRun();
+
+    expect(stored.description.nodes.map((node) => node.id)).toEqual(
+      run.result.iterations[0].steps.map((step) => step.id)
+    );
+    expect(stored.source).toContain('steps:');
+  });
+
+  /**
+   * The payoff: the caller's ids are today's graph, and a step renamed since is not in it. With a
+   * snapshot the reader asks about the ids the run actually had, so its captures stay reachable.
+   */
+  it('finds the captures even when the caller asks about the wrong ids', async () => {
+    const run = await simple();
+    const stored = await run.readRun({ stepIds: ['renamed-since', 'added-since'] });
+
+    expect(stored.capturedSteps).toEqual(['create']);
+  });
+
+  /** A run written before snapshots has no ids of its own, so the caller's list is all there is. */
+  it('falls back to the caller list for a run with no snapshot', async () => {
+    const run = await simple();
+    run.files.remove(path.join(run.captureDir, 'flow.json'));
+
+    const stored = await run.readRun({ stepIds: ['create'] });
+
+    expect(stored.description).toBeUndefined();
+    expect(stored.capturedSteps).toEqual(['create']);
+  });
+});
+
+describe('R4o — listRuns reports whether the flow has changed since', () => {
+  const entry = path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml');
+
+  // The directory name's suffix is four hex characters (§14.5), and `listRuns` filters on that — so
+  // a seeded run has to be named the way the writer would have named it.
+  const seeded = (runId, manifest) => ({
+    [path.join(CAPTURE_ROOT, `2020-01-01T00-00-00Z-${runId}`, 'run.json')]: JSON.stringify({
+      runId,
+      flow: entry,
+      startedAt: '2020-01-01T00:00:00.000Z',
+      ...manifest
+    })
+  });
+
+  it('reports the run it just made as unchanged, and a run of older text as changed', async () => {
+    const run = await simple({ captured: seeded('edad', { flowHash: 'a'.repeat(64) }) });
+    const listed = await run.listRuns({ flow: entry });
+    const by = (runId) => listed.find((candidate) => candidate.runId === runId);
+
+    expect(by(run.result.runId).flowChanged).toBe(false);
+    expect(by('edad').flowChanged).toBe(true);
+  });
+
+  /**
+   * Unknown, not unchanged. A run that predates the snapshot cannot be compared, and reporting it as
+   * matching would put a claim on the oldest half of every history that nothing can support.
+   */
+  it('leaves a run with no recorded digest unknown', async () => {
+    const run = await simple({ captured: seeded('01de', {}) });
+    const listed = await run.listRuns({ flow: entry });
+
+    expect(listed.find((candidate) => candidate.runId === '01de').flowChanged).toBeUndefined();
+  });
+
+  it('leaves every run unknown when there is no flow to compare against', async () => {
+    const run = await simple();
+
+    // Listing a scope rather than one flow: there is no single file to be changed *from*.
+    expect((await run.listRuns()).every((candidate) => candidate.flowChanged === undefined)).toBe(true);
+  });
+});

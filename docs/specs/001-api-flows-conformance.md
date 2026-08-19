@@ -2,7 +2,7 @@
 
 **Status:** Draft — companion to [001-api-flows.md](./001-api-flows.md)
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-13
+**Last revised:** 2026-08-14
 
 Scenarios the spec's behavior was derived from, written to be implemented directly as tests. Start
 at §2 for the harness, §3–§6 for the four end-to-end flows, §7 for the regression set, and §9 for
@@ -56,6 +56,8 @@ tests/conformance/
   flow-yaml.js                # §5.4's projected model — the local tags, resolved
   fixtures/
     specs/                    # minimal OpenAPI documents — user, items, external, ...
+                              # one of them writes its schemas as `$ref`s into `components`, because
+                              # the rest inline theirs and a fragment only fails on a ref (R4r)
     flows/                    # the .flow.yml files below, verbatim
       regressions/            # the minimal flows of §7, one per row
     datasets/
@@ -709,7 +711,8 @@ Two steps: one creating a resource, one consuming its output. Stub the first wit
 error body containing no `data.id`, declare **no assertions anywhere**, and set
 `config.failOnUnresolved: false`.
 
-Assert the first step is `failed` with reason `unexpected-status`, and exit **1**.
+Assert the first step is `failed` with reason `unexpected-status`, a message naming the status it
+got, and exit **1**.
 
 **The `failOnUnresolved: false` is what makes this a valid test.** Both guards catch this outage:
 the status check fails step one, and an unresolved skip on step two would fail the run
@@ -746,9 +749,11 @@ Minimal flows, each asserting one rule:
 
 | Case | Expected |
 |---|---|
-| `{{shared.x}}` read by a step that is not downstream of every writer | validation **error** (§9.1) |
+| `{{shared.x}}` read by a step that is not downstream of every writer | validation **error** (§9.1), naming `writers: any` as the way out |
+| the same flow with the slot declared `writers: any` | legal — each branch reads what its own writer filled, including through an api binding's auth profile |
+| a `writers: any` slot read by a step with no writer above it at all | still a validation **error**: a read with nothing upstream is reading nothing |
 | `{{shared.x}}` declared, never written, read in a body | resolves **empty string**, step runs |
-| `{{steps.a.b}}` where the output was never produced | step **skipped** `unresolved-dependency` |
+| `{{steps.a.b}}` where the output was never produced | step **skipped** `unresolved-dependency`, its message naming `steps.a.b` |
 | `{{shared.x}}` in a sub-flow, written only by the caller | not visible; validation error (§12.3) |
 | dataset with `parallel: 3`, each row writing the same slot | each iteration reads **its own** value |
 
@@ -772,6 +777,17 @@ Then the two overrides: `config.failOnUnresolved: false` turns row one green, an
 
 The middle two rows are the ones that matter. A blanket implementation passes row one and the
 override cases, and only these reveal that conditional and fallback branches were collateral damage.
+
+**Every skip carries §14.6's message where the engine knows more than the reason does** — which
+reference was never produced, which dependency was not met and what it did instead. Row one is the
+case that forces it: it is the only way a run fails with no failed step, so the reason alone leaves a
+red run whose graph is entirely green and grey, and the message is the only thing that closes it.
+
+**And every run reports `decidedBy` (§13.2), asserted on the same four rows:** row one names the
+skipped step, an ordinary failing run names the failed one, the passing rows name nothing, and the
+cancelled row names nothing because the interrupt decided it. The flow-level and step-level opt-outs
+turn row one green *and* silent, which is the half that catches an implementation reporting every
+unresolved skip rather than the ones the rule acted on.
 
 ### R4c — Generated data is stable where it must be
 
@@ -959,6 +975,12 @@ with, so the layout is asserted without touching disk.
 | a sub-flow internal | lands in a flat `auth__login/`, not a nested `auth/login/` |
 | a flow with a `dataset:` versus one without | `iteration-<n>/` appears only for the first — an always-present level a reader must skip is worse than none |
 | `--no-capture` | no path is passed to `WriteFile` at all, and the run's result is otherwise identical |
+| `flow.json` and `flow.yml` exist once the first step has started | the flow the run executed has to survive the file being edited afterwards; a run that dies still has to be readable against what it ran |
+| `flow.json`'s node ids are the steps the run reported | the snapshot is the graph a viewer draws, so it has to be the graph that ran, not a re-description of the file later |
+| `run.json`'s `flowHash` is the digest of `flow.yml` | the manifest is what `listRuns` reads per run; a hash that did not match its own snapshot would report every run as edited |
+| a run whose flow cannot be described | still runs, still records everything else, and simply has no snapshot — recording history must not be able to fail a run |
+| `run:start` | carries the same description the snapshot holds, so a consumer watching a run draws the flow being executed rather than the file, which can be edited while it runs |
+| `--no-capture` | `run:start` carries no description either: a run that records nothing has nothing to report |
 
 Killing the run for the third row means terminating without the cancellation path of §11.3 — a
 `SIGKILL` equivalent, not a signal the engine handles, since a clean cancel writes its summary.
@@ -1001,6 +1023,16 @@ rather than as the CLI and app behaving differently.
 | Case | Expected |
 |---|---|
 | `variables` supplied as separate tiers | resolution follows §7.3's order — assert an `environment` value losing to an `envVarOverrides` one, and winning over `collectionVars` |
+| `--global-env <name>` | the workspace's `environments/<name>.yml` fills `globalEnvironment`, disabled variables left out; a name matching no file exits 3 **before** any request goes out |
+| a library flow run directly, with a param left out | its declared `default` is used, resolved against the run's environment — the same value the flow gets when a `uses:` step invokes it and omits the same param |
+| a `shouldRetry` that throws | the **step** fails `script-error`, naming what threw; the run finishes, and the predicate is not asked again. An attempt that had already failed keeps its own reason (§14.6) |
+| a run stopped while a step is polling | the poll stops there — no further attempt, no further delay — and the step is `cancelled` with reason `run-cancelled`; steps below it report the stop rather than an unmet dependency |
+| an error escaping a step | `run:end` is still emitted, as a failed run carrying a `run-failed` diagnostic, **before** `runFlow` rejects |
+| a step whose `maxDuration` elapses mid-poll | it stops there — the next attempt is never scheduled, however far `maxAttempts` still is — and fails `max-duration-exceeded`, naming the budget; the flow's other steps still run, and each attempt was bounded by whatever was left of the budget |
+| a step that settles inside its `maxDuration`, and one with none set | judged on its own outcome — the budget reports nothing, and unset it bounds nothing |
+| an operation whose schemas are `$ref`s into `components` — including a ref inside a ref | validates through them, both directions: a conforming response passes, one the referenced schema forbids fails `schema-validation-failed` at the offending path, and a request body does the same |
+| a schema the validator will not compile | the **step** fails `schema-validation-failed`, saying the schema could not be compiled; the run still ends |
+| a `oneOf` whose branches both accept the response | the failure says how many matched, so it reads as the document being ambiguous rather than the response being wrong |
 | a consumer whose `onEvent` throws | the run completes unaffected; the flow's status is unchanged |
 | an `onEvent` that mutates the event object | execution is unaffected — events are observational |
 | every emitted event | survives `structuredClone`, and carries no response body or file content |
@@ -1071,6 +1103,10 @@ and the reporters.
 | a secret-valued variable used in a request | masked in stdout, and in `--verbose` previews (§14.4) |
 | `--show-sensitive` | unmasks stdout while reporter files stay masked |
 | a failing run | names the failed step id, its §14.6 reason, and its capture path |
+| a failure whose block expands nothing else | its §14.6 message appears |
+| a skipped step with a message | it appears on that step's line — a skip gets no failure block |
+| a run failed by a step with no failure block | §13.2's `decidedBy` step is named, with its reason and message, **under `--quiet` too** |
+| a run failed by a step that has a block | no second mention of it |
 | a failing assertion | expected and actual both appear |
 | default output | contains no response body; `--verbose` contains a truncated one |
 | `--silent` | writes nothing to stdout on both a passing and a failing run |
@@ -1124,6 +1160,8 @@ the one `--show-sensitive` can never reach.
 | a repeated response header on the list (`Set-Cookie`) | every value masked, not just the first |
 | a header not on the list | untouched; a denylist that quietly became an allowlist would empty every capture |
 | the mask itself | a fixed `••••` whatever the secret's length — a length-preserving mask leaks the size |
+| `FlowContext.redactHeaders` at the dispatch port | the run's configured list, so a host reporting a request on a surface of its own (002 §8.5) masks the set the capture masks rather than the built-ins alone |
+| a host reporting `ExecutedResponse.requestHeaders` | those headers are what the capture records, masked on the same terms — a header the host added (auth, content type) is no more exempt than a declared one |
 | a value from a `secret: true` environment entry, used in a query param and echoed back in an error body | masked in both, by provenance rather than by name |
 | the same value promoted into a shared slot (§9.1) | still masked — tracking is by value, so promotion carries it for free |
 | `--show-sensitive` | changes stdout only; the capture file is byte-identical with and without it |
@@ -1153,8 +1191,12 @@ assert the *app* renders what comes back.
 | `readCapture` with and without `iteration` | resolves the nested and the flat layout respectively (§14.5) |
 | a step id needing sanitizing — a sub-flow's `auth/login` | resolves, because the reader computes the segment the writer did rather than its own |
 | a binary response body | `readCapture` returns `kind: 'binary'` naming the sibling; the reader does not inline it |
+| `readRun` over a run that recorded a snapshot | returns the description and the source it ran from, so a viewer draws the flow as it was rather than as it is |
+| `readRun` given step ids that are not the run's | still finds the run's own captures — the ids come from the snapshot, which is what keeps a renamed step's captures reachable |
+| `readRun` over a run with no snapshot | no description, and the caller's `stepIds` are used exactly as before |
+| `listRuns` with `flow:` supplied | each entry reports `flowChanged` against the file as it is now: `false` for the run just made, `true` for one recorded against different text, and **undefined** for a run with no recorded digest — unknown is not unchanged |
 
-The last row is the one that keeps the split honest: a reader that resolved the sibling and returned
+The binary-body row is the one that keeps the split honest: a reader that resolved the sibling and returned
 its bytes would put a 2 MB payload in every step-pane open, which is what "storage is split" exists
 to prevent.
 
@@ -1175,6 +1217,15 @@ is about the JSON Schema; this is about what reading the file produces before an
 | every step | carries a 1-based line and column pointing at its own node |
 | a diagnostic naming a step | carries that step's line and column |
 | a diagnostic that names no step — an unresolvable `apis:` entry, a bad `vars:` reference | anchors to that node instead, because 002 §6 puts these in the gutter and one with no line has nowhere to land |
+| an unquoted whole-value reference, `token: {{ token }}` | `parse-error` at that value (§7.3), and an empty model — quoted, the same document parses and the value is the reference text |
+| any parse, valid or not | **nothing is written to the host's console** (§13.1) — assert `process.emitWarning` is never called |
+
+**The unquoted-reference row is the second one that earns its place.** It is not a YAML syntax error
+and the parser will not raise it: the document is a well-formed mapping whose key is a mapping, so
+without this check the file parses, the flow runs, and the request carries `{"{ token }": null}`.
+The console row is its other half — the parser's own advisory for that construct goes to
+`process.emitWarning`, which prints over the CLI's output and into an Electron log nobody reads,
+which is how the defect stayed a piece of terminal noise rather than a diagnostic.
 
 **The merge-key row is the one that earns its place.** It is invisible in every fixture and changes
 the meaning of a committed file if it regresses: a flow sharing step config through an anchor would

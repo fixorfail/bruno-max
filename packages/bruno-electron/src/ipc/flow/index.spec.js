@@ -5,7 +5,16 @@ jest.mock('@bruno-max/flow', () => ({
   listRuns: jest.fn(),
   readCapture: jest.fn()
 }));
-jest.mock('./ports', () => ({ createPorts: () => ({}) }));
+// The real port is covered by `ports.spec.js`; here it only has to hand back the reporter so a
+// scenario can drive `onRequest` the way a dispatched request would, and a `readFile` that names
+// what it read so §4.3's draft overlay can be told apart from a read of the disk.
+jest.mock('./ports', () => ({
+  createPorts: ({ onRequest }) => ({
+    onRequest,
+    readFile: async (target) => Buffer.from(`on disk: ${target}`),
+    readSpec: async () => ({ text: '', from: 'file' })
+  })
+}));
 
 const { ipcMain } = require('electron');
 const { runFlow } = require('@bruno-max/flow');
@@ -89,6 +98,55 @@ describe('the flow IPC host', () => {
     cancelRun({ runId: 'run-b' });
   });
 
+  /** 002-C U5.9 */
+  it('batches request logs, and across runs rather than per run', async () => {
+    const sendRequests = (runId) => (options) => {
+      options.onEvent({ type: 'run:start', runId, flow: options.entry, iterationCount: 1 });
+      options.ports.onRequest({ runId, stepId: 'create', iteration: 0, attempt: 1 });
+      options.ports.onRequest({ runId, stepId: 'create', iteration: 0, attempt: 2 });
+      return new Promise((resolve) => {
+        options.signal.addEventListener('abort', () => resolve({ runId, status: 'cancelled' }));
+      });
+    };
+    runFlow.mockImplementationOnce(sendRequests('run-a'));
+    runFlow.mockImplementationOnce(sendRequests('run-b'));
+
+    const win = makeWindow();
+    await startRun(win, runRequest('a.flow.yml'));
+    await startRun(win, runRequest('b.flow.yml'));
+    jest.advanceTimersByTime(20);
+
+    const batches = win.webContents.send.mock.calls.filter(([channel]) => channel === 'main:flow-request-log-batch');
+    expect(batches).toHaveLength(1);
+    expect(batches[0][1].requests.map((log) => `${log.runId}:${log.attempt}`)).toEqual([
+      'run-a:1',
+      'run-a:2',
+      'run-b:1',
+      'run-b:2'
+    ]);
+
+    cancelRun({ runId: 'run-a' });
+    cancelRun({ runId: 'run-b' });
+  });
+
+  it('drops a queued batch rather than sending to a window that is gone', async () => {
+    runFlow.mockImplementationOnce((options) => {
+      options.onEvent({ type: 'run:start', runId: 'run-a', flow: options.entry, iterationCount: 1 });
+      options.ports.onRequest({ runId: 'run-a', stepId: 'create', iteration: 0, attempt: 1 });
+      return new Promise((resolve) => {
+        options.signal.addEventListener('abort', () => resolve({ runId: 'run-a', status: 'cancelled' }));
+      });
+    });
+
+    const win = makeWindow();
+    win.isDestroyed = () => true;
+    await startRun(win, runRequest('a.flow.yml'));
+    jest.advanceTimersByTime(20);
+
+    expect(win.webContents.send).not.toHaveBeenCalled();
+    cancelRun({ runId: 'run-a' });
+  });
+
   /** 002-C U5.8 */
   it('leaves a run alone when quit is only initiated', async () => {
     runFlow.mockImplementation(scriptedRun('run-a'));
@@ -142,5 +200,74 @@ describe('the flow IPC host', () => {
     await expect(startRun(makeWindow(), { entry: 'a.flow.yml', scope: {}, tiers: {} })).rejects.toThrow(
       'workspaceRoot'
     );
+  });
+});
+
+/**
+ * 002 §4.3 — the raw editor's host. It reads and writes one file and describes text that is not on
+ * disk yet, and the preload forwards any channel to it, so what it refuses matters as much as what
+ * it does.
+ */
+describe('the raw YAML editor host', () => {
+  const fs = require('fs');
+  const { describeFlow } = require('@bruno-max/flow');
+  const { describeFlowHandler, readFlowSourceHandler, writeFlowSourceHandler } = require('./index');
+
+  const scope = { workspaceRoot: '/workspace' };
+  const entry = '/workspace/flows/checkout.flow.yml';
+
+  beforeEach(() => {
+    describeFlow.mockReset();
+  });
+
+  it('describes the file on disk when there is no draft', async () => {
+    describeFlow.mockImplementation(async ({ ports }) => (await ports.readFile(entry)).toString('utf8'));
+
+    await expect(describeFlowHandler({ entry, scope })).resolves.toBe(`on disk: ${entry}`);
+  });
+
+  /** Only the entry is answered from memory: sub-flows and specs still come off the disk (§4.3). */
+  it('answers the entry from the draft and everything else from disk', async () => {
+    describeFlow.mockImplementation(async ({ ports }) => ({
+      entry: (await ports.readFile(entry)).toString('utf8'),
+      subflow: (await ports.readFile('/workspace/flows/login.flow.yml')).toString('utf8')
+    }));
+
+    await expect(describeFlowHandler({ entry, scope, content: 'steps: []' })).resolves.toEqual({
+      entry: 'steps: []',
+      subflow: 'on disk: /workspace/flows/login.flow.yml'
+    });
+  });
+
+  it('reads and writes the flow as text', async () => {
+    jest.spyOn(fs.promises, 'readFile').mockResolvedValue('steps: []');
+    jest.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined);
+
+    await expect(readFlowSourceHandler({ entry, scope })).resolves.toBe('steps: []');
+    await writeFlowSourceHandler({ entry, scope, content: 'steps: []' });
+
+    expect(fs.promises.writeFile).toHaveBeenCalledWith(entry, 'steps: []', 'utf8');
+    fs.promises.readFile.mockRestore();
+    fs.promises.writeFile.mockRestore();
+  });
+
+  it('refuses a path that is not a flow', async () => {
+    await expect(writeFlowSourceHandler({ entry: '/workspace/notes.txt', scope, content: '' })).rejects.toThrow(
+      'not a flow file'
+    );
+  });
+
+  /** The scope root is not a string prefix: `/workspace-two` starts with `/workspace`. */
+  it('refuses a flow outside the scope it named', async () => {
+    const outside = '/workspace/../elsewhere/x.flow.yml';
+
+    await expect(readFlowSourceHandler({ entry: outside, scope })).rejects.toThrow('outside its scope');
+    await expect(readFlowSourceHandler({ entry: '/workspace-two/x.flow.yml', scope })).rejects.toThrow(
+      'outside its scope'
+    );
+  });
+
+  it('refuses a write with no text', async () => {
+    await expect(writeFlowSourceHandler({ entry, scope })).rejects.toThrow('needs text');
   });
 });

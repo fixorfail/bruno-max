@@ -3,6 +3,9 @@
 The API Flows engine: sequenced, spec-driven request execution shared by `bruno-cli` and
 `bruno-electron`.
 
+- **Authoring guide:** [`docs/writing-flows.md`](../../docs/writing-flows.md) — how to write a
+  `.flow.yml`, for the people who write them. Its examples are executed by
+  `tests/conformance/guide.spec.js`, so a change here that breaks them fails the suite.
 - **Spec:** [`docs/specs/001-api-flows.md`](../../docs/specs/001-api-flows.md) — semantics, format, CLI
 - **App surface:** [`docs/specs/002-api-flows-ui.md`](../../docs/specs/002-api-flows-ui.md) — `describeFlow`, `listRuns`, `readRun`, `readCapture`
 - **Conformance:** [`docs/specs/001-api-flows-conformance.md`](../../docs/specs/001-api-flows-conformance.md)

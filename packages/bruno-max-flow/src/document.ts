@@ -45,7 +45,50 @@ const TAGS: YAML.CollectionTag[] | YAML.ScalarTag[] = [
  */
 const OPTIONS: YAML.ParseOptions & YAML.DocumentOptions & YAML.SchemaOptions = {
   merge: true,
-  customTags: TAGS as YAML.Tags
+  customTags: TAGS as YAML.Tags,
+  /**
+   * **The parser never writes to the host's console.** Its default is to route advisories through
+   * `process.emitWarning`, which lands in whatever stream the host happens to own: the CLI's, whose
+   * output §14.7 defines and which reporters are parsed from, or the Electron main process's, where
+   * nobody is reading. §13.1 has the engine report through its return value and nothing else, and a
+   * dependency printing on its behalf is the same violation whoever wrote the line.
+   *
+   * What the library would have said is not lost — the conditions worth knowing about are checked
+   * below and returned as parse errors, anchored at the line that caused them.
+   */
+  logLevel: 'silent'
+};
+
+/**
+ * An interpolation left unquoted, which YAML reads as a mapping rather than as text.
+ *
+ * `token: {{ token }}` is a map whose one key is the map `{ token }`, so the step receives an object
+ * where its author wrote a reference and the value is never interpolated at all. It is the one YAML
+ * subtlety this format walks into by construction — `{{...}}` is 001 §7.3's syntax and `{` opens a
+ * flow mapping — and it is silent in every direction otherwise: the file parses, the flow runs, and
+ * the request goes out carrying `{"{ token }": null}`.
+ *
+ * A key can only be a collection through this mistake in a flow document; nothing in §5.4 has one.
+ */
+const unquotedInterpolations = (document: YAML.Document, lineCounter: YAML.LineCounter): ParseError[] => {
+  const found: ParseError[] = [];
+
+  YAML.visit(document, {
+    Pair: (unused, pair) => {
+      if (!YAML.isCollection(pair.key) || !pair.key.range) {
+        return undefined;
+      }
+      const { line, col } = lineCounter.linePos(pair.key.range[0]);
+      found.push({
+        message: 'an interpolation must be quoted: {{ ... }} unquoted is read as YAML mapping syntax',
+        line,
+        column: col
+      });
+      return undefined;
+    }
+  });
+
+  return found;
 };
 
 /** 1-based, matching `Diagnostic.line` / `column` (§13.2) and `FlowNode.position` (002 §11.1). */
@@ -94,6 +137,21 @@ export type OutputSpec = {
 };
 
 export type AssertionSpec = { expr: string; op: string; value?: string; source: string };
+
+/**
+ * §9.1's slot, and how many of its writers a reader has to descend from.
+ *
+ * `all` is the join shape the rule was written for: several branches may run, and a step reading the
+ * slot below them must be downstream of every one, so the read is never a race against a branch still
+ * in flight. `any` is the *alternative* shape — branches that exclude each other, where one writes
+ * and the steps after it on that same branch read. No reader can descend from every writer there,
+ * because by construction only one writer ever runs.
+ *
+ * The distinction is declared rather than inferred: `when:` is a runtime predicate, so whether two
+ * branches truly exclude each other is not knowable here. `all` stays the default, so `any` is
+ * something an author asks for.
+ */
+export type SlotDeclaration = { writers: 'all' | 'any' };
 
 export type StepFlags = {
   failOnStatusCode: boolean;
@@ -159,7 +217,8 @@ export type NormalizedFlow = {
   config: FlowConfig;
   authProfiles: Record<string, Record<string, unknown>>;
   vars: Record<string, unknown>;
-  shared: string[];
+  /** §9.1's slots, by name, with the rule a reader of each one answers to. */
+  shared: Record<string, SlotDeclaration>;
   dataset?: { source: string; parallel: number };
   params: Record<string, { required: boolean; default?: unknown }>;
   exports: Record<string, string>;
@@ -219,6 +278,26 @@ const normalizeOutputs = (raw: unknown): OutputSpec[] =>
       path: mapping.path === undefined ? undefined : String(mapping.path).replace(/^\$\./, '')
     };
   });
+
+/**
+ * §9.1's declarations. The list form names slots and takes the default rule; the mapping form gives
+ * each slot its own — `chargeId: { writers: all }`.
+ *
+ * A step's own `shared:` block is a different statement in the same word (which output feeds which
+ * slot), and `normalizeShared` below is that one. The two never meet: one declares, one publishes.
+ */
+const normalizeSlots = (raw: unknown): Record<string, SlotDeclaration> => {
+  if (Array.isArray(raw)) {
+    return Object.fromEntries(raw.map((slot) => [String(slot), { writers: 'all' as const }]));
+  }
+
+  return Object.fromEntries(
+    Object.entries(asRecord(raw)).map(([slot, declared]) => [
+      slot,
+      { writers: asRecord(declared).writers === 'any' ? ('any' as const) : ('all' as const) }
+    ])
+  );
+};
 
 const normalizeShared = (raw: unknown): { slot: string; output: string }[] => {
   if (Array.isArray(raw)) return raw.map((slot) => ({ slot: String(slot), output: String(slot) }));
@@ -330,6 +409,35 @@ const normalizeParams = (raw: unknown): NormalizedFlow['params'] =>
   );
 
 /**
+ * A flow's `meta`, from its text and nothing else — 002 §4.1's sidebar name.
+ *
+ * A host listing flows names every one of them, including the ones nobody has opened, and
+ * `describeFlow` is the wrong instrument for that: it resolves sub-flows and OpenAPI documents, and
+ * `readSpec` will fetch them over the network. This reads the document the host already has.
+ *
+ * It exists so a host does not parse `.flow.yml` itself. One that did would need §5.4's local tags
+ * to know that `!file` is not an error — the drift is silent, because a parser without them reports
+ * a perfectly good flow as unreadable and the host falls back to whatever it does for a broken file.
+ *
+ * Tolerant by construction: a document that does not parse has no name, which is the same answer as
+ * one that declares none, and both are ordinary (002 §6).
+ */
+export const readFlowMeta = (text: string): { name?: string; library?: boolean } => {
+  const { model, errors } = parseDocument(text);
+  if (errors.length) return {};
+
+  const meta = asRecord(model.meta);
+  const name = meta.name;
+  return {
+    ...(typeof name === 'string' && name.trim() ? { name: name.trim() } : {}),
+    // §12.5's flag, and only the flag: `library: true` is what excludes a flow from a glob run, and
+    // a host deriving it from the presence of `params:` instead would disagree with the engine about
+    // which flows `bru flow run .` executes.
+    ...(meta.library === true ? { library: true } : {})
+  };
+};
+
+/**
  * One parse produces both the model and the positions, which is the whole reason this is an AST
  * parse rather than a plain load: a second pass to find line numbers would be a second reader of
  * the format, and the two would disagree the first time one of them was wrong.
@@ -342,6 +450,11 @@ export const parseDocument = (text: string): ParsedDocument => {
     const { line, col } = lineCounter.linePos(error.pos[0]);
     return { message: error.message.split('\n')[0], line, column: col };
   });
+
+  // Only where the document parsed: a recovered tree's shape is not evidence of what was written.
+  if (!errors.length) {
+    errors.push(...unquotedInterpolations(document, lineCounter));
+  }
 
   return {
     // A document with syntax errors yields **nothing**, rather than the partial tree the parser
@@ -422,7 +535,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       Object.entries(asRecord(document.authProfiles)).map(([name, value]) => [name, asRecord(value)])
     ),
     vars: asRecord(document.vars),
-    shared: asArray<string>(document.shared).map(String),
+    shared: normalizeSlots(document.shared),
     dataset: normalizeDataset(document.dataset),
     params: normalizeParams(document.params),
     exports: Object.fromEntries(

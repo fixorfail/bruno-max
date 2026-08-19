@@ -1,4 +1,14 @@
-import styled from 'styled-components';
+import styled, { keyframes } from 'styled-components';
+
+/**
+ * One lap of the halo (§8.2). The offset covers the outline's whole length — the component measures
+ * it onto `--halo-outline` — so the dash arrives back where it started and the loop has no seam.
+ */
+const haloSpin = keyframes`
+  to {
+    stroke-dashoffset: calc(var(--halo-outline) * -1);
+  }
+`;
 
 /**
  * §5.3's edge treatments are the load-bearing part of this stylesheet: an implicit sequence edge is
@@ -6,11 +16,71 @@ import styled from 'styled-components';
  * the one thing about 001 §9.1 that surprises authors.
  */
 const StyledWrapper = styled.div`
-  overflow-x: auto;
-  padding: 1rem;
+  /* The box the graph area occupies. It scrolls *inside* — the .flow-graph-viewport below — so that the
+     legend can be positioned against this one and stay put while the drawing moves under it. */
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
 
-  .flow-graph {
-    max-width: 100%;
+  /* The graph takes the room the tab has left and scrolls inside it, on both axes — §5.2 runs the
+     ranks rightward, so a long flow is wide rather than tall. Sizing this box to the SVG instead
+     pushes the step detail (§9) past the tab's hidden overflow, where it is clipped rather than
+     scrolled to; the zero min-height is what lets this box shrink at all.
+
+     The SVG itself is deliberately left at its own width. It carries explicit width and height, so
+     capping it would scale a twelve-step flow down to unreadable instead of letting this box
+     scroll to it. */
+  .flow-graph-viewport {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: auto;
+    padding: 1rem;
+  }
+
+  /* §5.1's key to the API colours. Over the drawing at the top right, out of the way of rank 0 and
+     of the run's own left-to-right progress, and inert to the pointer so it never takes a click meant
+     for the node beneath it. */
+  .flow-legend {
+    position: absolute;
+    top: 0.5rem;
+    right: 0.75rem;
+    z-index: 1;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.25rem 0.75rem;
+    max-width: 60%;
+    padding: 0.25rem 0.5rem;
+    pointer-events: none;
+    font-size: 0.6875rem;
+    color: ${(props) => props.theme.colors.text.muted};
+    background: ${(props) => props.theme.sidebar.collection.item.bg};
+    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    border-radius: 4px;
+    opacity: 0.94;
+  }
+
+  /* Names the key for what it is: without it a lone alias over the drawing reads as a caption on the
+     flow rather than as the binding its steps call. */
+  .flow-legend-title {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.75;
+  }
+
+  .flow-legend-entry {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+    white-space: nowrap;
+  }
+
+  .flow-legend-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 2px;
   }
 
   #flow-arrow path {
@@ -49,6 +119,37 @@ const StyledWrapper = styled.div`
     font-size: 10px;
   }
 
+  /* The value that never arrived (§5.3). The mark is on the label rather than on the stroke because
+     the label is what names the missing value and is the target the hover explanation hangs off. */
+  .edge-unproduced .edge-label {
+    fill: ${(props) => props.theme.colors.text.danger};
+  }
+
+  /**
+   * §5.3's focus. Everything that does not touch the step under the pointer — or the step §9's pane
+   * is reading — recedes rather than disappearing: a drawing that hid the rest would stop saying how
+   * much else is going on, and the question being asked is *which of these lines is mine*.
+   *
+   * A line fades further than a box, because a box that faded as far would take the step's name with
+   * it and the reader would lose where they are on the drawing.
+   */
+  .edge,
+  .node,
+  .slot,
+  .slot-label {
+    transition: opacity 0.12s ease-in-out;
+  }
+
+  .edge.dimmed {
+    opacity: 0.12;
+  }
+
+  .node.dimmed,
+  .slot.dimmed,
+  .slot-label.dimmed {
+    opacity: 0.3;
+  }
+
   .node {
     cursor: pointer;
   }
@@ -83,18 +184,139 @@ const StyledWrapper = styled.div`
     opacity: 0.55;
   }
 
-  .node-id {
-    fill: ${(props) => props.theme.colors.text.subtext2};
-    font-size: 12px;
-    font-weight: 500;
+  /* §8.2: a step with a request in flight. The colour property carries the glow, because a
+     drop-shadow with no colour of its own is taken from it — so the ring and its bloom cannot end up
+     set to two different colours. */
+  .node-halo {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    color: ${(props) => props.theme.colors.text.yellow};
+    stroke: currentColor;
+    /* Stacked rather than one wide blur: the tight pass keeps the arc itself a defined line while
+       the wide one is the bloom around it. A single blur that reached as far would be a smudge. */
+    filter: drop-shadow(0 0 2px currentColor) drop-shadow(0 0 6px currentColor);
+    animation: ${haloSpin} 1.6s linear infinite;
   }
 
-  .node-operation,
-  .node-status,
-  .node-attempts,
-  .node-marker {
-    fill: ${(props) => props.theme.colors.text.muted};
+  /* §8.2 keeps retrying a state of its own because a poll that reads as running for a minute is
+     indistinguishable from a hang. The colour change is that distinction at a glance, from across
+     the graph, without reading the attempt count on the node. */
+  .node[data-status='retrying'] .node-halo {
+    color: ${(props) => props.theme.colors.text.warning};
+  }
+
+  /* The colour still says the step is in flight; only the motion goes. */
+  @media (prefers-reduced-motion: reduce) {
+    .node-halo {
+      animation: none;
+      stroke-dasharray: none;
+    }
+  }
+
+  /* The box's text, in HTML through a foreignObject — SVG text does not wrap, so anything longer
+     than the box used to run out of it. */
+  .node-content {
+    height: 100%;
+    /* The box is a click target (§5.1) and a drag across it should not start selecting its label. */
+    user-select: none;
+    padding: 0.25rem 0.625rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    /* The last resort: whatever the content is, it stays inside the box it describes. */
+    overflow: hidden;
+
+    /* anywhere, rather than break-word: the case is a single token wider than the box — a step id
+       nobody spaced, or a path with one long segment — and break-word leaves that overflowing, since
+       it only breaks where there was no break opportunity at all. */
+    div,
+    span {
+      overflow-wrap: anywhere;
+      line-height: 1.25;
+    }
+  }
+
+  .node-id {
+    color: ${(props) => props.theme.colors.text.subtext2};
+    font-size: 12px;
+    font-weight: 500;
+    /* Two lines of a name, then an ellipsis: the box has three things to show and a name is allowed
+       to take the room of one of them, not all of it. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    /* Clear of the markers and the diagnostic badge, which are drawn over this corner. */
+    padding-right: 1.75rem;
+  }
+
+  .node-operation {
+    color: ${(props) => props.theme.colors.text.muted};
     font-size: 10px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  /* The run's word about this step sits on the last line, with a poll's attempt count beside it. */
+  .node-status-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.375rem;
+    margin-top: auto;
+    font-size: 10px;
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
+  .node-attempts {
+    flex: none;
+  }
+
+  /* §5.1's footer bar. The tint carries the binding's colour at a strength that leaves the alias and
+     the markers on it legible — the colour identifies a service, it does not have to be the loudest
+     thing on the box — and the solid line along the bottom is where the colour reads at full
+     strength, since an edge needs no contrast with text over it. Untinted, the bar is still a bar:
+     the markers have a place of their own whether or not the flow binds more than one API. */
+  .node-footer {
+    fill: ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    fill-opacity: 0.28;
+  }
+
+  /* A tinted band rather than a solid one: the colour identifies a service, it does not have to be
+     the loudest thing on the box, and the alias and the markers sit on top of it. */
+  .node-footer[data-api] {
+    fill-opacity: 0.22;
+  }
+
+  .node-footer-edge {
+    stroke: ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    stroke-width: 1;
+    opacity: 0.7;
+  }
+
+  /* The footer's markers, from the right. A gap rather than a pitch: a retry count and a when are wider
+     than any fixed step, and a fixed one put them on top of each other on exactly the steps carrying
+     the most to say. Nothing wraps — a marker with no room is clipped by the bar rather than pushed
+     onto a line the box does not have. */
+  .node-markers {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.375rem;
+    padding: 0 0.625rem;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  .node-marker {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-size: 10px;
+    line-height: 1;
+    white-space: nowrap;
   }
 
   .node-badge.error {
@@ -114,6 +336,13 @@ const StyledWrapper = styled.div`
   .slot text {
     fill: ${(props) => props.theme.colors.text.muted};
     font-size: 14px;
+  }
+
+  /* The lane is a row of identical squares, and the glyph alone was readable only while there was
+     one of them. §9.1's slots are told apart by name or not at all. */
+  .slot-label {
+    fill: ${(props) => props.theme.colors.text.muted};
+    font-size: 10px;
   }
 `;
 
