@@ -211,6 +211,58 @@ describe('R4q — nodes', () => {
   });
 });
 
+/**
+ * 001 §6.2's `color:`. The engine carries it and decides nothing with it: what a flow *does* is
+ * unchanged, and 002 §5.1 is the only reader. It is on the description because the binding is the
+ * thing being coloured, and the file is the only place an author can say so.
+ */
+describe('R4q — API bindings', () => {
+  it('lists the bindings the file declares, in file order', async () => {
+    const description = await describeFlow(flow('r4q-graph.flow.yml'));
+
+    expect(description.apis).toEqual([{ alias: 'regress-api', color: undefined }]);
+  });
+
+  it('carries a declared colour', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.apis = { 'regress-api': { source: '../../specs/regressions-v1.yml', color: '#8ab4f8' } };
+    });
+    const description = await describeFlow(entry, { files });
+
+    expect(description.apis).toEqual([{ alias: 'regress-api', color: '#8ab4f8' }]);
+  });
+
+  /**
+   * A colour the renderer cannot parse falls back to the unpainted default, which is exactly what a
+   * *missing* colour looks like — so silence would leave an author's typo indistinguishable from a
+   * binding they never coloured. A warning, because it decides how a graph is drawn and never what
+   * a flow does.
+   */
+  it('warns about a colour that is not one, and blocks nothing', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.apis = { 'regress-api': { source: '../../specs/regressions-v1.yml', color: 'ultraviolet' } };
+    });
+    const diagnostics = await validate(entry, { files });
+
+    const complaint = diagnostics.find((entry_) => entry_.code === 'invalid-api-color');
+    expect(complaint.severity).toBe('warning');
+    expect(complaint.message).toContain('ultraviolet');
+    expect(diagnostics.some((entry_) => entry_.severity === 'error')).toBe(false);
+  });
+
+  it('accepts both hex forms and says nothing about them', async () => {
+    for (const color of ['#abc', '#8AB4F8']) {
+      const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+        document.apis = { 'regress-api': { source: '../../specs/regressions-v1.yml', color } };
+      });
+
+      expect(await validate(entry, { files })).not.toContainEqual(
+        expect.objectContaining({ code: 'invalid-api-color' })
+      );
+    }
+  });
+});
+
 describe('R4q — sub-flows', () => {
   it('returns the container and its internals under namespaced ids', async () => {
     const description = await describeFlow(flow('r4-subflow-slot.flow.yml'));

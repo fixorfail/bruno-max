@@ -1258,10 +1258,42 @@ hands those to this file. U1.1–U1.10 assert the *drawing* of what comes back.
 | markers | `conditional` for `when:`, `retryMaxAttempts` only above 1, `allowsErrorStatus` for `failOnStatusCode: false`, `usesSharedSlot` for either direction |
 | every node | a `position`, and the `diagnostics` are the set `validateFlow` returns for the same file |
 | a flow that does not parse, and one whose `apis:` entry does not resolve | both still return — an id, a name, the parse error or the binding error in `diagnostics`, and as much of the graph as could be built (002 §6) |
+| `apis` | the bindings the file declares, in file order, each with its §6.2 `color` where it declares one — declared rather than called, because it is what the file says |
+| an `apis` binding whose `color` is not a hex colour | an `invalid-api-color` **warning** and nothing else; the flow still describes, still validates and still runs |
+
+The `color` rows are the only presentation in this file, and they are here for the reason §6.2 gives:
+the binding is the thing being coloured, so the file is where the colour is said, and both hosts read
+it from the same place. The warning row is what separates a typo from an omission — a viewer paints
+neither.
 
 The built-in-metadata row is the one that keeps the feature honest. If `{{steps.x.status}}` drew a
 data edge, every step in a flow with a status check would appear to consume data from its
 predecessor, and "data paths are named and drawable" would stop meaning anything.
+
+### R4t — A script library reaches every script
+
+**Pins:** §8.6.
+
+| Case | Expected |
+|---|---|
+| a flow declaring `functions:` and calling one from an `outputs.*.script` | the value the function returns — the library is in scope by name, with no import at the call site |
+| a `use:` entry naming a library document that itself `use:`s a `.js` file | a function defined in the flow calls one defined two files away; one scope, assembled depth-first |
+| a name the flow declares and its library also declares | the flow's, the way a step's `outputs:` overrides an inherited connector (§8.5) |
+| a `use:` entry that does not resolve | an `unresolved-function-library` **error** from `validate`, before anything runs |
+| a function name that is not a JavaScript identifier | an `invalid-function-name` error |
+| a function named `res` or `ctx` | a `function-shadows-script-argument` **warning**, and no error |
+| a flow with no `functions:` block | unchanged — the script the host is handed is the source as written |
+| `bru flow validate` on a flow that has one | each resolved function and the file it was declared in, one line each — a name that was overridden appears once, with the declaration that won; a raw source file is listed as itself |
+| the same, on a flow with no library | nothing printed |
+
+The last row is the one that keeps the feature honest: composition is invisible to the hosts (§13.2),
+so a flow that declares no library must reach `RunScript` byte-for-byte as it did before, or "no new
+execution environment" (§8.2) stops being a statement anyone can check.
+
+The two error rows are why this is validated rather than left to run time. A library is composed into
+*every* script the flow runs, so one unreadable file or one unquoted name is every script position
+failing at once, reported as `script-error` against whichever step happened to run first — a message
+that names neither the file nor the name.
 
 ### R5 — Unresolved variables never reach the wire
 

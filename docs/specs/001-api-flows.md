@@ -35,7 +35,7 @@ Nobody reads this front to back. Pick an entry:
 | **§5** | File format — layout, a step, and the JSON Schema (§5.4) |
 | **§6** | Resolving an `operation:` — bindings, base URLs, auth profiles |
 | **§7** | Building a request — seeding, merging, interpolation, files, multipart, cookies |
-| **§8** | Connectors — declared outputs, scripts, connector files, visibility |
+| **§8** | Connectors — declared outputs, scripts, connector files, the script library, visibility |
 | **§9** | Control flow — dependencies, joins, shared slots, concurrency, conditions, datasets |
 | **§10** | Automatic validation, assertions, negative tests |
 | **§11** | Retry, failure propagation, cancellation, run budget |
@@ -519,12 +519,27 @@ apis:
     source: ../../apispec/ledger-v1.yml
     baseUrl: "{{ledgerBaseUrl}}"                  # per-API base URL override
     auth: service-account                         # auth profile name — see §6.4
+    color: "#8ab4f8"                              # optional; how a viewer marks this API
     defaultHeaders:                               # applied to every step targeting this API
       X-Tenant-Id: "{{tenantId}}"
       X-Client: bruno-e2e
     defaultQuery:
       api_version: "2026-01"
 ```
+
+**`color` is the one field here that changes nothing about what a flow does.** It is presentation —
+002 §5.1 marks each step with the binding it calls, and this is where an author says which colour
+that binding gets. It is in the format rather than in the app's own settings because the binding is
+the thing being coloured and this file is the only place both hosts agree on: a colour stored beside
+the app would be one machine's, invisible to a teammate reading the same flow and to `bru`. Teams
+recognise a service by whatever colour their dashboards already give it, and that is worth more than
+any ordering a renderer could pick for them.
+
+`#rgb` or `#rrggbb`, and a warning (§14.3) for anything else — not an error, because it decides how a
+graph is drawn and never what a flow does. The warning is the point: a colour a renderer cannot parse
+falls back to its unpainted default, which is indistinguishable from a binding that declared no
+colour at all, so silence would hide the typo rather than the consequence. A viewer with no colours
+ignores it, which is what makes it safe to add to a format older readers still parse (§5.4).
 
 `defaultHeaders` and `defaultQuery` remove the cross-cutting values that would otherwise be
 repeated on every step of every flow — a tenant id or API version that the vendor's spec examples
@@ -1455,6 +1470,74 @@ are drawn as graph edges, and their paths are checked against the operation's re
 which cuts against §8's premise that data paths are explicit. That is why `bru flow validate` and
 `--dry-run` both print each step's *resolved* outputs and where each was declared — the
 information stays discoverable even though it is no longer inline.
+
+### 8.6 A script library
+
+§8.2's escape hatch is per-position by design, and the same helper written into three flows is §1's
+duplication problem in JavaScript rather than in YAML. A flow may declare **functions** once and call
+them from every position that runs a script — an output, a `when:` script, `shouldRetry`:
+
+```yaml
+functions:
+  use:
+    - ../shared/functions.yml     # a library document
+    - ./lib/text.js               # raw source
+
+  lastFour: |
+    (value) => String(value).slice(-4)
+
+steps:
+  - id: charge
+    operation: payments-api#createPayment
+    outputs:
+      tail:
+        script: |
+          (res) => lastFour(res.body.card)
+```
+
+**A function is in scope by its name.** The library is composed into the same program the call site
+is evaluated in, so nothing is imported, injected as an argument or reached through an object — which
+is what lets one mechanism serve all three positions without any of them changing shape. `use:` is
+reserved inside the block; everything else is a function.
+
+**`use:` is explicit, and nothing is picked up implicitly.** §8.5's connector files are discovered by
+convention, and the cost it names — *a step's available outputs are no longer visible by reading the
+step* — is worse here: an output resolved from a file you did not know about is a value with a
+provenance, while a *function* resolved from one is arbitrary code. What a flow's scripts can call is
+readable from the flow.
+
+A `use:` entry is a **library document** — a `functions:` block of its own, which may `use:` further
+files — or **raw source**, by extension: `.yml`/`.yaml` is the first, anything else is the second. A
+library file is the case where a dozen helpers live in one place in the language they are written in;
+naming each one in YAML to reach it would be the duplication this removes.
+
+**Order is `use:` first, depth-first, then the flow's own definitions, and the last word on a name
+wins.** A flow overrides a helper its library declares the way a step's `outputs:` overrides an
+inherited connector (§8.5). A file already included is skipped rather than read twice, so two
+libraries that include each other are a diamond rather than an error.
+
+**A library does not cross a sub-flow boundary.** A `uses:` flow gets its own, from its own file
+(§12.2's isolation). A helper resolving inside a sub-flow because its *caller* declared it would make
+the sub-flow's behaviour depend on who called it — the property §12 exists to prevent.
+
+**`bru flow validate` lists what resolved, and where each came from.** §8.5 pays the same cost one
+layer along and answers it the same way — *a step's available outputs are no longer visible by
+reading the step* — and a library is the sharper case: an output resolved from a file you did not
+know about is a value, a *function* resolved from one is arbitrary code. A name appears once,
+carrying the declaration that won; a raw source file is listed as the file it is, because nothing in
+the toolchain parses JavaScript to find out what it declares.
+
+**It also resolves the files and checks the names**, because a library reaches every
+script in the flow: an unreadable file or a name that is not a JavaScript identifier is one broken
+prelude and *every* script position failing at once, with `script-error` naming whichever step
+happened to run first. A name that shadows what §8.2 hands a script — `res`, `ctx` — is a warning:
+legal, occasionally meant, never meant twice.
+
+**No host changes, deliberately.** §13.2's `RunScript` receives an expression that evaluates to a
+function; the engine composes the library into that expression rather than adding a port argument or
+an injected global. A mechanism a host had to cooperate with would be one that behaved differently in
+`bru` than in the app, and §8.2's "no new execution environment" would stop being true — the sandbox,
+its mode and the collection's `securityConfig` are exactly as they were.
 
 ---
 
@@ -3365,6 +3448,12 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   operation's response schema (§8.5)
 - Every `auth:` reference names a declared profile; a workspace-scoped flow never relies on the
   implicit `collection` profile
+- Warning: an `apis` binding whose `color` is not `#rgb` or `#rrggbb` (§6.2) — a viewer falls back
+  to its unpainted default there, which is what a binding with no colour looks like, so nothing else
+  would tell the author their typo from a colour they never declared
+- Every `functions.use` entry resolves and stays inside the scope root; every function name is a
+  JavaScript identifier (§8.6). Both are one broken prelude, which is every script position in the
+  flow failing at once — a warning where a name shadows `res` or `ctx`
 - Steps authenticating with a profile that reads `{{steps.*}}` have that step as a transitive
   ancestor (§6.4); the same holds for a step whose binding `baseUrl`, `defaultHeaders` or
   `defaultQuery` reads `{{steps.*}}` (§6.3)

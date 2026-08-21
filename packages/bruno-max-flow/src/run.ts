@@ -21,6 +21,7 @@ import {
 } from './document';
 import { evaluateCondition, evaluationContext } from './expression';
 import { createFileReader, FileAccessError, parseStructured } from './files';
+import { loadLibrary, withLibrary } from './functions';
 import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
@@ -230,8 +231,14 @@ const loadFlow = async (state: RunState, file: string): Promise<NormalizedFlow> 
   return flow;
 };
 
-const scriptRunner = (state: RunState): ScriptRunner => (source, args) =>
-  state.options.ports.runScript(source, args, state.flowContext);
+/**
+ * §8.6: every script this flow runs sees the flow's own library, and only its own. A sub-flow is a
+ * separate `executeFlow` with a library of its own, which is §12's isolation applied to the one
+ * thing that would otherwise leak across it — a caller's helper resolving inside a flow that never
+ * declared it would make the sub-flow's behaviour depend on who called it.
+ */
+const scriptRunner = (state: RunState, library: () => string): ScriptRunner => (source, args) =>
+  state.options.ports.runScript(withLibrary(library(), source), args, state.flowContext);
 
 /**
  * §12.5's declared params, filled from what the caller supplied and from their declared defaults.
@@ -309,7 +316,10 @@ const executeFlow = async (
   const outcomes = new Map<string, StepResult>();
   const stepState: Record<string, Record<string, unknown>> = {};
   const slots: Record<string, unknown> = {};
-  const runScript = scriptRunner(state);
+  // Resolved once, below, before any step runs; the runner reads it at call time because the files
+  // it comes from are read through the same async port everything else is.
+  let library = '';
+  const runScript = scriptRunner(state, () => library);
   let resolvedVars: Vars = {};
   /**
    * §12.3 resolves a sub-flow's `with:` in the *caller's* scope, so an invoked flow's params arrive
@@ -347,6 +357,11 @@ const executeFlow = async (
     { ...state.flowContext, flow: flow.file },
     scopeRoot(state)
   );
+
+  // §8.6: the script library, read once per flow run rather than per script — a helper file is the
+  // same file for every step, and re-reading it per call would make a 20-attempt poll read it 20
+  // times.
+  library = await loadLibrary(flow, readFile);
 
   // §7.4: a `!file` var is parsed at flow start, so `{{catalog.items[0].sku}}` navigates the
   // structure exactly as it would a structured output.

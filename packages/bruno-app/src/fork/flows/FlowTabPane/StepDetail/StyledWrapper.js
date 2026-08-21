@@ -131,6 +131,18 @@ const StyledWrapper = styled.div`
     font-size: 0.75rem;
   }
 
+  /* Reads as the continuation of the sentence above it, because that is what it is — where the
+     steps it names can be seen. */
+  .detail-expand {
+    margin-left: 0.375rem;
+    color: ${(props) => props.theme.colors.text.muted};
+    border-bottom: 1px dotted currentColor;
+
+    &:hover {
+      color: ${(props) => props.theme.text};
+    }
+  }
+
   /* A definite height, so CodeMirror is the scroller and keeps virtualizing its lines. Sizing it to
      its content puts every line of a large captured body in the DOM, and 001 §14.5 caps the size of
      a capture nowhere. A definite height also settles the percentage chain the editor sizes itself

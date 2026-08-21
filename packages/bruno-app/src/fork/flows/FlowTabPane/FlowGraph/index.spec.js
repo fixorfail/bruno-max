@@ -793,6 +793,28 @@ describe('FlowGraph node footer', () => {
   });
 
   /**
+   * §5.1: a marker that names a key spells the key. The sub-flow marker was `⊂` — a symbol for a
+   * relationship nobody draws that way, learned from its tooltip or not at all.
+   */
+  it('marks a sub-flow with the key that declares it', () => {
+    renderWith({
+      ...twoApis,
+      nodes: [
+        {
+          ...stepOn('checkout', 'glados', 0),
+          kind: 'subflow',
+          uses: 'auth.flow.yml',
+          operation: undefined
+        }
+      ]
+    });
+
+    const marker = screen.getByTestId('flow-node-checkout').querySelector('.node-marker');
+    expect(marker).toHaveTextContent('uses');
+    expect(marker).toHaveAttribute('title', 'Sub-flow (uses:)');
+  });
+
+  /**
    * The overlap this replaced a fixed pitch to prevent: `↻ 16` and `when` are wider than any step
    * that fits `⌸`, so whichever pair a step happened to carry landed on top of each other.
    */
@@ -844,6 +866,17 @@ describe('FlowGraph node footer', () => {
     expect(screen.getByTestId('flow-legend').querySelector('.flow-legend-swatch')).toBeNull();
   });
 
+  /**
+   * 001 §6.2: the file's own colour for a binding. It is the case a single-API flow has no other way
+   * to get a tint, and the case a team recognises a service by a colour of their own.
+   */
+  it('paints the bar with the colour the flow declares', () => {
+    renderWith({ ...oneApi, apis: [{ alias: 'backend', color: '#8ab4f8' }] });
+
+    expect(screen.getByTestId('flow-node-footer-probe').style.fill).toBe('#8ab4f8');
+    expect(screen.getByTestId('flow-legend').querySelector('.flow-legend-swatch')).toBeInTheDocument();
+  });
+
   it('titles the key, so a lone alias reads as the binding rather than as a caption', () => {
     renderWith(oneApi);
 
@@ -868,5 +901,199 @@ describe('FlowGraph node footer', () => {
 
     expect([...screen.getByTestId('flow-legend').querySelectorAll('.flow-legend-entry')].map((entry) => entry.textContent))
       .toEqual(['glados', 'backend']);
+  });
+});
+
+/**
+ * 002 §5.4: a sub-flow is collapsed by default and expands on a double-click — the one thing this
+ * drawing does that nothing on it says, and the thing a reader wants exactly when a `uses:` step is
+ * the step that failed.
+ */
+describe('FlowGraph sub-flow hint', () => {
+  const container = {
+    id: 'pay',
+    kind: 'subflow',
+    uses: '../lib/pay.flow.yml',
+    outputs: [],
+    markers: markers(),
+    position: { line: 1, column: 1 },
+    rank: 0
+  };
+
+  const withSubflow = {
+    ...description,
+    nodes: [
+      container,
+      { ...node('pay/charge', 0), parent: 'pay' },
+      node('report', 1)
+    ],
+    edges: [{ from: 'pay', to: 'report', kind: 'sequence' }]
+  };
+
+  const renderSubflow = (props = {}) =>
+    render(
+      <ThemeProvider theme={theme}>
+        <FlowGraph
+          description={withSubflow}
+          nodeStates={{}}
+          running={false}
+          diagnostics={[]}
+          selectedStep={undefined}
+          expandedSubflows={[]}
+          showDataEdges
+          showSlotEdges={false}
+          onSelectStep={() => {}}
+          onToggleSubflow={() => {}}
+          {...props}
+        />
+      </ThemeProvider>
+    );
+
+  it('says nothing until the step is selected', () => {
+    renderSubflow();
+
+    expect(screen.queryByTestId('flow-node-hint-pay')).not.toBeInTheDocument();
+  });
+
+  it('writes it under the selected uses: node', () => {
+    renderSubflow({ selectedStep: 'pay' });
+
+    const hint = screen.getByTestId('flow-node-hint-pay');
+    expect(hint).toHaveTextContent('double click to expand');
+    // Outside the box and left-aligned with it — the node group is translated to the box's corner.
+    expect(hint.getAttribute('x')).toBe('0');
+    const box = screen.getByTestId('flow-node-pay').querySelector('.node-box');
+    expect(Number(hint.getAttribute('y'))).toBeGreaterThan(Number(box.getAttribute('height')));
+  });
+
+  /** Selecting an ordinary step says nothing: there is nothing there to expand. */
+  it('stays off a step that is not a sub-flow', () => {
+    renderSubflow({ selectedStep: 'report' });
+
+    expect(screen.queryByTestId('flow-node-hint-report')).not.toBeInTheDocument();
+  });
+
+  /** Expanded, the double-click collapses — so an invitation to expand would be a false one. */
+  it('goes once the sub-flow is drawn', () => {
+    renderSubflow({ selectedStep: 'pay', expandedSubflows: ['pay'] });
+
+    expect(screen.getByTestId('flow-node-pay/charge')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-node-hint-pay')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 002 §5.4: expanded, a sub-flow's steps are more boxes in the same picture, and nothing said where
+ * the caller stopped and the sub-flow began. The band is that boundary and the ring is what ties it
+ * to the step it came out of.
+ */
+describe('FlowGraph sub-flow band', () => {
+  const containerNode = (id) => ({
+    id,
+    kind: 'subflow',
+    uses: `../lib/${id}.flow.yml`,
+    outputs: [],
+    markers: markers(),
+    position: { line: 1, column: 1 },
+    rank: 0
+  });
+
+  const twoSubflows = {
+    ...description,
+    nodes: [
+      containerNode('pay'),
+      { ...node('pay/charge', 0), parent: 'pay' },
+      containerNode('refund'),
+      { ...node('refund/void', 0), parent: 'refund' }
+    ],
+    edges: [{ from: 'pay', to: 'refund', kind: 'sequence' }]
+  };
+
+  const renderBands = (expanded) =>
+    render(
+      <ThemeProvider theme={theme}>
+        <FlowGraph
+          description={twoSubflows}
+          nodeStates={{}}
+          running={false}
+          diagnostics={[]}
+          selectedStep={undefined}
+          expandedSubflows={expanded}
+          showDataEdges
+          showSlotEdges={false}
+          onSelectStep={() => {}}
+          onToggleSubflow={() => {}}
+        />
+      </ThemeProvider>
+    );
+
+  /** `translate(x, y)` — where the layout put the group. */
+  const at = (testId) => {
+    const [x, y] = screen.getByTestId(testId).getAttribute('transform').match(/-?[\d.]+/g).map(Number);
+    return { x, y };
+  };
+  const box = (testId) => {
+    const rect = screen.getByTestId(testId);
+    return {
+      x: Number(rect.getAttribute('x')),
+      y: Number(rect.getAttribute('y')),
+      width: Number(rect.getAttribute('width')),
+      height: Number(rect.getAttribute('height'))
+    };
+  };
+
+  it('draws nothing while every sub-flow is collapsed', () => {
+    renderBands([]);
+
+    expect(screen.queryByTestId('flow-subflow-band-pay')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flow-subflow-ring-pay')).not.toBeInTheDocument();
+  });
+
+  it('encloses the steps the sub-flow drew, and not its container', () => {
+    renderBands(['pay']);
+
+    const band = box('flow-subflow-band-pay');
+    const inner = at('flow-node-pay/charge');
+    const container = at('flow-node-pay');
+
+    expect(band.x).toBeLessThan(inner.x);
+    expect(band.x + band.width).toBeGreaterThan(inner.x + 220);
+    expect(band.y).toBeLessThan(inner.y);
+    // The container is tied to the band by its ring, not by standing inside it.
+    expect(container.x + 220).toBeLessThanOrEqual(band.x);
+  });
+
+  it('rings the container in the colour of its band', () => {
+    renderBands(['pay']);
+
+    const ring = screen.getByTestId('flow-subflow-ring-pay');
+    expect(ring.getAttribute('stroke')).toBe(screen.getByTestId('flow-subflow-band-pay').getAttribute('fill'));
+  });
+
+  /** The ring belongs to the drawn band: collapsed, there is nothing for it to point at. */
+  it('rings only the container that is open', () => {
+    renderBands(['pay']);
+
+    expect(screen.queryByTestId('flow-subflow-ring-refund')).not.toBeInTheDocument();
+  });
+
+  it('gives two open sub-flows two colours', () => {
+    renderBands(['pay', 'refund']);
+
+    const pay = screen.getByTestId('flow-subflow-band-pay').getAttribute('fill');
+    const refund = screen.getByTestId('flow-subflow-band-refund').getAttribute('fill');
+
+    expect(pay).toBeTruthy();
+    expect(refund).not.toBe(pay);
+  });
+
+  /** Behind the boxes and the lines: a wash drawn over an edge takes the edge's colour with it. */
+  it('draws the band before anything it stands behind', () => {
+    const { container: root } = renderBands(['pay']);
+    const drawn = [...root.querySelectorAll('svg > *')];
+
+    expect(drawn.indexOf(screen.getByTestId('flow-subflow-band-pay'))).toBeLessThan(
+      drawn.findIndex((element) => element.contains(screen.getByTestId('flow-node-pay')))
+    );
   });
 });

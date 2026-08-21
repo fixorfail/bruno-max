@@ -133,6 +133,28 @@ const createReporter = ({
       );
     },
 
+    /**
+     * 001 §8.6's library, listed under `bru flow validate`.
+     *
+     * §8.5 names the cost a shared declaration pays — what a step can do is no longer visible by
+     * reading the step — and answers it by printing what resolved and where it came from. A library
+     * is the same trade over arbitrary code, so it is answered the same way: the functions a script
+     * may call, and the file each one came from.
+     *
+     * Nothing is printed for a flow that declares none, which is most of them.
+     */
+    functions: (file, entries) => {
+      if (!entries.length || level < LEVELS.normal) return;
+      line();
+      line(`${paint(1, file)}`);
+      for (const entry of entries) {
+        // A raw source file declares whatever it declares, and nothing here parses JavaScript to
+        // find out — so it is listed as the file it is rather than as names it might not have.
+        const name = entry.name || paint(90, '(source)');
+        line(`  ${name.padEnd(24)} ${paint(90, entry.from)}`);
+      }
+    },
+
     diagnostics: (file, entries) => {
       if (!entries.length) return;
       line();

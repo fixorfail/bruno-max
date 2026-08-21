@@ -82,6 +82,7 @@ Follow `references/mapping.md`. The mappings that matter most:
 | `if (x) {...} else {...}` | `when:` on each branch, or `depends: status:` |
 | `try/finally` cleanup | A step depending on `status: [success, failed, cancelled]` |
 | Computation between requests | `outputs: script:` — a function expression |
+| A helper the tests share (`lastFour`, a signer, a decoder) | `functions:` — declared once, callable by name from every `script:` (dsl.md) |
 
 ### 4. Validate, then run
 
@@ -140,7 +141,7 @@ The things that genuinely do not fit, and what to do:
 |---|---|
 | Non-HTTP setup (DB seeding, queue reads, file writes) | Leave it in the original suite, or move it to a fixture the flow reads with `!file` |
 | Iterating over a list from a *response* (`for (const id of res.body.ids)`) | Not expressible — a flow's fan-out is static. Keep that test, or assert on the list instead |
-| Arbitrary code between requests | Small transforms → `outputs: script:`. Anything larger stays in the original test |
+| Arbitrary code between requests | Small transforms → `outputs: script:`; a helper used more than once → `functions:`. Anything larger stays in the original test |
 | Assertions on things other than the response (logs, DB rows, emails) | Not expressible |
 | Tests whose value is the code path, not the API sequence | Do not convert; say why |
 
@@ -158,7 +159,9 @@ Read `references/dsl.md` for the full set. These four cause the most rework:
    validation error. If either of two branches might produce the value, declare a `shared:` slot —
    and when those branches *exclude* each other, declare it `writers: any`, because no step can
    descend from every writer when only one of them ever runs.
-3. **Every `script:` is a function expression** — `(res, ctx) => …`, not a bare expression.
+3. **Every `script:` is a function expression** — `(res, ctx) => …`, not a bare expression. A helper
+   two scripts share belongs in `functions:`, where it is in scope by name — copying it into both is
+   the duplication this whole exercise removes.
 4. **Unknown keys are silently ignored.** A misspelled field does nothing and warns about nothing,
    so check every field against the reference rather than assuming it took effect.
 

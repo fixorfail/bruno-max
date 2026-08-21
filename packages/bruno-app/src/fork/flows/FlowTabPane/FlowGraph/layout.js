@@ -105,6 +105,30 @@ const effectiveRanks = (nodes) => {
 };
 
 /**
+ * One layering constraint per pair of steps, merged rather than repeated.
+ *
+ * **Dagre is given a simple graph on purpose.** Several connectors between the same two steps are
+ * several edges here (001 §8.1 draws one per output) and were several edges in dagre too, which is a
+ * multigraph it mislays: on some arrangements of parallel edges it ends up computing an endpoint for
+ * one of them against a node it has not placed apart, and throws `Not possible to find intersection
+ * inside of the rectangle` — taking the whole tab down, since this runs during render. The
+ * arrangement that triggers it is not one a flow can be told to avoid: it turns on how many
+ * connectors run between which pairs, and `f3-batch-settlement` in the conformance corpus is an
+ * ordinary flow that has it.
+ *
+ * Nothing is lost by merging, because every edge between one pair already draws the same route by
+ * design — that is what makes the stacked labels above readable — so the pair needs one route and
+ * the strongest constraint either of its edges asked for.
+ */
+const constrain = (graph, from, to, minlen, weight) => {
+  const existing = graph.edge(from, to);
+  graph.setEdge(from, to, {
+    minlen: Math.max(minlen, existing?.minlen || 1),
+    weight: Math.max(weight, existing?.weight || 1)
+  });
+};
+
+/**
  * A node whose rank is above 0 but which has no edge coming in — its producers are inside a
  * collapsed sub-flow, or the description carries ranks without the edges that earned them. Dagre
  * ranks from edges alone, so without something to hang it from it lands in the first column, on top
@@ -128,14 +152,12 @@ const anchorEdges = (graph, nodes, edges, ranks) => {
 
     const from = node.parent && graph.hasNode(node.parent) ? node.parent : firstOfRank.get(rank - 1);
     if (!from || from === node.id) return;
-    graph.setEdge(from, node.id, { minlen: Math.max(1, rank - ranks.get(from)), weight: 1 }, `anchor:${node.id}`);
+    constrain(graph, from, node.id, Math.max(1, rank - ranks.get(from)), 1);
   });
 };
 
-const edgeKey = (index) => `edge:${index}`;
-
 const runDagre = (nodes, edges, ranks) => {
-  const graph = new graphlib.Graph({ multigraph: true });
+  const graph = new graphlib.Graph();
   graph.setGraph({
     rankdir: 'LR',
     nodesep: SIBLING_GAP,
@@ -149,18 +171,15 @@ const runDagre = (nodes, edges, ranks) => {
   // Insertion order is file order, and dagre seeds its ordering pass from it — so where two
   // arrangements cross equally often, the file's own order is the one that survives (§5.2).
   nodes.forEach((node) => graph.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT }));
-  edges.forEach((edge, index) => {
-    graph.setEdge(
+  edges.forEach((edge) =>
+    // The engine's ranks, restated as the layering constraint that reproduces them exactly.
+    constrain(
+      graph,
       edge.from,
       edge.to,
-      {
-        // The engine's ranks, restated as the layering constraint that reproduces them exactly.
-        minlen: Math.max(1, ranks.get(edge.to) - ranks.get(edge.from)),
-        weight: EDGE_WEIGHT[edge.kind] || 1
-      },
-      edgeKey(index)
-    );
-  });
+      Math.max(1, ranks.get(edge.to) - ranks.get(edge.from)),
+      EDGE_WEIGHT[edge.kind] || 1
+    ));
   anchorEdges(graph, nodes, edges, ranks);
 
   layout(graph);
@@ -261,10 +280,11 @@ export const layoutGraph = (description, options = {}) => {
   });
   const positionedById = new Map(positioned.map((node) => [node.id, node]));
 
-  const routed = edges.map((edge, index) => ({
+  // Every edge between one pair reads the pair's one route — see `constrain`.
+  const routed = edges.map((edge) => ({
     ...edge,
     points: withPorts(
-      graph.edge(edge.from, edge.to, edgeKey(index)).points,
+      graph.edge(edge.from, edge.to).points,
       positionedById.get(edge.from),
       positionedById.get(edge.to)
     )

@@ -12,6 +12,7 @@
 const path = require('path');
 
 const { runFlow, validate, variant, FLOWS } = require('./harness');
+const { withLibrary } = require('../../src/functions');
 
 const flow = (name) => `regressions/${name}`;
 
@@ -1262,5 +1263,92 @@ describe('R6 — exit codes', () => {
     const diagnostics = await validate(flow('r4-slot-nondescendant.flow.yml'));
 
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).not.toHaveLength(0);
+  });
+});
+
+/**
+ * R4t — 001 §8.6's script library.
+ *
+ * The three positions §8.2 defines all evaluate through one port, so what has to be proven is that
+ * the *library* reaches that port composed: from the flow's own block, from a library document it
+ * includes, and from a raw JS file that document includes. A run is the only place this shows —
+ * nothing about a flow's shape says whether `maskCard` resolves.
+ */
+describe('R4t — a script library', () => {
+  const created = { status: 201, body: { data: { id: 'card-4111111111111234', name: 'widget' } } };
+
+  it('calls a function the flow declares, and one two files away', async () => {
+    const run = await runFlow(flow('r4t-functions.flow.yml'), { responses: { createThing: created } });
+
+    expect(run.outcome('create')).toBe('success');
+    // `label` is the flow's own and calls `lastFour`, which the JS file the library document
+    // includes declares — so a passing value proves the whole chain shares one scope.
+    expect(run.step('create').outputs.labelled).toBe('widget-1234');
+  });
+
+  /** The flow has the last word on a name, the way a step's own `outputs:` overrides §8.5's. */
+  it('lets the flow override a function its library declares', async () => {
+    const run = await runFlow(flow('r4t-functions.flow.yml'), { responses: { createThing: created } });
+
+    expect(run.step('create').outputs.masked).toBe('flow:1234');
+  });
+
+  /**
+   * A library that cannot be read fails every script position at once, so it is caught statically
+   * rather than reported as whichever step ran first.
+   */
+  it('reports a library file that does not resolve, before anything runs', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.functions.use = ['./lib/not-here.js'];
+    });
+
+    expect(await validate(entry, { files })).toContainEqual(
+      expect.objectContaining({ code: 'unresolved-function-library', severity: 'error' })
+    );
+  });
+
+  /** It becomes a declaration: a name that is not an identifier is a prelude that does not parse. */
+  it('reports a name that cannot be a declaration', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.functions['last-four'] = '(v) => v';
+    });
+
+    expect(await validate(entry, { files })).toContainEqual(
+      expect.objectContaining({ code: 'invalid-function-name', severity: 'error' })
+    );
+  });
+
+  /** Shadowing what §8.2 hands a script is legal JavaScript, and nobody means it twice. */
+  it('warns about a function named after a script argument', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.functions.res = '(v) => v';
+    });
+
+    const diagnostics = await validate(entry, { files });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'function-shadows-script-argument', severity: 'warning' })
+    );
+    expect(diagnostics.some((entry_) => entry_.severity === 'error')).toBe(false);
+  });
+
+  /**
+   * Composition is invisible to a host (§13.2), so a flow that declares no library must reach
+   * `RunScript` as the source it was written as — byte for byte, or §8.2's "no new execution
+   * environment" stops being a statement anyone can check.
+   */
+  it('hands the host the untouched source when there is no library', () => {
+    const source = '(res) => res.body.id';
+
+    expect(withLibrary('', source)).toBe(source);
+    expect(withLibrary('var lastFour = ((v) => v);', source)).toContain(source);
+  });
+
+  /** A flow with no library composes to the source it was written as — the common case pays nothing. */
+  it('leaves a flow without one exactly as it was', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE }
+    });
+
+    expect(run.outcome('create')).toBe('success');
   });
 });

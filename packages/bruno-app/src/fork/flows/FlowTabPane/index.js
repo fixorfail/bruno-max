@@ -112,7 +112,9 @@ const Warnings = ({ diagnostics }) => {
 
 const FlowTabPane = ({ tab }) => {
   const dispatch = useDispatch();
-  const [configuration, setConfiguration] = useState({ capture: true });
+  // §7.1 decides capture per run rather than storing it here: this is what the run *panel* keeps
+  // between runs, and capture is a property of a run rather than of the tab.
+  const [configuration, setConfiguration] = useState({});
   const [expandedSubflows, setExpandedSubflows] = useState([]);
   const [showDataEdges, setShowDataEdges] = useState(true);
   /**
@@ -278,6 +280,12 @@ const FlowTabPane = ({ tab }) => {
                  reader has to ask the same way the writer wrote — naming an iteration for a flow
                  that has none looks in a directory that was never created. */
               iteration={description?.dataset ? iteration : undefined}
+              /* §5.4 draws a sub-flow's steps only while its container is expanded, and a `uses:`
+                 step's pane has nothing of its own to show — so the pane offers the expansion, and
+                 stops offering it once the steps are on the drawing. */
+              onExpandSubflow={
+                expandedSubflows.includes(selectedStep) ? undefined : () => toggleSubflow(selectedStep)
+              }
               height={appliedDetailHeight}
             />
           </>

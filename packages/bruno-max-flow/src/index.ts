@@ -19,7 +19,7 @@ export { runFlow } from './run';
 // the policy has one implementation rather than one per host.
 export { createRedactor, MASK } from './redact';
 export type { Redactor } from './redact';
-export { validateFlow } from './validate';
+export { validateFlow, resolveFunctions } from './validate';
 // 002 §4.1's sidebar name, read from a flow's text without describing it — so a host listing flows
 // never parses `.flow.yml` itself and never has to know §5.4's local tags.
 export { readFlowMeta } from './document';

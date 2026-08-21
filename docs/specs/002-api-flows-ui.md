@@ -440,7 +440,7 @@ thing they mark:
 |---|---|---|
 | `when` | The step is conditional | §9.3 |
 | `↻ n` | Retry with `maxAttempts: n` | §11.1 |
-| `⊂` | A sub-flow (`uses:`) | §12 |
+| `uses` | A sub-flow (`uses:`) | §12 |
 | `!` | `failOnStatusCode: false` — a negative test | §10.3 |
 | `⌸` | Reads or writes a shared slot | §9.1 |
 
@@ -448,12 +448,22 @@ The negative-test marker exists because a step that passes on a 403 is otherwise
 from one that passes on a 200, and mistaking the first for the second is how a broken authorization
 check reads as green.
 
+**A marker that names a key spells the key.** `when` and `uses` are words because that is what the
+file says and what an author greps for; a symbol would have to be learned from a tooltip and then
+re-learned by the next reader. The sub-flow marker was `⊂` — the subset sign, borrowed for a
+relationship nobody draws that way — and there is no conventional glyph for *this step is another
+flow*, so the key that declares it is the most recognisable mark available. The remaining three are
+symbols because they mark a *property* rather than a key a reader would search for: a retry count
+that must carry its number, and two one-character flags.
+
 They were drawn over the box's top-right corner, which is where the step's *name* is — and the names
 worth reading are the long ones. A bar of their own gives them a fixed place to be looked for, room
 for the next marker this spec adds, and room beside them for the one thing the box never said.
 
 **That thing is the binding: on a flow that binds more than one API, the footer is tinted in that
-binding's colour.** 001 §6 lets a flow drive several services — `seed-verified-company` drives a
+binding's colour — the band, and nothing else.** The bar's own divider stays neutral. It carried the
+colour at full strength for a while and was the loudest thing on a graph of eighteen boxes: one quiet
+statement per box reads as a distinction, and the same colour twice per box reads as decoration. 001 §6 lets a flow drive several services — `seed-verified-company` drives a
 backend and a test harness — and which of them a step calls decides what a failure means and who
 owns it. It was nowhere on the drawing: the operation line says `POST /companies/{pk}` whichever
 service that is. Colour is what makes the *shape* of it legible, and the shape is the point: this
@@ -465,9 +475,15 @@ repeated eighteen times to say what two colours already said, and the box's own 
 more than the redundancy. The alias is on the legend and on the bar's hover, so it stays one glance
 away without being on screen eighteen times.
 
-The palette is assigned in file order from a fixed list and **never cycles** — past it a binding
+**A colour the flow declares wins** (001 §6.2). Assignment is a default, and a default that overrode
+the file would be the tool arguing with its author; a team that recognises a service by a colour
+elsewhere gets to keep it here. It applies to a single-binding flow too, where the automatic rule
+assigns nothing: having said which colour, the author has said there is one.
+
+The rest are assigned in file order from a fixed list, and it **never cycles** — past it a binding
 takes no colour rather than a second one's, since two services sharing a colour is worse than one
-having none. Its first three slots are validated for every pair against both the light and the dark
+having none. A slot matching a colour the file already declared is skipped, so a declaration and an
+assignment made around it cannot collide. Its first three slots are validated for every pair against both the light and the dark
 surface, which is the range that matters: a flow driving four or more services is not one this spec
 has seen. The run's own colours (§8.2 — green, red, yellow) are not in play at all: a binding painted
 in one of them would report an outcome.
@@ -653,7 +669,7 @@ by something the author looks at.
 
 ### 5.4 Sub-flows
 
-A `uses:` step is one node, collapsed, marked `⊂`. Expanding it draws the sub-flow's own graph inline
+A `uses:` step is one node, collapsed, marked `uses`. Expanding it draws the sub-flow's own graph inline
 after it — its own block of ranks, continuing rightward — with its steps under their namespaced ids
 (`auth/login`, per 001 §13.2 and §14.5).
 
@@ -661,6 +677,31 @@ Collapsed is the default because 001 §12 makes a sub-flow opaque by contract: t
 `with:` and consumes `exports:`, and cannot reference internal step ids. A view that expanded by
 default would show the caller structure it is specified not to depend on. Expansion exists because
 when a sub-flow fails, its internals are exactly what you need.
+
+**The selected container says how to open it** — `double click to expand`, in italic under the box,
+left-aligned with it. Expansion is the only gesture this drawing has that nothing on it announces,
+and a collapsed container is at its least obvious exactly when it is the step that failed. It is
+written under the *selected* node only: on every container at once it is one more label per box,
+competing with the sub-flow path each already carries, and the reader who selected one is the reader
+asking what it holds. It goes once the internals are drawn, since the same gesture then collapses
+them. §9 makes the same offer from the step pane, where a `uses:` step has nothing of its own to show.
+
+**An open sub-flow stands on a band of its own colour, and its container wears that colour as a
+ring.** Expanded, its steps are just more boxes in the same picture, and nothing said where the
+caller stopped and the sub-flow began — with two open at once, nothing said which steps came out of
+which `uses:`. The band is that boundary, the ring is the tie back to the step that drew it, and one
+colour is what makes them a single statement rather than two.
+
+The ring is drawn *outside* the box rather than on it. The box's own border is how §8.2 says passed,
+failed or in flight, and a step outlined to group it would have stopped saying what happened to it —
+on the one node whose failure is a failure somewhere else.
+
+The colour is neither a status nor an API's: §8.2 owns green, red and yellow, and §5.1 spends blue,
+orange and green on the bindings whose bars sit inside these very boxes. It is fixed by the
+container's place among the flow's `uses:` steps rather than by the order they were opened in, so
+collapsing one sub-flow never recolours another. Past the palette a band takes a neutral outline
+instead of a second container's colour — §5.1's rule, for §5.1's reason: two regions in one colour
+is worse than one with none, because the reader cannot tell and has no reason to doubt.
 
 ## 6. Diagnostics
 
@@ -719,6 +760,21 @@ Cancel maps to the `AbortSignal` of 001 §13.2. While cleanup steps run under `c
 `depends: [{ status: [cancelled] }]` steps keeps working for up to 30 seconds after cancel by design,
 and a UI that showed nothing would look broken at exactly that moment.
 
+
+**Capture hangs off that control rather than sitting beside it as a setting.** `Run` runs and
+captures; a menu attached to it carries the runs you take a decision about, and today that is one —
+**Run without capture** — which runs on the click that chooses it.
+
+It was a checkbox in §7.2's panel, and three things were wrong with that. It made the ordinary run a
+two-part act: read the state of a box, then press the button. It *remembered*, so a run that wrote
+nothing to `.bruno-runs/` looked exactly like one that did until you went looking — and §9's pane
+saying it has no capture to show is a poor moment to find out. And it stated capture as a property of
+the tab when 001 §14.5 makes it a property of a run.
+
+The menu item runs rather than arming the button, which is the whole distinction: a chooser that only
+set the mode would be the checkbox again with a step in front of it. Nothing is remembered, so the
+next `Run` captures — the default is what a single click does, and the exception costs two.
+
 ### 7.2 Run configuration
 
 A panel beside the run control, following `RunnerResults/RunConfigurationPanel`'s shape:
@@ -730,7 +786,7 @@ A panel beside the run control, following `RunnerResults/RunConfigurationPanel`'
 | Dataset | `overrides.dataset` (001 §9.4) |
 | Concurrency | `overrides.concurrency` (001 §9.2) |
 | Parameters | `params`, shown only for a library flow (001 §12.5) |
-| Capture | Whether the run writes to `.bruno-runs/` — the app's `--no-capture` (001 §14.5). §9 states what the step pane shows when it is off |
+| Capture | **Not in this panel** — it is a kind of run, chosen on §7.1's control. §9 states what the step pane shows when a run captured nothing |
 
 **The renderer never merges the variable tiers.** It sends each tier's variables *separately and
 unmerged*, and `bruno-electron` flattens each one and hands `RunOptions.variables` to the engine.
@@ -1063,6 +1119,19 @@ and have nothing on disk — and `StepResult.capturePath` is how the run says wh
 renders a file that was never written as a read this pane got wrong, and points at the wrong half of
 the problem: the reason is on the run's diagnostics above, which is where the pane sends the reader.
 
+**A `uses:` step reports what it is, rather than a capture that went missing.** 001 §12 has the
+container dispatch nothing of its own — its requests, assertions and schema checks are the sub-flow's
+steps, which the run reports under namespaced ids and §5.4 draws once the container is expanded. Its
+`StepResult` carries no `capturePath` and never will, so the paragraph above is a false statement
+about it, made in the one place a reader goes looking and pointing at run diagnostics that say nothing
+about it. All four tabs say what the step is instead, and offer the expansion with it: the steps
+holding the answer are not on the drawing while the container is collapsed, and a reader who has
+opened this pane is already looking for them.
+
+What the container does have of its own is already here — `subflow-failed`, 001 §14.6's message
+naming the internal steps that failed, and on the response tab the `exports:` it read out of the
+sub-flow.
+
 **Under capture-disabled runs there is no attempt to choose.** The chooser is absent, and the
 assertion and validation tabs render `StepResult`'s step-level outcomes — the one case where they are
 not an attempt's, and the case where nothing else exists to show.
@@ -1204,6 +1273,24 @@ records why it was needed.
 
 The selector's default is the current or most recent run for that flow, so opening a flow after a
 failed run shows the failure rather than an empty graph.
+
+**`current` is always one of the options, and a run ending does not go back to it.** Every other
+entry is a record of something that already happened; `current` is the flow as it stands on disk,
+and it is the only one whose graph can have moved since the newest run — §4.3 makes editing the file
+a first-class action, so a stored run's snapshot and the current text diverge as a matter of course.
+Offering `current` only while no run is open puts the flow-as-it-is out of reach the moment a run
+finishes, which is exactly when the file is most likely to have changed. Returning to it is a
+choice rather than something the end of a run performs: the run that just finished stays selected,
+because its outcome is what the run was for, and `current` is a second act.
+
+A run started **without** capture never gets a directory and so is never in this list. While it is
+the run in the view the selector names it as that run rather than showing `current`, which would
+claim the graph is the flow as it stands when it is showing a run's outcomes.
+
+**The selector is locked while a run is executing.** Every entry in it replaces the run state events
+are being folded into, and a live run has nowhere to be restored from — 001 §13.2's `run:start` is
+what creates it, and it has already been sent. Leaving a run in progress would drop the remainder of
+its events and take §7.1's Cancel control with them, mid-run.
 
 **A live run pins its graph too.** 001 §13.2 reports the snapshot at `run:start`, and the tab draws
 it for the run in progress exactly as it does for a stored one. Without it, saving an edit while a run

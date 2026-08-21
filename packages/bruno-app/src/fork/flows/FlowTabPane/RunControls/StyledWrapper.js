@@ -16,9 +16,38 @@ const StyledWrapper = styled.div`
     border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
     border-radius: 3px;
 
-    &:disabled {
+    &:disabled,
+    &.is-disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+  }
+
+  /* §7.1's split control: Run, and the other ways to run. Two elements rather than one with a menu
+     inside it, because the ordinary run must stay a single click — the menu is for the run you take
+     a decision about, and taking that decision must never be on the path to the one you don't. */
+  .run-split {
+    display: inline-flex;
+    align-items: stretch;
+
+    .run {
+      border-top-right-radius: 0;
+      border-bottom-right-radius: 0;
+    }
+
+    /* One border between the halves rather than two, so they read as one control. */
+    .run-options {
+      padding: 0.25rem 0.25rem;
+      border-left: none;
+      border-top-left-radius: 0;
+      border-bottom-left-radius: 0;
+      cursor: pointer;
+      color: ${(props) => props.theme.colors.text.muted};
+    }
+
+    &:hover .run-options,
+    &.is-open .run-options {
+      color: ${(props) => props.theme.colors.text.white};
     }
   }
 

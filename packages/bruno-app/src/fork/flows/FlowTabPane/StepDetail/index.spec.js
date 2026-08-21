@@ -437,6 +437,68 @@ describe('StepDetail', () => {
     expect(screen.queryByText(/could not be read/)).not.toBeInTheDocument();
   });
 
+  /**
+   * 001 §12: a `uses:` step dispatches nothing of its own — its requests are the sub-flow's steps,
+   * reported under namespaced ids. It has no capture by construction, and the pane used to render
+   * that as a write that failed, sending the reader to run diagnostics that say nothing about it.
+   */
+  describe('a uses: step', () => {
+    const container = {
+      state: 'failed',
+      reason: 'subflow-failed',
+      kind: 'subflow',
+      message: 'pay/charge',
+      attempts: 1,
+      assertions: [],
+      outputs: {}
+    };
+
+    it('says it sent nothing itself rather than blaming a capture nobody wrote', () => {
+      renderPane({ iteration: undefined, node: container });
+
+      expect(window.ipcRenderer.invoke).not.toHaveBeenCalled();
+      expect(screen.getByText(/sends nothing itself/)).toBeInTheDocument();
+      expect(screen.queryByText(/capture was not written/)).not.toBeInTheDocument();
+    });
+
+    /** Its internals are still running, and there is no attempt of its own to wait for. */
+    it('says the same while the sub-flow is still running', () => {
+      renderPane({ iteration: undefined, node: { ...container, state: 'running', status: undefined } });
+
+      expect(screen.getByText(/sends nothing itself/)).toBeInTheDocument();
+      expect(screen.queryByText('Attempt 1 has not finished')).not.toBeInTheDocument();
+    });
+
+    it('says the same for a run that captured nothing', () => {
+      renderPane({ iteration: undefined, runDir: undefined, node: container });
+
+      expect(screen.getByText(/sends nothing itself/)).toBeInTheDocument();
+      expect(screen.queryByText('Captures were disabled for this run')).not.toBeInTheDocument();
+    });
+
+    /** §5.4: the steps that line names are not on the drawing until the container is expanded. */
+    it('offers to draw the steps it names, and stops once they are drawn', () => {
+      const onExpandSubflow = jest.fn();
+      const { update } = renderPane({ iteration: undefined, node: container, onExpandSubflow });
+
+      fireEvent.click(screen.getByTestId('flow-step-expand-subflow'));
+      expect(onExpandSubflow).toHaveBeenCalled();
+
+      update({ onExpandSubflow: undefined });
+      expect(screen.queryByTestId('flow-step-expand-subflow')).not.toBeInTheDocument();
+      expect(screen.getByText(/sends nothing itself/)).toBeInTheDocument();
+    });
+
+    /** What the container does have of its own: 001 §12's `exports:`, read out of the sub-flow. */
+    it('shows the sub-flow exports on the response tab', () => {
+      renderPane({ iteration: undefined, node: { ...container, outputs: { token: 'abc' } } });
+
+      fireEvent.click(screen.getByTestId('flow-step-tab-response'));
+
+      expect(screen.getByText('token')).toBeInTheDocument();
+    });
+  });
+
   it('says the read failed rather than claiming nothing was sent', async () => {
     window.ipcRenderer.invoke.mockRejectedValue(new Error('no capture for login attempt 1'));
     renderPane({ iteration: undefined });

@@ -36,6 +36,51 @@ describe('assignApiColors', () => {
     expect(colors.get('glados')).not.toBe(colors.get('backend'));
   });
 
+  /**
+   * 001 §6.2: assignment is a default, and a default that overrode the file would be the tool
+   * arguing with its author.
+   */
+  describe('a colour the file declares', () => {
+    const nodes = [node('a', 'glados'), node('b', 'backend')];
+
+    it('is used instead of the assigned one', () => {
+      const colors = assignApiColors(nodes, 'dark', [{ alias: 'backend', color: '#8ab4f8' }]);
+
+      expect(colors.get('backend')).toBe('#8ab4f8');
+    });
+
+    it('is used on both themes, where an assigned one is stepped for each', () => {
+      const declared = [{ alias: 'backend', color: '#8ab4f8' }];
+
+      expect(assignApiColors(nodes, 'light', declared).get('backend')).toBe('#8ab4f8');
+      expect(assignApiColors(nodes, 'dark', declared).get('backend')).toBe('#8ab4f8');
+    });
+
+    /** Having said which colour, the author has said there is one — even with nothing to contrast. */
+    it('colours a flow that binds one API, which is otherwise left uncoloured', () => {
+      const single = [node('a', 'backend'), node('b', 'backend')];
+
+      expect(assignApiColors(single, 'dark', [{ alias: 'backend', color: '#8ab4f8' }]).get('backend')).toBe('#8ab4f8');
+      expect(assignApiColors(single, 'dark', [{ alias: 'backend' }]).get('backend')).toBeUndefined();
+    });
+
+    it('is not assigned to another binding around it', () => {
+      const assigned = assignApiColors(nodes, 'dark');
+      const takenByGlados = assigned.get('glados');
+      const colors = assignApiColors(nodes, 'dark', [{ alias: 'backend', color: takenByGlados }]);
+
+      expect(colors.get('backend')).toBe(takenByGlados);
+      expect(colors.get('glados')).not.toBe(takenByGlados);
+    });
+
+    it('is ignored for a binding the flow declares and never calls', () => {
+      const colors = assignApiColors(nodes, 'dark', [{ alias: 'ledger', color: '#8ab4f8' }]);
+
+      expect([...colors.keys()]).toEqual(['glados', 'backend']);
+      expect([...colors.values()]).not.toContain('#8ab4f8');
+    });
+  });
+
   it('draws the step for the theme it is drawn on', () => {
     const nodes = [node('a', 'glados'), node('b', 'backend')];
 

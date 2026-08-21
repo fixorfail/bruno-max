@@ -195,6 +195,24 @@ export type ApiBinding = {
   auth?: string;
   defaultHeaders: Record<string, unknown>;
   defaultQuery: Record<string, unknown>;
+  /**
+   * §6.2's presentation colour. It changes nothing about what a flow *does* — it is carried here
+   * because the binding is the thing being coloured and the file is the only place an author can say
+   * so; 002 §5.1 is the reader.
+   */
+  color?: string;
+};
+
+/**
+ * §8.6's script library: the functions every `script:` in this flow can call.
+ *
+ * `use` is the files it draws them from, in order, and `define` is what the flow itself declares —
+ * the same block, because a library assembled from files and one written inline are the same thing
+ * to a script that calls it.
+ */
+export type FunctionLibrary = {
+  use: string[];
+  define: Record<string, string>;
 };
 
 export type FlowConfig = StepFlags & {
@@ -214,6 +232,7 @@ export type NormalizedFlow = {
   version: number;
   meta: { name?: string; description?: string; tags: string[]; library: boolean };
   apis: Record<string, ApiBinding>;
+  functions: FunctionLibrary;
   config: FlowConfig;
   authProfiles: Record<string, Record<string, unknown>>;
   vars: Record<string, unknown>;
@@ -229,7 +248,7 @@ export type NormalizedFlow = {
   steps: NormalizedStep[];
 };
 
-const asRecord = (value: unknown): Record<string, unknown> =>
+export const asRecord = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
 const asArray = <T>(value: unknown): T[] => {
@@ -368,11 +387,32 @@ const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
           baseUrl: mapping.baseUrl === undefined ? undefined : String(mapping.baseUrl),
           auth: mapping.auth === undefined ? undefined : String(mapping.auth),
           defaultHeaders: asRecord(mapping.defaultHeaders),
-          defaultQuery: asRecord(mapping.defaultQuery)
+          defaultQuery: asRecord(mapping.defaultQuery),
+          color: mapping.color === undefined ? undefined : String(mapping.color)
         }
       ];
     })
   );
+
+/**
+ * §8.6. `use` is reserved inside this block and everything else is a function, which is what keeps
+ * the common case — a name and its source — free of a wrapper key. A flow that wants a function
+ * called `use` cannot have one; the alternative was nesting every definition one level deeper to
+ * leave the word free, which taxes every flow for a name nobody has asked for.
+ */
+const normalizeFunctions = (raw: unknown): FunctionLibrary => {
+  const mapping = asRecord(raw);
+  const use = mapping.use === undefined ? [] : asArray(mapping.use).map(String);
+
+  return {
+    use,
+    define: Object.fromEntries(
+      Object.entries(mapping)
+        .filter(([name]) => name !== 'use')
+        .map(([name, source]) => [name, String(source)])
+    )
+  };
+};
 
 const normalizeConfig = (raw: unknown): FlowConfig => {
   const mapping = asRecord(raw);
@@ -530,6 +570,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       library: Boolean(meta.library)
     },
     apis: normalizeApis(document.apis),
+    functions: normalizeFunctions(document.functions),
     config,
     authProfiles: Object.fromEntries(
       Object.entries(asRecord(document.authProfiles)).map(([name, value]) => [name, asRecord(value)])

@@ -1,0 +1,40 @@
+# R4t — 001 §8.6's script library, exercised from the position that reads a response.
+#
+# The flow declares one function of its own, includes a library document, and that document includes
+# a raw JS file — so a passing run proves all three reach the same scope and that a name the flow
+# redefines is the one that wins.
+version: 1
+
+meta:
+  name: R4t — a script library
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+functions:
+  use:
+    - ./lib/shared-functions.yml
+
+  # Overrides the library's own, which is what makes the last word the flow's (§8.6).
+  maskCard: |
+    (value) => `flow:${lastFour(value)}`
+
+  label: |
+    (thing) => `${thing.name}-${lastFour(thing.id)}`
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+      masked:
+        script: |
+          (res) => maskCard(res.body.data.id)
+      labelled:
+        script: |
+          (res) => label(res.body.data)

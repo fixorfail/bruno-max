@@ -252,6 +252,7 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     name: path.basename(options.entry).replace(/\.flow\.yml$/, ''),
     isLibrary: false,
     params: [],
+    apis: [],
     nodes: [],
     edges: [],
     slots: [],
@@ -280,6 +281,9 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
       required: declared.required,
       default: declared.default
     })),
+    // §6.2's bindings, in the order the file declares them — which is the order 002 §5.1 assigns
+    // colours in for the ones that declare none.
+    apis: Object.values(flow.apis).map((binding) => ({ alias: binding.alias, color: binding.color })),
     dataset: flow.dataset,
     nodes,
     edges,

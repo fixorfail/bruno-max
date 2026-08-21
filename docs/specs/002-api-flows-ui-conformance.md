@@ -170,7 +170,27 @@ A `uses:` step renders as a single marked node. Expanding it reveals its interna
 namespaced ids (`auth/login`), drawn as their own block of ranks continuing to the right of the
 container node rather than continuing the caller's numbering.
 
-*Pins 002 §5.4.*
+Selecting the container writes `double click to expand` under it, in italic, and selecting an
+ordinary step writes nothing. The line is gone once the internals are drawn.
+
+Expanding also puts a band behind the steps the sub-flow drew — its container, and nothing else of
+the caller, outside it — and rings that container in the band's colour. Expand a second sub-flow and
+it takes a second colour; collapse either and the other's colour is unchanged. The rings sit outside
+the boxes, so a container that failed still draws its own border red.
+
+*Pins 002 §5.4.* Nothing else on the drawing announces the gesture, and a reader who never finds it
+reads `subflow-failed` with no way to reach the step that caused it.
+
+### U1.8a Several connectors between one pair of steps draw
+
+A flow where one step feeds two of its outputs to a second step and two more to a third — the
+`f3-batch-settlement` shape — draws, collapsed and with its sub-flow expanded. The connectors between
+one pair share that pair's route, with a label each, stacked.
+
+*Pins 002 §5.2, §5.3.* The layout ran every connector as its own edge through the layout engine,
+which mislays some arrangements of parallel edges and throws — during render, so the tab caught it
+and drew nothing at all, for a flow with nothing wrong with it. One route per pair is what the
+drawing was always specified to show, which is why merging them costs it nothing.
 
 ### U1.9 A linear flow renders as a single row, left to right
 
@@ -209,6 +229,18 @@ wider than its box, so a key inside the picture is visible only at rank 0, and w
 bar the key is the only thing that says which colour is which. The one-API case is not a degenerate
 version of the same thing: nothing on that drawing names the service at all, which is why the key
 outlives the colours that first justified it.
+
+### U1.9c A declared API colour is the one drawn
+
+A fixture whose `apis:` binding declares `color: "#8ab4f8"` draws that colour on the bars of every
+step calling it, on both themes, and shows it in the key. A **one-API** fixture that declares a
+colour is painted with it, where one that declares none is not painted at all. A second binding
+alongside a declared colour is assigned a different one.
+
+*Pins 002 §5.1 and 001 §6.2.* The declaration is what a viewer must not overrule — a colour stored
+beside the app is one machine's, and the file is the only place two hosts and a teammate agree. The
+one-API half is where the two rules meet and an implementation is most likely to apply the
+"nothing to distinguish" default over an explicit instruction.
 
 ### U1.10 Node positions come from the description, never from the run
 
@@ -491,6 +523,19 @@ Fixing the error on disk clears it in the open tab without reopening.
 
 *Pins 002 §4.1, §6.*
 
+### U3.5a Capture is a kind of run, not a remembered setting
+
+`Run` starts a run that writes to `.bruno-runs/`, on one click, with no capture control anywhere
+beside it. Opening the control's menu and clicking **Run without capture** starts a run immediately
+and that run writes nothing — and the *next* `Run` captures again. Both halves are disabled while the
+flow has errors.
+
+*Pins 002 §7.1, §7.2 and 001 §14.5.* The does-not-remember half is the reason this moved off a
+checkbox: a run that captured nothing is indistinguishable from one that did until §9's pane says it
+has nothing to show, which is far from the moment the decision was made. The runs-immediately half is
+the other: a menu that armed the button instead would be the checkbox with an extra step in front of
+it.
+
 ### U3.6 A library flow is grouped apart and asks for its params
 
 A flow declaring `meta.library: true` is listed under the `Libraries` label at the end of its scope's
@@ -637,6 +682,20 @@ fourth, which is the one that makes it a preference rather than a gesture. The b
 half: a split that clamps only one side lets the pane be dragged to fill the tab, and the graph is
 what the tab is for.
 
+### U4.4c A `uses:` step's pane says what the step is
+
+Run a flow with a `uses:` step whose sub-flow contains a failing request. The container's node reads
+`failed · subflow-failed` and its pane names the internal steps that failed. Every tab on that pane
+says the step sent nothing itself and offers to draw the sub-flow's steps; none of them claims a
+capture was not written. Take the offer and the internals appear in the graph (§5.4), where the
+failing request opens into its own request, response and assertions. The offer is gone once they are
+drawn, and the response tab of the container still shows the sub-flow's exports.
+
+*Pins 002 §9, §5.4, and 001 §12.* A container has no `capturePath` and never will, so the
+capture-was-not-written line renders a fact of the contract as a fault, and sends the reader to run
+diagnostics that have nothing to say about it — while the steps that do hold the answer are not even
+on the drawing.
+
 ### U4.5 A past run opens into the same view
 
 With the committed `.bruno-runs/` fixture in the scope root, the run selector lists it, and opening
@@ -674,6 +733,22 @@ While a run is executing, it is listed for its flow with state `running` and no 
 
 *Pins 002 §10, §11.2.* Same mechanism as U4.8 — the live case is not an edge case, and an
 implementation that only listed finished runs would hide the one being watched.
+
+### U4.9a Current stays reachable after a run, and is not returned to on its own
+
+Run a flow. When it finishes, its own entry is what the selector shows — not `current` — and the
+graph still carries the outcomes. `current` is in the list, and choosing it drops the run: the graph
+is drawn from the flow as it is on disk now, with no node states and no run summary. Edit the flow
+in §4.3's editor first and the `current` graph is the edited one, while the run's entry still opens
+the graph it executed.
+
+While the run is executing the selector is locked, and the Cancel control is the way out of a run in
+progress.
+
+*Pins 002 §10.* Offering `current` only while no run is open makes the flow-as-it-is unreachable
+from the moment of the first run — the one state in this list that is not history, gone exactly when
+the file is most likely to have moved on. The other half is the converse: a run that ended by
+snapping the view back to `current` would throw away the outcomes it was started to produce.
 
 ### U4.10 Capture-disabled runs degrade honestly, and only themselves
 
@@ -977,6 +1052,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U1.5, U1.6 | §5.3, §6 | Data paths invisible, or undeclared ones hidden |
 | U1.7 | §5.3 | A slot drawn as a writer→reader edge |
 | U1.8 | §5.4 | Sub-flow internals shown by default |
+| U1.8a | §5.2, §5.3 | A layout failure taking the whole tab down |
 | U1.9, U1.10 | §5.2 | A graph laid out down the short axis; one that reorders between runs |
 | U1.9a | §5.1 | A step id drawn across the graph instead of inside its own box |
 | U2.1–U2.3 | §8.2, §9 | A poll that looks like a hang, or like a series of steps that each finished |
@@ -1003,8 +1079,10 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U4.1–U4.4 | §9 | A pane showing the file's body rather than the materialized request |
 | U4.4a | §9 | Reading a capture before the attempt that writes it has settled, and never re-reading |
 | U4.4b | §9 | A split that clamps one side only, or forgets the size between tabs |
+| U4.4c | §9, §5.4 | A `uses:` step blamed for a capture that was never going to exist |
 | U4.5–U4.7 | §10 | A second, weaker viewer for stored runs |
 | U4.8, U4.9 | §10, §11.2 | A run with no `summary.json` shown as failed, or hidden entirely |
+| U4.9a | §10 | The flow as it stands unreachable after a run; a run's outcomes discarded when it ends |
 | U4.10 | §9 | Blank panels instead of an explanation; the next run's setting erasing the last run's captures |
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher a broken flow defeats |

@@ -327,3 +327,54 @@ describe('ordering', () => {
     expect(text()).toContain('editor@example.com');
   });
 });
+
+/**
+ * 001 §8.6's library, listed under `bru flow validate`. §8.5's locality argument applies to it with
+ * more force — an output resolved from a file you did not know about is a value, a *function* is
+ * arbitrary code — so what resolved and where it came from is printed rather than left to be found
+ * by opening every file the flow names.
+ */
+describe('the resolved script library', () => {
+  const library = [
+    { name: 'lastFour', from: 'flows/shared/functions.yml' },
+    { name: 'maskCard', from: 'flows/checkout.flow.yml' },
+    { from: 'flows/lib/text.js' }
+  ];
+
+  it('names each function and the file it was declared in', () => {
+    const { reporter, text } = capture({});
+
+    reporter.functions('flows/checkout.flow.yml', library);
+
+    expect(text()).toContain('lastFour');
+    expect(text()).toContain('flows/shared/functions.yml');
+    expect(text()).toContain('maskCard');
+  });
+
+  /** Nothing here parses JavaScript, so a raw source file is listed as the file it is. */
+  it('lists a raw source file rather than names it does not know', () => {
+    const { reporter, text } = capture({});
+
+    reporter.functions('flows/checkout.flow.yml', library);
+
+    expect(text()).toContain('flows/lib/text.js');
+    expect(text()).toContain('(source)');
+  });
+
+  it('prints nothing for a flow that declares none', () => {
+    const { reporter, lines } = capture({});
+
+    reporter.functions('flows/checkout.flow.yml', []);
+
+    expect(lines).toEqual([]);
+  });
+
+  /** --quiet is failures and the summary; a listing is neither. */
+  it('says nothing under --quiet', () => {
+    const { reporter, lines } = capture({ verbosity: 'quiet' });
+
+    reporter.functions('flows/checkout.flow.yml', library);
+
+    expect(lines).toEqual([]);
+  });
+});

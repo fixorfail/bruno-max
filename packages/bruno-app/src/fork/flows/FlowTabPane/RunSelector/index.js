@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { listFlowRuns, openPastRun } from '../../actions';
+import { runClosed } from '../../slice';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -13,6 +14,17 @@ import StyledWrapper from './StyledWrapper';
  * Runs of other flows in the same scope are excluded by `listRuns`, which filters on `run.json` —
  * which is why the filter works on a run that never finished as well as one that did.
  */
+
+/** The flow as it stands on disk — no run open, the graph drawn from §6's description. */
+const CURRENT = '';
+
+/**
+ * The run the tab is showing when this list does not hold it: a run started *without* capture, which
+ * never gets a directory to be listed from, and the moment between a run ending and the re-listing
+ * that picks it up. Both need a selected option that is not `current` — the graph is showing a run's
+ * outcomes, and `current` claims the opposite.
+ */
+const OPEN = 'open';
 
 /**
  * §10: a run made against text the flow no longer has says so, because the graph it opens into is
@@ -32,6 +44,15 @@ const label = (entry) => {
   return `${when} · ${entry.state}${edited}`;
 };
 
+/** The same rule for the run in the view: state, and a status only where one was recorded. */
+const openLabel = (run) => {
+  const uncaptured = run.dir ? '' : ' · not captured';
+  if (run.state === 'running') {
+    return `this run · running${uncaptured}`;
+  }
+  return `this run · ${run.status || run.state}${uncaptured}`;
+};
+
 const RunSelector = ({ flow, description, run }) => {
   const dispatch = useDispatch();
   const [entries, setEntries] = useState([]);
@@ -48,12 +69,30 @@ const RunSelector = ({ flow, description, run }) => {
     // Re-listed when a run ends, so the run just finished joins the list.
   }, [dispatch, flow, run?.state]);
 
-  if (!entries.length) {
+  if (!entries.length && !run) {
     return null;
   }
 
-  const select = (dir) => {
-    const entry = entries.find((candidate) => candidate.dir === dir);
+  const listed = Boolean(run?.dir) && entries.some((entry) => entry.dir === run.dir);
+  const value = run ? (listed ? run.dir : OPEN) : CURRENT;
+  const isRunning = run?.state === 'running';
+
+  const choose = (chosen) => {
+    // Already what the view is showing — the option exists to name it, not to switch to it.
+    if (chosen === OPEN) {
+      return;
+    }
+
+    /**
+     * `current` is not another run: the tab draws the run it has open in preference to the file
+     * (§10's pinned graph), so going back to the flow as it stands is *dropping* the run.
+     */
+    if (chosen === CURRENT) {
+      dispatch(runClosed({ pathname: flow.pathname }));
+      return;
+    }
+
+    const entry = entries.find((candidate) => candidate.dir === chosen);
     if (entry) {
       dispatch(openPastRun({ flow, entry, stepIds: description ? description.nodes.map((node) => node.id) : [] }));
     }
@@ -63,8 +102,22 @@ const RunSelector = ({ flow, description, run }) => {
     <StyledWrapper>
       <label>
         Run
-        <select value={run?.dir || ''} onChange={(event) => select(event.target.value)} data-testid="flow-run-selector">
-          {run?.dir ? null : <option value="">current</option>}
+        {/* Locked while a run is executing: every other option in this list replaces the run state
+            the events are being folded into, and the live run has nowhere to be restored from — its
+            Cancel control (§7.1) would go with it, mid-run. */}
+        <select
+          value={value}
+          disabled={isRunning}
+          title={isRunning ? 'This flow is running' : undefined}
+          onChange={(event) => choose(event.target.value)}
+          data-testid="flow-run-selector"
+        >
+          {/* §10: the flow as it is now, always offered. Every other option is a record of something
+              that already happened, and the file can have been edited since the newest of them — so
+              the one graph that is not history has to remain reachable after a run, not only before
+              the first one. */}
+          <option value={CURRENT}>current</option>
+          {value === OPEN ? <option value={OPEN}>{openLabel(run)}</option> : null}
           {entries.map((entry) => (
             <option key={entry.dir} value={entry.dir}>
               {label(entry)}

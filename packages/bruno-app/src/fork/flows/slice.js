@@ -282,6 +282,29 @@ const slice = createSlice({
       state.flowByRunId[stored.runId] = pathname;
     },
 
+    /**
+     * §10: back to `current` in the run selector — the flow as it stands, with no run open.
+     *
+     * The tab draws the run it holds in preference to the file (§10's pinned graph), so returning to
+     * the current flow is dropping the run rather than selecting a different one. `flowByRunId` goes
+     * with it: it is what routes a run's events into this entry, and a mapping left behind would
+     * fold late events into a run the view no longer has.
+     *
+     * A run in progress is not closed here. Its events have nowhere else to land and nothing
+     * restores it mid-run, so the only way to leave one is to let it end (or cancel it); the
+     * selector locks for the same reason.
+     */
+    runClosed: (state, action) => {
+      const { pathname } = action.payload;
+      const run = state.runs[pathname];
+      if (!run || run.state === 'running') {
+        return;
+      }
+
+      delete state.flowByRunId[run.runId];
+      delete state.runs[pathname];
+    },
+
     iterationSelected: (state, action) => {
       const { pathname, iteration } = action.payload;
       state.runs[pathname].selectedIteration = iteration;
@@ -391,6 +414,7 @@ export const {
   describeFailed,
   runEventsReceived,
   pastRunLoaded,
+  runClosed,
   iterationSelected,
   stepSelected,
   requestLogsReceived,

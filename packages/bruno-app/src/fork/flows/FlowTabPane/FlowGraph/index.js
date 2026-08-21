@@ -2,6 +2,7 @@ import React, { useMemo, useRef, useState } from 'react';
 import { useTheme } from 'styled-components';
 import { NODE_FOOTER_HEIGHT, layoutGraph, layoutSlotLane } from './layout';
 import { assignApiColors } from './apiColors';
+import { assignSubflowColors } from './subflowColors';
 import { useFollowActiveNode } from './follow';
 import StyledWrapper from './StyledWrapper';
 
@@ -20,7 +21,11 @@ const markersFor = (node) => {
   if (node.markers.retryMaxAttempts) {
     markers.push({ key: 'retry', glyph: `↻ ${node.markers.retryMaxAttempts}`, title: 'Retries' });
   }
-  if (node.kind === 'subflow') markers.push({ key: 'subflow', glyph: '⊂', title: 'Sub-flow' });
+  // The word the file wrote, the way `when` is. A sub-flow was marked `⊂` — the subset sign, which
+  // is a symbol for a relationship nobody draws that way and had to be learned from the tooltip.
+  // There is no conventional glyph for "this step is another flow", so the key that declares it is
+  // the most recognisable thing available, and it is already what an author searches the file for.
+  if (node.kind === 'subflow') markers.push({ key: 'subflow', glyph: 'uses', title: 'Sub-flow (uses:)' });
   // A step that passes on a 403 is otherwise indistinguishable from one that passes on a 200, and
   // mistaking the first for the second is how a broken authorization check reads as green (§5.1).
   if (node.markers.allowsErrorStatus) markers.push({ key: 'negative', glyph: '!', title: 'Negative test' });
@@ -100,6 +105,24 @@ const TERMINAL_STATES = new Set(['success', 'failed', 'skipped', 'cancelled']);
  * a rendering fault rather than a margin that is too small.
  */
 const GRAPH_MARGIN = 16;
+
+/**
+ * How far §5.4's band stands off the sub-flow it encloses. Far enough to read as a region the boxes
+ * sit inside rather than as an outline drawn on them, and inside `GRAPH_MARGIN` — a sub-flow on the
+ * top row or in the first column stands as close to the edge of the drawing as anything does, and
+ * the extent the viewBox is cut to is measured over the boxes and the lines, not over this.
+ */
+const BAND_PAD = 12;
+
+/** The open container's own ring, just clear of its box — the same statement as the band. */
+const RING_PAD = 4;
+
+/**
+ * Where §5.4's expansion hint sits below its node: clear of the box, and inside both the 32px gap
+ * between siblings and the margin the viewBox leaves around the drawing, so it never lands on the
+ * step below it or gets clipped off the bottom rank.
+ */
+const NODE_HINT_OFFSET = 12;
 
 /**
  * The footer's outline. It cannot be a plain rect: the box is rounded, and a square strip laid along
@@ -266,13 +289,56 @@ const FlowGraph = ({
   );
 
   /**
-   * §5.1: a colour per `apis:` binding, assigned when the drawing is laid out. Empty for a flow that
-   * binds one — which is most of them, and where the colour would be decoration rather than a
-   * distinction. The theme's own mode picks the step, because a palette chosen for one surface is
-   * unreadable on the other.
+   * §5.1: a colour per `apis:` binding — the one the file declares (001 §6.2) where there is one, and
+   * otherwise assigned, and assigned only where there is a second binding for it to distinguish from.
+   * The theme's own mode picks the step of an assigned colour, because a palette chosen for one
+   * surface is unreadable on the other; a declared colour is the author's on both.
    */
   const theme = useTheme();
-  const apiColors = useMemo(() => assignApiColors(graph.nodes, theme.mode), [graph.nodes, theme.mode]);
+  const apiColors = useMemo(
+    () => assignApiColors(graph.nodes, theme.mode, description.apis),
+    [graph.nodes, theme.mode, description.apis]
+  );
+
+  /**
+   * §5.4: the colour each `uses:` step wears while it is open — on its own ring, and on the band
+   * behind the steps it drew. Taken from the description rather than from the laid-out graph, so a
+   * container's colour does not depend on which of them happen to be expanded.
+   */
+  const subflowColors = useMemo(
+    () => assignSubflowColors(description.nodes, theme.mode),
+    [description.nodes, theme.mode]
+  );
+
+  /**
+   * The region an expanded sub-flow occupies: the box around every step it contributed, which are
+   * exactly the nodes namespaced under it (001 §13.2). Nested sub-flows nest here too, and the
+   * larger band is drawn first so the one inside it stays legible.
+   */
+  const bands = useMemo(
+    () =>
+      expandedSubflows
+        .map((id) => {
+          const inside = graph.nodes.filter((node) => node.id.startsWith(`${id}/`));
+          if (!inside.length) {
+            return null;
+          }
+
+          const x = Math.min(...inside.map((node) => node.x)) - BAND_PAD;
+          const y = Math.min(...inside.map((node) => node.y)) - BAND_PAD;
+          return {
+            id,
+            x,
+            y,
+            width: Math.max(...inside.map((node) => node.x + node.width)) + BAND_PAD - x,
+            height: Math.max(...inside.map((node) => node.y + node.height)) + BAND_PAD - y,
+            color: subflowColors.get(id)
+          };
+        })
+        .filter(Boolean)
+        .sort((first, second) => second.width * second.height - first.width * first.height),
+    [graph.nodes, expandedSubflows, subflowColors]
+  );
 
   /**
    * §5.3's focus: what the pointer is over, or failing that what §9's pane is reading. Hover is the
@@ -381,6 +447,23 @@ const FlowGraph = ({
             </marker>
           </defs>
 
+          {/* Behind the edges and the boxes: the band is the ground the sub-flow stands on, and a
+              wash drawn over a line would take the line's colour with it. */}
+          {bands.map((band) => (
+            <rect
+              key={`band-${band.id}`}
+              className={`subflow-band${band.color ? '' : ' uncoloured'}`}
+              x={band.x}
+              y={band.y}
+              width={band.width}
+              height={band.height}
+              rx="8"
+              fill={band.color}
+              stroke={band.color}
+              data-testid={`flow-subflow-band-${band.id}`}
+            />
+          ))}
+
           {edges.map((edge, index) => {
             const label = edgeLabel(edge);
             const unproduced = isUnproduced(edge, nodeStates);
@@ -474,6 +557,23 @@ const FlowGraph = ({
                 onClick={() => onSelectStep(node.id === selectedStep ? null : node.id)}
                 onDoubleClick={() => (node.kind === 'subflow' ? onToggleSubflow(node.id) : undefined)}
               >
+                {/* The tie between the step and the band it opened, drawn *outside* the box rather
+                    than on it: the box's own border is how §8.2 says passed, failed or in flight,
+                    and a step whose outline had been repainted to group it would have stopped
+                    saying what happened to it. */}
+                {node.kind === 'subflow' && expandedSubflows.includes(node.id) && subflowColors.get(node.id) ? (
+                  <rect
+                    className="subflow-ring"
+                    x={-RING_PAD}
+                    y={-RING_PAD}
+                    width={node.width + RING_PAD * 2}
+                    height={node.height + RING_PAD * 2}
+                    rx="8"
+                    stroke={subflowColors.get(node.id)}
+                    data-testid={`flow-subflow-ring-${node.id}`}
+                  />
+                ) : null}
+
                 {/* Behind the box, so the glow spills outward rather than over the step's own text. */}
                 {isInFlight(state, running) ? (
                   <rect
@@ -537,15 +637,16 @@ const FlowGraph = ({
                       bar is where it can still be asked for without one more label per box. */}
                   {apiColor ? <title>{node.operation.api}</title> : null}
                 </path>
-                {/* The bar's top edge — where the binding's colour reads at full strength, since the
-                    band itself is tinted down to leave the alias and the markers on it legible. */}
+                {/* The bar's top edge stays the neutral divider whatever the binding is. It carried
+                    the colour at full strength and was the loudest thing on a graph of eighteen
+                    boxes: the tint below it already says which service this is, and saying it twice
+                    per box turned a distinction into decoration. */}
                 <line
                   className="node-footer-edge"
                   x1="0"
                   y1={node.height - NODE_FOOTER_HEIGHT}
                   x2={node.width}
                   y2={node.height - NODE_FOOTER_HEIGHT}
-                  style={apiColor ? { stroke: apiColor, strokeWidth: 2, opacity: 1 } : undefined}
                 />
                 {badgedSteps[node.id] ? (
                   <circle className={`node-badge ${badgedSteps[node.id]}`} cx={node.width - 10} cy="12" r="5" />
@@ -576,6 +677,23 @@ const FlowGraph = ({
                     ))}
                   </div>
                 </foreignObject>
+
+                {/* §5.4 expands a sub-flow on a double-click, which is the one thing this drawing
+                    does that nothing on it says. It is written under the selected node only: on
+                    every `uses:` node at once it is a second label per box competing with the
+                    sub-flow path each of them already carries, and the reader who selected one is
+                    the reader asking what it holds. Outside the box, because the three lines inside
+                    it are the step, and this is the view talking about itself. */}
+                {node.kind === 'subflow' && node.id === selectedStep && !expandedSubflows.includes(node.id) ? (
+                  <text
+                    className="node-hint"
+                    x="0"
+                    y={node.height + NODE_HINT_OFFSET}
+                    data-testid={`flow-node-hint-${node.id}`}
+                  >
+                    double click to expand
+                  </text>
+                ) : null}
               </g>
             );
           })}

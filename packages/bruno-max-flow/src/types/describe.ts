@@ -62,6 +62,11 @@ export type FlowDescription = {
   /** meta.library: true (§12.5). */
   isLibrary: boolean;
   params: { name: string; required: boolean; default?: unknown }[];
+  /**
+   * The flow's `apis:` bindings in file order, with §6.2's declared colour where there is one — 002
+   * §5.1 draws by binding and is the only reader. Declared rather than used: what the file says.
+   */
+  apis: { alias: string; color?: string }[];
   dataset?: { source: string; parallel: number };
   nodes: FlowNode[];
   edges: FlowEdge[];

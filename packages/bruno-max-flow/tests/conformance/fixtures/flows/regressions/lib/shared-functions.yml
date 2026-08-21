@@ -1,0 +1,11 @@
+# A library document: named functions, and the files it draws its own from. §8.6 gives it the same
+# `functions:` block a flow has, because a library assembled from files and one written inline are
+# the same thing to the script that calls it.
+version: 1
+
+functions:
+  use:
+    - ./text.js
+
+  maskCard: |
+    (value) => `****${lastFour(digitsOnly(value))}`

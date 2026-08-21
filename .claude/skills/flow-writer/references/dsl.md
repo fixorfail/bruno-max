@@ -52,8 +52,15 @@ vars:                          # evaluated ONCE, before any step; referenced bar
   testEmail: "qa+{{$randomUUID}}@example.com"
   catalog: !file ./fixtures/catalog.json
 
-shared: [chargeId]             # slots any branch can write and anyone can read
-shared:                        # …or a mapping, where a slot names its own rule:
+functions:                     # helpers every script: in this flow can call, by name
+  use:                         #   library files, in order — .yml is a functions doc, else raw JS
+    - ../shared/functions.yml
+    - ./lib/text.js
+  lastFour: |                  #   …and the flow's own, which win on a name
+    (value) => String(value).slice(-4)
+
+shared:                        # slots; the list form means writers: all
+  chargeId: { writers: all }   #   readers must descend from EVERY writer
   sessionToken: { writers: any }   #   readers descend from ONE writer, not all
 
 dataset: ./fixtures/customers.csv         # one iteration per row
@@ -355,6 +362,40 @@ All three script fields take a **function expression**; the engine calls what yo
 the attempt got no response. `ctx` is variables plus the namespaces; in `shouldRetry` it also
 carries `ctx.failures`, the assertions that failed. A throw fails the step with `script-error`.
 
+### A shared library
+
+Anything the same flow — or several flows — needs twice goes in `functions:`, and every script
+position above can call it **by name**. No import at the call site: the library is composed into the
+same program the script is evaluated in.
+
+```yaml
+functions:
+  use:
+    - ../shared/functions.yml   # a library document: a functions: block of its own
+    - ./lib/text.js             # raw source: whatever it declares is in scope
+
+  lastFour: |
+    (value) => String(value).slice(-4)
+
+steps:
+  - id: charge
+    operation: payments-api#createPayment
+    outputs:
+      tail:
+        script: |
+          (res) => lastFour(res.body.card)
+```
+
+- **`use:` is explicit** — nothing is picked up by convention, so what a flow's scripts can call is
+  readable from the flow.
+- **`.yml`/`.yaml` is a library document; any other extension is raw JavaScript.** Put a dozen
+  helpers in one `.js` file rather than naming each one in YAML.
+- **Order is `use:` first, depth-first, then the flow's own definitions; the last word on a name
+  wins**, so a flow overrides a helper its library declares.
+- **A name must be a JavaScript identifier**, and one called `res` or `ctx` shadows what the script
+  is handed — `bru flow validate` reports both, and lists what resolved and where it came from.
+- **A library does not cross a `uses:` boundary.** A sub-flow declares its own.
+
 ## Datasets
 
 ```yaml
@@ -441,6 +482,10 @@ bru flow run flows/checkout.flow.yml
 | `slot-not-downstream` | Reads a slot written off this step's branch — declare it `writers: any` if the writers are alternatives |
 | `unknown-auth-profile` | `auth:` names an undeclared profile |
 | `unknown-param` / `missing-param` | `with:` passes an undeclared param, or omits a required one |
+| `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
+| `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
+| `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
+| `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
 | `undeclared-dependency` *(warning)* | Reads `steps.x.body…` rather than a declared output |
 
 ## Step outcomes
@@ -460,5 +505,7 @@ Do not write a flow that depends on these:
 - **`steps.<id>.body` / `.headers` at run time** — declare an output instead.
 - **The implicit `collection` auth profile** — declare your own profile.
 - **The document schema** — unknown and misspelled keys are silently ignored.
+- **Connector files (`connectors.yml`)** — declare `outputs:` on the step. For shared *code*,
+  `functions:` is built and works.
 - **`--tags` filtering** and **`meta.description` display** — both recorded, neither surfaced.
 - **`config.capturePreviewBytes`** — parsed, unread.

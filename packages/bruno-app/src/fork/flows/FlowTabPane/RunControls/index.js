@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { forwardRef, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import toast from 'react-hot-toast';
-import { IconPlayerPlay, IconPlayerStop } from '@tabler/icons';
+import { IconChevronDown, IconDatabaseOff, IconPlayerPlay, IconPlayerStop } from '@tabler/icons';
+import Dropdown from 'components/Dropdown';
 import { runFlow, cancelFlowRun } from '../../actions';
 import { stepSelected } from '../../slice';
 import StyledWrapper from './StyledWrapper';
@@ -11,6 +12,13 @@ import StyledWrapper from './StyledWrapper';
  *
  * There is no "run from here" and no per-step run: a flow is a graph with declared dependencies, and
  * running a subset means inventing semantics 001 does not define (§14 records it as a real want).
+ *
+ * **Capture hangs off that control rather than sitting beside it as a setting** (§7.2). It was a
+ * checkbox, which made the ordinary run a two-part act — read the state of a box, then press the
+ * button — and left that state to be remembered between runs, so the run that wrote nothing looked
+ * exactly like the one that did until you went looking. On the control it is what it actually is: a
+ * *kind of run*, chosen as the run is started and never inherited by the next one. **Run** captures,
+ * always.
  */
 
 /**
@@ -35,8 +43,26 @@ const unaccountedCauses = (run) => {
   return (run.decidedBy?.[iteration] || []).filter((stepId) => nodes[stepId]?.state !== 'failed');
 };
 
+/**
+ * The half of the split control that opens the menu. A ref-forwarding element because that is what
+ * `Dropdown` hangs tippy off — the same shape §4.1's row menu uses, reused so the placement and the
+ * dismissal behave identically here.
+ */
+const RunOptionsTrigger = forwardRef(({ disabled }, ref) => (
+  <div
+    ref={ref}
+    className={`run-control run-options${disabled ? ' is-disabled' : ''}`}
+    title="Other ways to run this flow"
+    data-testid="flow-run-options"
+  >
+    <IconChevronDown size={14} strokeWidth={1.5} />
+  </div>
+));
+
 const RunControls = ({ flow, description, run, configuration, onConfigurationChange }) => {
   const dispatch = useDispatch();
+  const dropdownRef = useRef();
+  const [menuOpen, setMenuOpen] = useState(false);
   const [starting, setStarting] = useState(false);
 
   const errors = description ? description.diagnostics.filter((entry) => entry.severity === 'error') : [];
@@ -44,10 +70,12 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
   const blocked = errors.length > 0 || !description;
   const isRunning = run?.state === 'running';
 
-  const start = async () => {
+  // Capture is decided per run and never stored: `configuration` is what the panel beside this keeps
+  // between runs, and whether a run wrote to `.bruno-runs/` is a fact about that run (001 §14.5).
+  const start = async (capture) => {
     setStarting(true);
     try {
-      await dispatch(runFlow({ flow, configuration }));
+      await dispatch(runFlow({ flow, configuration: { ...configuration, capture } }));
     } catch (error) {
       toast.error(error.message || 'The flow could not be started');
     } finally {
@@ -67,27 +95,46 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
           Cancel
         </button>
       ) : (
-        <button
-          type="button"
-          className="run-control run"
-          onClick={start}
-          disabled={blocked || starting}
-          title={blocked ? 'This flow has errors' : undefined}
-          data-testid="flow-run"
-        >
-          <IconPlayerPlay size={14} strokeWidth={1.5} />
-          Run
-        </button>
-      )}
+        <div className={`run-split${menuOpen ? ' is-open' : ''}`}>
+          <button
+            type="button"
+            className="run-control run"
+            onClick={() => start(true)}
+            disabled={blocked || starting}
+            title={blocked ? 'This flow has errors' : undefined}
+            data-testid="flow-run"
+          >
+            <IconPlayerPlay size={14} strokeWidth={1.5} />
+            Run
+          </button>
 
-      <label className="run-option">
-        <input
-          type="checkbox"
-          checked={configuration.capture !== false}
-          onChange={(event) => onConfigurationChange({ ...configuration, capture: event.target.checked })}
-        />
-        Capture
-      </label>
+          {/* The flow's other kinds of run, attached to the button that performs the ordinary one.
+              An item runs on the click that chooses it: this is a way of starting a run, not a way
+              of configuring the next one, and a chooser that only armed the button would be the
+              checkbox again with a step in front of it. */}
+          <Dropdown
+            onCreate={(ref) => (dropdownRef.current = ref)}
+            onShow={() => setMenuOpen(true)}
+            onHide={() => setMenuOpen(false)}
+            icon={<RunOptionsTrigger disabled={blocked || starting} />}
+            placement="bottom-start"
+          >
+            <div
+              className="dropdown-item"
+              data-testid="flow-run-without-capture"
+              onClick={() => {
+                dropdownRef.current.hide();
+                start(false);
+              }}
+            >
+              <span className="dropdown-icon">
+                <IconDatabaseOff size={16} strokeWidth={1.5} />
+              </span>
+              Run without capture
+            </div>
+          </Dropdown>
+        </div>
+      )}
 
       <label className="run-option">
         Concurrency

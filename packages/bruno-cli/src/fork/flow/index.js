@@ -7,7 +7,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { runFlow, validateFlow } = require('@bruno-max/flow');
+const { runFlow, validateFlow, resolveFunctions } = require('@bruno-max/flow');
 const { parseEnvironment } = require('@usebruno/filestore');
 
 const { getEnvVars } = require('../../utils/bru');
@@ -200,7 +200,13 @@ const handler = async (argv) => {
       continue;
     }
 
-    if (argv.action === 'validate') continue;
+    if (argv.action === 'validate') {
+      // 001 §8.6: what this flow's scripts may call, and where each of it came from. Only under
+      // `validate` — a run has the whole event stream to print and does not need a preamble.
+      const library = await resolveFunctions({ entry: file, scope, ports });
+      reporter.functions(forDisplay(file), library.map((entry) => ({ ...entry, from: forDisplay(entry.from) })));
+      continue;
+    }
 
     reporter.flowStarted(forDisplay(file));
     const controller = new AbortController();

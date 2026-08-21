@@ -51,6 +51,65 @@ const boxesCrossedBy = (edge, nodes) =>
   );
 
 describe('layoutGraph', () => {
+  /**
+   * The shape that took the tab down: `f3-batch-settlement` in the conformance corpus, whose
+   * `get_batch` feeds two connectors to one step and four to another. Dagre mislays some
+   * arrangements of parallel edges and throws out of `layout()` — during render, so the flow tab
+   * caught it and showed nothing at all. It is not a shape a flow can be told to avoid: 001 §8.1
+   * draws a connector per output, and this one is an ordinary flow.
+   */
+  it('lays out several connectors between one pair of steps', () => {
+    const description = makeDescription({
+      nodes: [
+        makeNode({ id: 'get_batch', rank: 0 }),
+        makeNode({ id: 'elevate', rank: 1 }),
+        makeNode({ id: 'create_audit_record', rank: 1 }),
+        makeNode({ id: 'submit_settlement', rank: 2 })
+      ],
+      edges: [
+        { from: 'get_batch', to: 'elevate', kind: 'sequence' },
+        { from: 'get_batch', to: 'create_audit_record', kind: 'depends' },
+        { from: 'get_batch', to: 'submit_settlement', kind: 'data', output: 'batch' },
+        { from: 'get_batch', to: 'submit_settlement', kind: 'data', output: 'batchId' },
+        { from: 'get_batch', to: 'create_audit_record', kind: 'data', output: 'batchId' },
+        { from: 'get_batch', to: 'create_audit_record', kind: 'data', output: 'batch' }
+      ]
+    });
+
+    const graph = layoutGraph(description, noExpansion);
+
+    expect(graph.nodes).toHaveLength(4);
+    expect(graph.edges).toHaveLength(6);
+    // Every connector between one pair draws the pair's own route: the stacked labels are what tell
+    // them apart, which is why merging them for the layout costs the drawing nothing.
+    const toAudit = graph.edges.filter((edge) => edge.to === 'create_audit_record');
+    expect(new Set(toAudit.map((edge) => edge.path)).size).toBe(1);
+  });
+
+  /** A sub-flow expanded into a graph with that shape is the same layout, and the same trap. */
+  it('lays them out with a sub-flow expanded beside them', () => {
+    const description = makeDescription({
+      nodes: [
+        makeNode({ id: 'auth', kind: 'subflow', operation: undefined, uses: '../lib/auth.flow.yml', rank: 0 }),
+        makeNode({ id: 'auth/login', parent: 'auth', rank: 0 }),
+        makeNode({ id: 'get_batch', rank: 1 }),
+        makeNode({ id: 'elevate', rank: 2 }),
+        makeNode({ id: 'submit_settlement', rank: 3 })
+      ],
+      edges: [
+        { from: 'auth', to: 'get_batch', kind: 'sequence' },
+        { from: 'get_batch', to: 'elevate', kind: 'sequence' },
+        { from: 'get_batch', to: 'submit_settlement', kind: 'data', output: 'batch' },
+        { from: 'get_batch', to: 'submit_settlement', kind: 'data', output: 'batchId' },
+        { from: 'elevate', to: 'submit_settlement', kind: 'data', output: 'token' }
+      ]
+    });
+
+    const graph = layoutGraph(description, { expandedSubflows: ['auth'] });
+
+    expect(graph.nodes.map((node) => node.id)).toContain('auth/login');
+  });
+
   it('lays out a linear flow as a single row, advancing left to right', () => {
     const description = makeDescription({
       nodes: [

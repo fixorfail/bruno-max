@@ -37,6 +37,21 @@ const NOTHING_SENT = {
   validation: 'Nothing was sent, so nothing was validated'
 };
 
+/**
+ * What each tab has to say about a `uses:` step (001 §12). It dispatches nothing of its own — its
+ * requests, assertions and schema checks are the sub-flow's steps, which the run reports under
+ * namespaced ids and 002 §5.4 draws when the container is expanded.
+ *
+ * Its lack of a capture is therefore by construction, not a write that failed, and saying otherwise
+ * sends the reader to the run's diagnostics for an explanation that was never going to be there.
+ */
+const RAN_A_SUBFLOW = {
+  request: 'A uses: step sends nothing itself — the requests are on the steps inside the sub-flow',
+  response: 'A uses: step sends nothing itself — the responses are on the steps inside the sub-flow',
+  assertions: 'A uses: step asserts nothing itself — the assertions are on the steps inside the sub-flow',
+  validation: 'A uses: step validates nothing itself — the schema checks are on the steps inside the sub-flow'
+};
+
 const Row = ({ label, children }) => (
   <div className="detail-row">
     <span className="detail-label">{label}</span>
@@ -253,6 +268,11 @@ const captureState = (node, attempt, running) => {
   if (!node) {
     return 'absent';
   }
+  // Ahead of the in-flight check: a container whose sub-flow is still running has no attempt of its
+  // own to wait for either, and `pending` would have it waiting for a file nothing will write.
+  if (node.kind === 'subflow') {
+    return 'subflow';
+  }
   if (inFlight(node, running)) {
     return (node.attempt || 0) > attempt ? 'written' : 'pending';
   }
@@ -269,13 +289,40 @@ const captureState = (node, attempt, running) => {
 };
 
 /**
+ * What the body area says when there is no capture behind the tab, and nothing else to put there.
+ *
+ * A step still in flight, one that dispatched nothing, one whose capture never reached disk, a run
+ * that captured nothing, and a `uses:` step that sends nothing of its own are five different
+ * absences, and which one it is decides where the reader looks next.
+ */
+const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
+  if (captureStatus === 'subflow') {
+    return RAN_A_SUBFLOW[tab];
+  }
+
+  // §9: assertion and validation outcomes arrive in `StepResult` and still render, so only the two
+  // tabs that genuinely have nothing left to show say so.
+  if (!perAttempt) {
+    return tab === 'request' || tab === 'response' ? 'Captures were disabled for this run' : undefined;
+  }
+
+  if (captureStatus === 'pending') {
+    return `Attempt ${attempt} has not finished`;
+  }
+  if (captureStatus === 'unwritten') {
+    return 'This step ran, but its capture was not written — the run reports why';
+  }
+  return captureStatus === 'absent' ? NOTHING_SENT[tab] : undefined;
+};
+
+/**
  * **Whether a run has captures is a property of that run, not of the run control.** 001 §13.2 reports
  * `captureDir` at `run:start` and omits it when capture was off, and §11.2's stored runs carry the
  * directory they were read from — so the directory's presence *is* the answer, for a live run and a
  * past one alike. Reading the run control's checkbox instead makes unchecking it erase the captures
  * of a run that already happened, which no setting for the *next* run should be able to do.
  */
-const StepDetail = ({ stepId, node, running, runDir, iteration, height }) => {
+const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpandSubflow }) => {
   const dispatch = useDispatch();
   const [tab, setTab] = useState('request');
   /**
@@ -363,6 +410,7 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height }) => {
    * verdict is on its node in the graph either way.
    */
   const showsStepOutcome = attempt === attemptCount(node);
+  const absence = absenceFor({ captureStatus, perAttempt, tab, attempt });
   // Pre-terminal, with nothing left to move it: the run is over and this step never reported an end.
   const unreported = !running && RUNNING_STATES.has(node.state);
 
@@ -427,22 +475,22 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height }) => {
       </div>
 
       <div className="detail-body-area">
-        {/* §9: a run with no capture directory says so on the request and response tabs, rather
-            than showing empty panels. Assertion and validation outcomes still render — they arrive
-            in `StepResult`, so there is no excuse for losing them. */}
-        {!perAttempt && (tab === 'request' || tab === 'response') ? (
-          <div className="detail-empty">Captures were disabled for this run</div>
-        ) : null}
-
-        {/* A step in flight, a step that dispatched nothing, and a step whose capture never reached
-            disk are three different absences, and which one it is decides where to look next. */}
-        {perAttempt && captureStatus !== 'written' ? (
+        {absence ? (
           <div className="detail-empty">
-            {captureStatus === 'pending'
-              ? `Attempt ${attempt} has not finished`
-              : captureStatus === 'unwritten'
-                ? 'This step ran, but its capture was not written — the run reports why'
-                : NOTHING_SENT[tab]}
+            {absence}
+            {/* The steps the line names are not on the drawing until the container is expanded
+                (§5.4), and a reader who is in this pane is already looking for them. Absent once
+                they are drawn — the sentence is then a statement about where they are. */}
+            {captureStatus === 'subflow' && onExpandSubflow ? (
+              <button
+                type="button"
+                className="detail-expand"
+                onClick={onExpandSubflow}
+                data-testid="flow-step-expand-subflow"
+              >
+                Show them in the graph
+              </button>
+            ) : null}
           </div>
         ) : null}
 

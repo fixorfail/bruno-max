@@ -13,6 +13,7 @@
 import * as path from 'path';
 
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
+import { collectLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
 import { SpecLoader } from './openapi';
 import { referenceKind, referencesIn, referencesOf, type Reference } from './references';
 import type { ValidateOptions } from './types/options';
@@ -64,7 +65,11 @@ const hasCycle = (flow: NormalizedFlow): string | undefined => {
   return undefined;
 };
 
-type Tools = { specs: SpecLoader; readFlow: (file: string) => Promise<NormalizedFlow> };
+type Tools = {
+  specs: SpecLoader;
+  readFlow: (file: string) => Promise<NormalizedFlow>;
+  readText: (file: string) => Promise<string>;
+};
 
 const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<string>): Promise<Diagnostic[]> => {
   const diagnostics: Diagnostic[] = [];
@@ -133,8 +138,58 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   const cycle = hasCycle(flow);
   if (cycle) error('cyclic-dependency', `${cycle} takes part in a dependency cycle`, cycle);
 
+  /**
+   * §8.6's library. A file that cannot be read is an error rather than a run-time surprise: every
+   * script in the flow is composed with it, so one missing helper file fails every script position
+   * at once, and `script-error` would name whichever step happened to run first.
+   */
+  const library = await (async () => {
+    try {
+      return await collectLibrary(flow.functions, file, async (source, from) =>
+        tools.readText(path.resolve(path.dirname(from), source)));
+    } catch (cause) {
+      error('unresolved-function-library', `functions: ${(cause as Error).message}`, undefined, ['functions', 'use']);
+      return [];
+    }
+  })();
+
+  for (const entry of library) {
+    if (!entry.name) continue;
+    if (!IDENTIFIER.test(entry.name)) {
+      // It becomes a declaration, so a name that is not an identifier is a program that does not
+      // parse — and a syntax error in the prelude fails every script in the flow, naming none.
+      error('invalid-function-name', `functions.${entry.name} is not a JavaScript identifier`, undefined, [
+        'functions',
+        entry.name
+      ]);
+    } else if (SCRIPT_ARGUMENTS.includes(entry.name)) {
+      warn(
+        'function-shadows-script-argument',
+        `functions.${entry.name} shadows the ${entry.name} every script is handed (§8.2)`,
+        undefined,
+        ['functions', entry.name]
+      );
+    }
+  }
+
   const specs = new Map<string, Awaited<ReturnType<SpecLoader['load']>>>();
   for (const binding of Object.values(flow.apis)) {
+    /**
+     * §6.2's colour is `#rgb` or `#rrggbb` and nothing else. A warning rather than an error, because
+     * it decides how a graph is drawn and never what a flow does — but a warning rather than
+     * silence, because a colour the renderer cannot parse falls back to the unpainted default, which
+     * is exactly what a *missing* colour looks like. Nothing else would tell the author their typo
+     * from a binding they never coloured.
+     */
+    if (binding.color !== undefined && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(binding.color)) {
+      warn(
+        'invalid-api-color',
+        `${binding.alias} declares color: ${binding.color}, which is not a #rgb or #rrggbb colour`,
+        undefined,
+        ['apis', binding.alias, 'color']
+      );
+    }
+
     try {
       specs.set(binding.alias, await tools.specs.load(binding.source, file));
     } catch (cause) {
@@ -284,6 +339,30 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   return diagnostics;
 };
 
+/**
+ * §8.6's library, resolved for display — what `bru flow validate` prints beneath a flow so the
+ * functions its scripts may call stay discoverable without opening every file it names.
+ *
+ * Beside `validateFlow` rather than folded into it: diagnostics are what a host acts on, and a
+ * listing is not one. A caller that wants neither pays for neither.
+ */
+export const resolveFunctions = async (options: ValidateOptions): Promise<{ name?: string; from: string }[]> => {
+  const context: FlowContext = {
+    runId: 'validate',
+    flow: options.entry,
+    scope: options.scope,
+    signal: new AbortController().signal
+  };
+
+  const flow = normalizeFlow(
+    parseDocument((await options.ports.readFile(options.entry, context)).toString('utf8')),
+    options.entry
+  );
+
+  return resolveLibrary(flow, async (source, from) =>
+    (await options.ports.readFile(path.resolve(path.dirname(from), source), context)).toString('utf8'));
+};
+
 export const validateFlow = async (options: ValidateOptions): Promise<Diagnostic[]> => {
   const context: FlowContext = {
     runId: 'validate',
@@ -295,7 +374,8 @@ export const validateFlow = async (options: ValidateOptions): Promise<Diagnostic
   const tools: Tools = {
     specs: new SpecLoader(options.ports.readSpec, context),
     readFlow: async (file) =>
-      normalizeFlow(parseDocument((await options.ports.readFile(file, context)).toString('utf8')), file)
+      normalizeFlow(parseDocument((await options.ports.readFile(file, context)).toString('utf8')), file),
+    readText: async (file) => (await options.ports.readFile(file, context)).toString('utf8')
   };
 
   return validateDocument(await tools.readFlow(options.entry), tools, new Set([options.entry]));

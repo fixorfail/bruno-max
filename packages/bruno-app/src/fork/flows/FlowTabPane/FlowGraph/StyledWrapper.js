@@ -275,18 +275,18 @@ const StyledWrapper = styled.div`
     flex: none;
   }
 
-  /* §5.1's footer bar. The tint carries the binding's colour at a strength that leaves the alias and
-     the markers on it legible — the colour identifies a service, it does not have to be the loudest
-     thing on the box — and the solid line along the bottom is where the colour reads at full
-     strength, since an edge needs no contrast with text over it. Untinted, the bar is still a bar:
-     the markers have a place of their own whether or not the flow binds more than one API. */
+  /* §5.1's footer bar. The tint carries the binding's colour, and only the tint does: the colour
+     identifies a service and does not have to be the loudest thing on the box. Untinted, the bar is
+     still a bar — the markers have a place of their own whether or not the flow binds more than one
+     API. */
   .node-footer {
     fill: ${(props) => props.theme.sidebar.collection.item.focusBorder};
     fill-opacity: 0.28;
   }
 
-  /* A tinted band rather than a solid one: the colour identifies a service, it does not have to be
-     the loudest thing on the box, and the alias and the markers sit on top of it. */
+  /* A tinted band rather than a solid one, and the band alone — the divider above it stays neutral.
+     One quiet statement per box reads as a distinction; the same colour twice per box, across a
+     graph of eighteen of them, reads as decoration. */
   .node-footer[data-api] {
     fill-opacity: 0.22;
   }
@@ -312,9 +312,13 @@ const StyledWrapper = styled.div`
     user-select: none;
   }
 
+  /* Bold, because 10px muted glyphs on a tinted band are the smallest thing on the box and the
+     tint takes contrast away from them. Weight rather than size: the bar's height is what keeps the
+     step's own three lines their room. */
   .node-marker {
     color: ${(props) => props.theme.colors.text.muted};
     font-size: 10px;
+    font-weight: 600;
     line-height: 1;
     white-space: nowrap;
   }
@@ -343,6 +347,37 @@ const StyledWrapper = styled.div`
   .slot-label {
     fill: ${(props) => props.theme.colors.text.muted};
     font-size: 10px;
+  }
+
+  /* §5.4: where an expanded sub-flow is. A wash rather than a fill — the boxes standing on it keep
+     their own background, and the band has to read as ground behind a dozen of them without
+     competing with any. The boundary is drawn as well as the tint, because a wash alone disappears
+     against a busy stretch of graph. */
+  .subflow-band {
+    fill-opacity: 0.07;
+    stroke-opacity: 0.35;
+    stroke-width: 1;
+  }
+
+  /* A container past the palette takes no colour of its own and still needs its boundary. */
+  .subflow-band.uncoloured {
+    fill: ${(props) => props.theme.colors.text.muted};
+    stroke: ${(props) => props.theme.colors.text.muted};
+  }
+
+  /* Outside the box, so the border underneath goes on carrying the step's outcome (§8.2). */
+  .subflow-ring {
+    fill: none;
+    stroke-width: 2;
+    stroke-opacity: 0.85;
+  }
+
+  /* Italic, because it is the view telling the reader what it can do rather than anything the flow
+     says — every other word on this drawing comes out of the file or the run. */
+  .node-hint {
+    fill: ${(props) => props.theme.colors.text.muted};
+    font-size: 10px;
+    font-style: italic;
   }
 `;
 
