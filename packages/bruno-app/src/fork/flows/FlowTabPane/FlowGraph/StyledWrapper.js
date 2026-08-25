@@ -372,6 +372,26 @@ const StyledWrapper = styled.div`
     stroke-opacity: 0.85;
   }
 
+  /* §5.5: the divider between one stage and the next. Dashed and faint — it is the only line on this
+     drawing that is not a relationship between two steps, and a solid rule at edge strength would be
+     read as one. */
+  .stage-rule {
+    stroke: ${(props) => props.theme.colors.text.muted};
+    stroke-width: 1;
+    stroke-dasharray: 3 5;
+    stroke-opacity: 0.4;
+  }
+
+  /* The name of the region to its right, in the strip above the drawing. Tracked out and upper-case
+     so it reads as a heading over the graph rather than as one more label on it. */
+  .stage-label {
+    fill: ${(props) => props.theme.colors.text.muted};
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
   /* Italic, because it is the view telling the reader what it can do rather than anything the flow
      says — every other word on this drawing comes out of the file or the run. */
   .node-hint {

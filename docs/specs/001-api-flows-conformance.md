@@ -1260,11 +1260,21 @@ hands those to this file. U1.1–U1.10 assert the *drawing* of what comes back.
 | a flow that does not parse, and one whose `apis:` entry does not resolve | both still return — an id, a name, the parse error or the binding error in `diagnostics`, and as much of the graph as could be built (002 §6) |
 | `apis` | the bindings the file declares, in file order, each with its §6.2 `color` where it declares one — declared rather than called, because it is what the file says |
 | an `apis` binding whose `color` is not a hex colour | an `invalid-api-color` **warning** and nothing else; the flow still describes, still validates and still runs |
+| `stages:` naming three steps the schedule allows | `stages` in file order, each resolved to the rank whose column its rule is drawn before |
+| the same flow with the block deleted | identical `nodes` and `edges`, and `stages: []` — a label that moved a node would not be a label |
+| a boundary at a step that is not a step of this flow, a sub-flow's internal step included | dropped from `stages`, with an `unknown-stage-step` **warning**; a namespaced id is not addressable from the caller (§12) |
+| two boundaries where the second does not come after the first, naming the same step included | the second dropped, `stage-boundary-order` — it describes no run of steps |
+| a boundary whose column is shared by a step listed above it | dropped, `stage-out-of-order`, **naming the step that crosses it** — no vertical line passes through the middle of a column |
 
-The `color` rows are the only presentation in this file, and they are here for the reason §6.2 gives:
-the binding is the thing being coloured, so the file is where the colour is said, and both hosts read
-it from the same place. The warning row is what separates a typo from an omission — a viewer paints
-neither.
+The `color` and `stages` rows are the only presentation in this file, and they are here for the
+reason §6.2 gives: the thing being labelled lives in the file, so the file is where the label is
+said, and both hosts read it from the same place. The warning rows are what separate a typo from an
+omission — a viewer draws neither.
+
+The dropped-boundary rows are what keep §5.5 from lying. The alternative to suppressing an
+undrawable rule is rearranging the graph until it fits, which would put a step on the far side of a
+boundary it actually runs level with — a claim about execution order made by something that was
+supposed to be a name.
 
 The built-in-metadata row is the one that keeps the feature honest. If `{{steps.x.status}}` drew a
 data edge, every step in a flow with a status check would appear to consume data from its

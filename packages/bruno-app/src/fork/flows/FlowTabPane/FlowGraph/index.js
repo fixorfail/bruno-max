@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { useTheme } from 'styled-components';
-import { NODE_FOOTER_HEIGHT, layoutGraph, layoutSlotLane } from './layout';
+import { NODE_FOOTER_HEIGHT, layoutGraph, layoutSlotLane, layoutStages } from './layout';
 import { assignApiColors } from './apiColors';
 import { assignSubflowColors } from './subflowColors';
 import { useFollowActiveNode } from './follow';
@@ -123,6 +123,15 @@ const RING_PAD = 4;
  * step below it or gets clipped off the bottom rank.
  */
 const NODE_HINT_OFFSET = 12;
+
+/**
+ * §5.5's stage names sit in a strip of their own above the drawing, added to the viewBox only when
+ * there are stages to name. `GRAPH_MARGIN` is already spoken for — a running step in the top row
+ * blooms into it — so a name written there would be read through the halo of whichever step
+ * happened to be executing.
+ */
+const STAGE_BAND = 20;
+const STAGE_LABEL_BASELINE = -(GRAPH_MARGIN + 4);
 
 /**
  * The footer's outline. It cannot be a plain rect: the box is rounded, and a square strip laid along
@@ -341,6 +350,13 @@ const FlowGraph = ({
   );
 
   /**
+   * §5.5: where each stage's region begins. The engine resolved which boundaries can be drawn and
+   * dropped the rest with a warning (001 §5.5), so a stage arriving here is one this drawing can
+   * state truthfully.
+   */
+  const stages = useMemo(() => layoutStages(graph, description.stages), [graph, description.stages]);
+
+  /**
    * §5.3's focus: what the pointer is over, or failing that what §9's pane is reading. Hover is the
    * cheaper of the two questions — it costs nothing to ask and nothing to undo — and it is the one a
    * reader asks of a drawing this size, edge by edge, without wanting to change what the pane below
@@ -392,6 +408,7 @@ const FlowGraph = ({
   const litNode = (id) => !focusedStep || lit.has(id);
 
   const height = graph.height + lane.height;
+  const band = stages.length ? STAGE_BAND : 0;
 
   /**
    * The drawing scrolls inside this box (§5.2), so the run walks off the edge of it on any flow
@@ -435,9 +452,9 @@ const FlowGraph = ({
       <div className="flow-graph-viewport" ref={viewportRef} data-testid="flow-graph-viewport">
         <svg
           className="flow-graph"
-          viewBox={`${-GRAPH_MARGIN} ${-GRAPH_MARGIN} ${graph.width + GRAPH_MARGIN * 2} ${height + GRAPH_MARGIN * 2}`}
+          viewBox={`${-GRAPH_MARGIN} ${-GRAPH_MARGIN - band} ${graph.width + GRAPH_MARGIN * 2} ${height + GRAPH_MARGIN * 2 + band}`}
           width={graph.width + GRAPH_MARGIN * 2}
-          height={height + GRAPH_MARGIN * 2}
+          height={height + GRAPH_MARGIN * 2 + band}
           data-focus={focusedStep || undefined}
           data-testid="flow-graph"
         >
@@ -446,6 +463,28 @@ const FlowGraph = ({
               <path d="M 0 0 L 8 4 L 0 8 z" />
             </marker>
           </defs>
+
+          {/* §5.5: the rule down the gap before a stage's first column, and the stage's name in the
+              strip above it. Behind everything, because it divides the drawing rather than being
+              part of it — and the line stops at the foot of the boxes: the slot lane below is a
+              layer over the whole graph (§5.3), not a rank of it to be cut up. */}
+          {stages.map((stage) => (
+            <g key={`stage-${stage.name}`} className="stage" data-testid={`flow-stage-${stage.name}`}>
+              {stage.rule === undefined ? null : (
+                <line
+                  className="stage-rule"
+                  x1={stage.rule}
+                  y1={-GRAPH_MARGIN}
+                  x2={stage.rule}
+                  y2={graph.height}
+                  data-testid={`flow-stage-rule-${stage.name}`}
+                />
+              )}
+              <text className="stage-label" x={stage.labelX} y={STAGE_LABEL_BASELINE}>
+                {stage.name}
+              </text>
+            </g>
+          ))}
 
           {/* Behind the edges and the boxes: the band is the ground the sub-flow stands on, and a
               wash drawn over a line would take the line's colour with it. */}

@@ -263,6 +263,103 @@ describe('R4q — API bindings', () => {
   });
 });
 
+/**
+ * §5.5's boundaries. Everything here is presentation: the first case pins that a flow carrying
+ * stages resolves the same graph as the same flow without them, and every failure below is a
+ * warning that leaves the run alone.
+ */
+describe('R4q — stages', () => {
+  const staged = (stages, edit) =>
+    variant(flow('r4q-graph.flow.yml'), (document) => {
+      edit?.(document);
+      document.stages = stages;
+    });
+
+  it('resolves each boundary to the column its rule is drawn before', async () => {
+    const { entry, files } = staged({ setup: 'sign_in', act: 'create', verify: 'audit' });
+    const description = await describeFlow(entry, { files });
+
+    expect(description.stages).toEqual([
+      { name: 'setup', from: 'sign_in', rank: 0 },
+      { name: 'act', from: 'create', rank: 1 },
+      { name: 'verify', from: 'audit', rank: 4 }
+    ]);
+    expect(await validate(entry, { files })).not.toContainEqual(
+      expect.objectContaining({ code: expect.stringContaining('stage') })
+    );
+  });
+
+  // Both sides are round-tripped through the harness's writer, so the stages block is the only
+  // difference between the two files — comparing against the committed fixture would compare
+  // against its comments and line numbers as well.
+  it('changes nothing about the graph it labels', async () => {
+    const plain = staged(undefined);
+    const labelled = staged({ setup: 'sign_in', act: 'create' });
+    const before = await describeFlow(plain.entry, { files: plain.files });
+    const after = await describeFlow(labelled.entry, { files: labelled.files });
+
+    expect(after.nodes).toEqual(before.nodes);
+    expect(after.edges).toEqual(before.edges);
+    expect(before.stages).toEqual([]);
+  });
+
+  it('drops a boundary at a step that does not exist, and warns', async () => {
+    const { entry, files } = staged({ setup: 'sign_in', act: 'nowhere' });
+    const description = await describeFlow(entry, { files });
+
+    expect(description.stages.map((stage) => stage.name)).toEqual(['setup']);
+    const complaint = description.diagnostics.find((entry_) => entry_.code === 'unknown-stage-step');
+    expect(complaint.severity).toBe('warning');
+    expect(complaint.message).toContain('nowhere');
+    expect(description.diagnostics.some((entry_) => entry_.severity === 'error')).toBe(false);
+  });
+
+  it('drops a boundary that does not come after the one before it, and warns', async () => {
+    const { entry, files } = staged({ act: 'settle', setup: 'create' });
+    const diagnostics = await validate(entry, { files });
+
+    const complaint = diagnostics.find((entry_) => entry_.code === 'stage-boundary-order');
+    expect(complaint.severity).toBe('warning');
+    expect(complaint.message).toContain('setup begins at create');
+    expect((await describeFlow(entry, { files })).stages.map((stage) => stage.name)).toEqual(['act']);
+  });
+
+  /**
+   * `audit` is listed last but, depending only on `create`, runs level with `fallback` — so no
+   * vertical line separates them. Drawing the rule anyway would put `fallback` on the far side of a
+   * boundary it shares a column with, which is a claim about execution order that is not true.
+   */
+  it('drops a boundary the schedule contradicts, naming the step that crosses it', async () => {
+    const { entry, files } = staged({ act: 'create', teardown: 'audit' }, (document) => {
+      document.steps.find((step) => step.id === 'audit').depends = ['create'];
+    });
+    const description = await describeFlow(entry, { files });
+
+    expect(description.stages.map((stage) => stage.name)).toEqual(['act']);
+    const complaint = description.diagnostics.find((entry_) => entry_.code === 'stage-out-of-order');
+    expect(complaint.severity).toBe('warning');
+    expect(complaint.message).toContain('fallback');
+  });
+
+  it('names the container of a sub-flow, never a step inside it', async () => {
+    const boundary = (stages) =>
+      variant(flow('r4-subflow-slot.flow.yml'), (document) => {
+        document.stages = stages;
+      });
+
+    const container = boundary({ second: 'child' });
+    expect((await describeFlow(container.entry, { files: container.files })).stages).toEqual([
+      { name: 'second', from: 'child', rank: 1 }
+    ]);
+
+    // `use` draws as `child/use`, and a namespaced id is not addressable from the caller (§12).
+    const internal = boundary({ inner: 'use' });
+    const description = await describeFlow(internal.entry, { files: internal.files });
+    expect(description.stages).toEqual([]);
+    expect(description.diagnostics.some((entry_) => entry_.code === 'unknown-stage-step')).toBe(true);
+  });
+});
+
 describe('R4q — sub-flows', () => {
   it('returns the container and its internals under namespaced ids', async () => {
     const description = await describeFlow(flow('r4-subflow-slot.flow.yml'));

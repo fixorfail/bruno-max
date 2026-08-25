@@ -1097,3 +1097,82 @@ describe('FlowGraph sub-flow band', () => {
     );
   });
 });
+
+/**
+ * 002 §5.5 — the stage rules. The engine decides which boundaries can be drawn (001 §5.5 drops the
+ * ones the schedule contradicts), so everything here is about placing what it sends.
+ */
+describe('FlowGraph stages', () => {
+  const staged = {
+    ...description,
+    nodes: [node('login', 0), node('create', 1), node('verify', 2), node('refund', 3)],
+    edges: [
+      { from: 'login', to: 'create', kind: 'sequence' },
+      { from: 'create', to: 'verify', kind: 'sequence' },
+      { from: 'verify', to: 'refund', kind: 'sequence' }
+    ],
+    stages: [
+      { name: 'setup', from: 'login', rank: 0 },
+      { name: 'test', from: 'create', rank: 1 },
+      { name: 'teardown', from: 'refund', rank: 3 }
+    ]
+  };
+
+  const nodeX = (id) => Number(screen.getByTestId(`flow-node-${id}`).getAttribute('transform').match(/-?[\d.]+/g)[0]);
+  const ruleX = (name) => Number(screen.getByTestId(`flow-stage-rule-${name}`).getAttribute('x1'));
+  const viewBox = () => screen.getByTestId('flow-graph').getAttribute('viewBox').split(' ').map(Number);
+
+  it('names every stage the engine resolved', () => {
+    renderGraphOf(staged, {}, false);
+
+    expect(screen.getByTestId('flow-stage-setup')).toHaveTextContent('setup');
+    expect(screen.getByTestId('flow-stage-test')).toHaveTextContent('test');
+    expect(screen.getByTestId('flow-stage-teardown')).toHaveTextContent('teardown');
+  });
+
+  it('draws each rule in the gap before its own column', () => {
+    renderGraphOf(staged, {}, false);
+
+    for (const [name, step] of [['test', 'create'], ['teardown', 'refund']]) {
+      // Clear of the box on either side: past the right edge of the column before it, and short of
+      // the left edge of the column it opens.
+      expect(ruleX(name)).toBeGreaterThan(nodeX(step) - 220);
+      expect(ruleX(name)).toBeLessThan(nodeX(step));
+    }
+    expect(ruleX('test')).toBeLessThan(ruleX('teardown'));
+  });
+
+  /** A line down the left edge of the drawing separates the stage from nothing. */
+  it('gives a stage at the first column its name and no rule', () => {
+    renderGraphOf(staged, {}, false);
+
+    expect(screen.queryByTestId('flow-stage-rule-setup')).not.toBeInTheDocument();
+    expect(screen.getByTestId('flow-stage-setup')).toBeInTheDocument();
+  });
+
+  /** The names need room the halo of a step in the top row is already using. */
+  it('opens a strip above the drawing for the names, and only when there are names', () => {
+    const { unmount } = renderGraphOf(staged, {}, false);
+    const [, withStages] = viewBox();
+    unmount();
+
+    renderGraphOf({ ...staged, stages: [] }, {}, false);
+    expect(withStages).toBeLessThan(viewBox()[1]);
+  });
+
+  it('draws the rules behind the steps they divide', () => {
+    const { container: root } = renderGraphOf(staged, {}, false);
+    const drawn = [...root.querySelectorAll('svg > *')];
+
+    expect(drawn.indexOf(screen.getByTestId('flow-stage-test'))).toBeLessThan(
+      drawn.findIndex((element) => element.contains(screen.getByTestId('flow-node-create')))
+    );
+  });
+
+  it('draws nothing for a flow that declares no stages', () => {
+    renderGraphOf(description, {}, false);
+
+    expect(screen.queryByTestId('flow-stage-setup')).not.toBeInTheDocument();
+    expect(document.querySelector('.stage-rule')).toBeNull();
+  });
+});

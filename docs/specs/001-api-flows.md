@@ -32,7 +32,7 @@ Nobody reads this front to back. Pick an entry:
 | | |
 |---|---|
 | **§1–§4** | Problem, goals, non-goals, vocabulary |
-| **§5** | File format — layout, a step, and the JSON Schema (§5.4) |
+| **§5** | File format — layout, a step, the JSON Schema (§5.4), stages (§5.5) |
 | **§6** | Resolving an `operation:` — bindings, base URLs, auth profiles |
 | **§7** | Building a request — seeding, merging, interpolation, files, multipart, cookies |
 | **§8** | Connectors — declared outputs, scripts, connector files, the script library, visibility |
@@ -224,6 +224,11 @@ shared: [chargeId]             # cross-branch value slots; a mapping where one n
                                # own `writers:` rule — see §9.1
 
 dataset: ./fixtures/customers.csv   # optional; see §9.4
+
+stages:                        # optional; names for regions of the graph — see §5.5
+  setup: login                 # a stage name -> the step it begins at
+  test: create_payment
+  teardown: refund
 
 steps:    [ ... ]              # the graph — see §9
 ```
@@ -469,6 +474,61 @@ additive rule, so a v1 schema shipped today still accepts a v1 file written a ye
 A new `version` means a new schema file rather than a modified one, which is what lets §15's golden
 fixtures for every prior version be validated against the schema that was current when they were
 written.
+
+### 5.5 Stages
+
+A flow's graph is usually read in parts — what is being set up, what is under test, what is being
+cleaned up — and nothing in the file says where one part ends. `stages:` names those regions:
+
+```yaml
+stages:
+  setup: login
+  test: create_payment
+  teardown: refund
+```
+
+An **ordered mapping of a stage name to the step it begins at**. A stage covers the run of `steps:`
+from that step up to the next stage's, and the steps before the first boundary belong to no stage.
+Mapping order is the order the regions appear, exactly as `apis:` order decides which binding gets
+which colour (§6.2).
+
+**A stage names one step however many it covers.** This is the whole reason the block is boundaries
+rather than membership lists: adding, removing or reordering steps *inside* a stage is not an edit
+to `stages:` at all, so the two halves of the file cannot drift apart while nobody is looking. The
+one thing that does touch it is deliberately moving a boundary.
+
+**It changes nothing about what a flow does.** Like §6.2's `color`, this is presentation — a name
+for a region of a drawing ([002](./002-api-flows-ui.md) §5.5 is the only reader). It is in the
+format rather than in the app's own settings because a stage is a fact about *this flow* that a
+teammate reading the same file and `bru flow run` should both see. Deleting the block changes no
+schedule, no status and no capture; a reader that does not implement it ignores an unknown top-level
+key and runs the flow identically, which is what makes it safe to add to a format older readers
+still parse (§5.4). Nothing in `steps:` changes, so §9.1's implicit sequence is unaffected: a stage
+boundary is **not** a barrier, and the first step of a stage still depends on the step above it
+unless it says otherwise. Cleanup remains what §11.3 makes it — a step accepting `failed` or
+`cancelled` — whether or not a stage happens to be called `teardown`.
+
+**Not every boundary can be drawn, and the ones that cannot are dropped.** A stage renders as a
+vertical rule before its first step's column, which requires that everything listed above the
+boundary also *runs* before it (§9.1 ranks a step below all of its dependencies). A step declared
+earlier but ranked level with the boundary shares its column, and no line passes between them —
+the common case being a cleanup step that depends on an early step and therefore runs early. Where
+that happens the rule is suppressed and `bru flow validate` reports `stage-out-of-order` naming the
+step that crossed it, rather than the graph rearranging itself to look tidy. A tidy picture of an
+order the run does not have is worse than no picture.
+
+The three ways a boundary is refused, all **warnings** (§14.3) for §6.2's reason — they decide how
+a graph is drawn and never what a flow does:
+
+| Code | When |
+|---|---|
+| `unknown-stage-step` | the named step is not a step of this flow — including a step inside a `uses:` sub-flow, which is not addressable from the caller (§12) |
+| `stage-boundary-order` | the boundary does not come after the one before it, so it describes no run of steps — two stages naming the same step included |
+| `stage-out-of-order` | the schedule contradicts the boundary, as above |
+
+A warning rather than silence for the same reason a bad `color` is one: a suppressed rule leaves a
+graph with no line where the author wrote one, which is indistinguishable from having declared no
+stage at all.
 
 ---
 
@@ -3451,6 +3511,9 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
 - Warning: an `apis` binding whose `color` is not `#rgb` or `#rrggbb` (§6.2) — a viewer falls back
   to its unpainted default there, which is what a binding with no colour looks like, so nothing else
   would tell the author their typo from a colour they never declared
+- Warnings: a `stages:` boundary that cannot be drawn — `unknown-stage-step`, `stage-boundary-order`,
+  `stage-out-of-order` (§5.5). Suppressing the rule leaves a graph with no line where the author
+  wrote one, which is what declaring no stage at all looks like
 - Every `functions.use` entry resolves and stays inside the scope root; every function name is a
   JavaScript identifier (§8.6). Both are one broken prelude, which is every script position in the
   flow failing at once — a warning where a name shadows `res` or `ctx`

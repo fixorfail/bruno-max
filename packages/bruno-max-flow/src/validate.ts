@@ -14,6 +14,7 @@ import * as path from 'path';
 
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
 import { collectLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
+import { ranksOf, resolveStages } from './graph';
 import { SpecLoader } from './openapi';
 import { referenceKind, referencesIn, referencesOf, type Reference } from './references';
 import type { ValidateOptions } from './types/options';
@@ -137,6 +138,15 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
 
   const cycle = hasCycle(flow);
   if (cycle) error('cyclic-dependency', `${cycle} takes part in a dependency cycle`, cycle);
+
+  /**
+   * §5.5's boundaries, warned about for §6.2's reason: a boundary that cannot be drawn leaves a
+   * graph with no rule where the author wrote one, which is exactly what declaring no stage at all
+   * looks like. Silence would hide the mistake rather than its consequence.
+   */
+  for (const problem of resolveStages(flow, ranksOf(flow.steps)).problems) {
+    warn(problem.code, problem.message, undefined, ['stages', problem.stage]);
+  }
 
   /**
    * §8.6's library. A file that cannot be read is an error rather than a run-time surprise: every

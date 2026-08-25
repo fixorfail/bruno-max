@@ -275,6 +275,23 @@ ranker of its own will re-derive them by default — dagre's `longest-path` meas
 draws a different graph from the one the CLI executes, and it does so silently on exactly the
 branch-and-rejoin shape flows are written in.
 
+### U1.13 Stages divide the drawing without moving it
+
+A description carrying three stages draws a named region for each. Every boundary past the first
+column has a rule in the gap between the two columns it divides — clear of the box on either side,
+and centred between them — and the one *at* the first column has its name and no rule. The names sit
+in a strip above the drawing that exists only when there are names, and the rules are drawn behind
+the steps. A description with no stages draws neither.
+
+*Pins 002 §5.5.* Two failures this is between. A rule at the drawing's left edge is a line dividing
+a stage from nothing, and the first thing lost when the graph scrolls. And the names had to go
+somewhere the halo of a running step in the top row is not already using — written into the existing
+margin they are read through whichever step happens to be executing, which is the kind of defect that
+only appears during a run.
+
+Which boundaries arrive here at all is 001-C's R4q, not this file's: dropping the ones the schedule
+contradicts is a statement about 001 §9.1's graph, and this view draws what it is given.
+
 ---
 
 ## 4. U2 — A live run
@@ -1055,6 +1072,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U1.8a | §5.2, §5.3 | A layout failure taking the whole tab down |
 | U1.9, U1.10 | §5.2 | A graph laid out down the short axis; one that reorders between runs |
 | U1.9a | §5.1 | A step id drawn across the graph instead of inside its own box |
+| U1.13 | §5.5 | A stage rule clipped off the edge of the drawing, or a name read through a running step's halo |
 | U2.1–U2.3 | §8.2, §9 | A poll that looks like a hang, or like a series of steps that each finished |
 | U2.4 | §8.2 | One grey "skipped" state |
 | U2.4a | §8.2, §9 | A red run whose graph is entirely green and grey, explaining itself nowhere |

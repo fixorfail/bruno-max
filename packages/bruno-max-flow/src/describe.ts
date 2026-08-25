@@ -14,38 +14,13 @@
 import * as path from 'path';
 
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
+import { ranksOf, resolveStages } from './graph';
 import { SpecLoader, type SpecIndex } from './openapi';
 import { referenceKind, referencesOf } from './references';
 import type { DescribeOptions } from './types/options';
 import type { FlowDescription, FlowEdge, FlowNode } from './types/describe';
 import type { FlowContext } from './types/ports';
 import { validateFlow } from './validate';
-
-/**
- * Longest path from a root (002 §5.2), which is what places a step below *every* one of its
- * dependencies rather than just the first — the property that makes the drawing readable as
- * execution order. A cycle cannot deepen a rank forever because a step already on the path is
- * skipped; `validateFlow` reports the cycle separately.
- */
-const ranksOf = (steps: NormalizedStep[]): Map<string, number> => {
-  const parents = new Map(steps.map((step) => [step.id, step.depends.entries.map((entry) => entry.on)]));
-  const ranks = new Map<string, number>();
-
-  const rankOf = (id: string, seen: Set<string>): number => {
-    const cached = ranks.get(id);
-    if (cached !== undefined) return cached;
-
-    const above = (parents.get(id) || [])
-      .filter((parent) => !seen.has(parent) && parents.has(parent))
-      .map((parent) => rankOf(parent, new Set([...seen, parent])) + 1);
-    const rank = above.length ? Math.max(...above) : 0;
-    ranks.set(id, rank);
-    return rank;
-  };
-
-  for (const step of steps) rankOf(step.id, new Set([step.id]));
-  return ranks;
-};
 
 /**
  * §9.1's implicit sequence is a *different edge* from a declared one, not a stylistic variant: it is
@@ -256,6 +231,7 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     nodes: [],
     edges: [],
     slots: [],
+    stages: [],
     diagnostics
   };
 
@@ -287,6 +263,10 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     dataset: flow.dataset,
     nodes,
     edges,
-    slots: slotsOf(flow)
+    slots: slotsOf(flow),
+    // The entry flow's own boundaries and no others: a sub-flow's steps are already grouped by the
+    // `uses:` node they expand under (002 §5.4), and a second delineation inside that band would
+    // divide a group the reader is being shown as one thing.
+    stages: resolveStages(flow, ranksOf(flow.steps)).stages
   };
 };

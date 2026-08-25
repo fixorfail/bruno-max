@@ -314,6 +314,46 @@ export const layoutGraph = (description, options = {}) => {
   };
 };
 
+/** How far a stage's name stands to the right of the rule that opens its region. */
+const STAGE_LABEL_GAP = 6;
+
+/**
+ * §5.5: where each stage rule is drawn — the middle of the gap before its first step's column.
+ *
+ * The engine has already decided which boundaries can be drawn at all (001 §5.5 suppresses the ones
+ * the schedule contradicts), so this places what it was given and judges nothing. Every box is the
+ * same width, so a rank *is* a column at one x, and the gap before it is `RANK_GAP` wide.
+ *
+ * **A boundary at the first column gets its name and no line.** A rule down the left edge of the
+ * drawing separates the stage from nothing, and it is the first thing clipped when the drawing
+ * scrolls.
+ */
+export const layoutStages = (graph, stages = []) => {
+  if (!graph.nodes.length) {
+    return [];
+  }
+
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const left = Math.min(...graph.nodes.map((node) => node.x));
+
+  return stages.flatMap((stage) => {
+    const node = byId.get(stage.from);
+    if (!node) {
+      return [];
+    }
+
+    const rule = node.x > left ? round(node.x - RANK_GAP / 2) : undefined;
+    return [
+      {
+        name: stage.name,
+        from: stage.from,
+        rule,
+        labelX: rule === undefined ? round(left) : round(rule + STAGE_LABEL_GAP)
+      }
+    ];
+  });
+};
+
 /** Where a slot edge meets its step: along the box's bottom border, one lane per edge on that step. */
 const SLOT_PORT_GAP = 16;
 

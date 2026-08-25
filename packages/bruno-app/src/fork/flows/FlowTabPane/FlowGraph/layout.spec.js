@@ -1,4 +1,4 @@
-import { layoutGraph, layoutSlotLane } from './layout';
+import { layoutGraph, layoutSlotLane, layoutStages } from './layout';
 
 // Minimal but §11.1-shaped fixtures: every field FlowNode/FlowEdge/FlowDescription declare is
 // present, even where a given test only exercises a subset of them.
@@ -437,5 +437,57 @@ describe('layoutSlotLane', () => {
 
     expect(lane.slots).toEqual([]);
     expect(lane.height).toBe(0);
+  });
+});
+
+/**
+ * 002 §5.5 — a boundary's rule, placed against the columns `layoutGraph` produced. Which boundaries
+ * are here at all is the engine's decision (001 §5.5), not this function's.
+ */
+describe('layoutStages', () => {
+  const graphOf = (ids) =>
+    layoutGraph(
+      makeDescription({
+        nodes: ids.map((id, index) => makeNode({ id, rank: index })),
+        edges: chain(ids)
+      }),
+      noExpansion
+    );
+
+  it('puts the rule in the gap between the two columns it divides', () => {
+    const graph = graphOf(['a', 'b', 'c']);
+    const nodes = byId(graph.nodes);
+
+    const [stage] = layoutStages(graph, [{ name: 'test', from: 'b', rank: 1 }]);
+
+    expect(stage.rule).toBeGreaterThan(nodes.a.x + nodes.a.width);
+    expect(stage.rule).toBeLessThan(nodes.b.x);
+    // Centred in the gap, so the same rule reads the same distance off either column.
+    expect(stage.rule - (nodes.a.x + nodes.a.width)).toBeCloseTo(nodes.b.x - stage.rule, 1);
+  });
+
+  it('leaves a boundary at the first column without a rule, and names it at the drawing edge', () => {
+    const graph = graphOf(['a', 'b']);
+
+    const [stage] = layoutStages(graph, [{ name: 'setup', from: 'a', rank: 0 }]);
+
+    expect(stage.rule).toBeUndefined();
+    expect(stage.labelX).toBe(Math.min(...graph.nodes.map((node) => node.x)));
+  });
+
+  it('writes the name to the right of its own rule', () => {
+    const graph = graphOf(['a', 'b']);
+
+    const [stage] = layoutStages(graph, [{ name: 'test', from: 'b', rank: 1 }]);
+
+    expect(stage.labelX).toBeGreaterThan(stage.rule);
+    expect(stage.labelX).toBeLessThan(byId(graph.nodes).b.x);
+  });
+
+  /** A description and a drawing can disagree about which nodes exist — an expansion is filtered
+   *  out of the layout, and nothing here is worth throwing a render away for. */
+  it('drops a boundary at a step that is not on the drawing', () => {
+    expect(layoutStages(graphOf(['a', 'b']), [{ name: 'ghost', from: 'gone', rank: 1 }])).toEqual([]);
+    expect(layoutStages(layoutGraph(makeDescription({}), noExpansion), [{ name: 'x', from: 'a', rank: 0 }])).toEqual([]);
   });
 });

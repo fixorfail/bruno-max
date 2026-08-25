@@ -226,6 +226,13 @@ export type FlowConfig = StepFlags & {
   captureRetainRuns: number;
 };
 
+/**
+ * §5.5's stage boundary: a name, and the step whose column the rule is drawn before. Membership is
+ * the run of the step list from here to the next boundary, so a stage names one step however many
+ * it covers — adding a step inside a stage is not an edit to `stages:`.
+ */
+export type StageBoundary = { name: string; from: string };
+
 export type NormalizedFlow = {
   /** Absolute path; a flow's identity is its path (§5.2). */
   file: string;
@@ -246,6 +253,11 @@ export type NormalizedFlow = {
   /** Non-empty means nothing else here is trustworthy; §14.3 reports these and stops. */
   errors: ParseError[];
   steps: NormalizedStep[];
+  /**
+   * §5.5's stages, in the order the file declares them. Presentation only: nothing below reads
+   * these, and a flow with the block deleted runs identically — 002 §5.5 is the sole reader.
+   */
+  stages: StageBoundary[];
 };
 
 export const asRecord = (value: unknown): Record<string, unknown> =>
@@ -374,6 +386,13 @@ const normalizeRetry = (raw: unknown, fallback?: Partial<RetryPolicy>): RetryPol
 
 const flag = (step: Record<string, unknown>, config: StepFlags, key: keyof StepFlags): boolean =>
   step[key] === undefined ? config[key] : Boolean(step[key]);
+
+/**
+ * §5.5. Mapping order is the order the rules are drawn in, the same way `apis:` order decides which
+ * binding gets which colour (§6.2) — the file is the only place the app and `bru` both read.
+ */
+const normalizeStages = (raw: unknown): StageBoundary[] =>
+  Object.entries(asRecord(raw)).map(([name, from]) => ({ name, from: String(from) }));
 
 const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
   Object.fromEntries(
@@ -583,6 +602,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       Object.entries(asRecord(document.exports)).map(([name, value]) => [name, String(value)])
     ),
     steps,
+    stages: normalizeStages(document.stages),
     positions,
     errors
   };

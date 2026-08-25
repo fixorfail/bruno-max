@@ -703,6 +703,40 @@ collapsing one sub-flow never recolours another. Past the palette a band takes a
 instead of a second container's colour — §5.1's rule, for §5.1's reason: two regions in one colour
 is worse than one with none, because the reader cannot tell and has no reason to doubt.
 
+### 5.5 Stages
+
+A flow that declares `stages:` (001 §5.5) is drawn with a **vertical rule down the gap before each
+stage's first column, and the stage's name in a strip above the drawing**, tracked out and
+upper-case so it reads as a heading over the graph rather than as one more label on it. The rule is
+dashed and faint: it is the only line here that is not a relationship between two steps, and one
+drawn at edge strength would be read as one.
+
+**The names are the whole feature.** A graph of eighteen boxes reads as one undifferentiated run of
+work, and which part of it is setting up, exercising the thing under test, or cleaning up is a
+distinction the file has always had and the drawing has never shown. It changes nothing else: no
+node moves, no colour changes, and a flow with the block deleted draws identically.
+
+**A boundary at the first column gets its name and no line.** A rule down the left edge separates
+the stage from nothing, and it is the first thing clipped when the drawing scrolls (§5.2). The name
+still appears, because the region needs one.
+
+**The rule stops at the foot of the boxes.** The slot lane below is a layer over the whole graph
+(§5.3) rather than a rank of it, and 001 §9.1 gives a slot no position in the sequence to be
+divided by.
+
+**Which boundaries can be drawn at all is 001 §5.5's decision, not this view's.** A stage covers a
+run of the step list, and that only draws as a vertical line when everything above it also runs
+before it — the common exception being a cleanup step that depends on an early step and so ranks
+early. The engine drops those and warns (§6 shows the warning); this view draws what it is given and
+judges nothing. The alternative — shifting columns until every declared stage fits — would put a
+step on the far side of a boundary it actually runs level with, which is a claim about execution
+order made by something that is only a name.
+
+One consequence worth stating: **expanding a sub-flow can push its internals across a rule** (§5.4
+gives them their own block of ranks, which the boundary's own column was not measured against). The
+expansion is a temporary reading aid and the rule stays where the flow's ranks put it; nothing about
+the boundary changes because a container was opened.
+
 ## 6. Diagnostics
 
 `validateFlow` (001 §13.2) runs when a flow is opened and again on every watcher change. Its
@@ -1343,10 +1377,15 @@ type FlowDescription = {
   name: string;                        // meta.name, or the filename
   isLibrary: boolean;                  // meta.library: true (001 §12.5)
   params: { name: string; required: boolean; default?: unknown }[];
+  apis: { alias: string; color?: string }[];   // the apis: bindings in file order, each with 001
+                                               // §6.2's colour where it declares one. What the file
+                                               // declares, called or not — §5.1 decides which of
+                                               // them the drawing spends a colour on
   dataset?: { source: string; parallel: number };
   nodes: FlowNode[];
   edges: FlowEdge[];
   slots: { name: string; writers: string[]; readers: string[] }[];
+  stages: { name: string; from: string; rank: number }[];   // §5.5; the drawable ones (001 §5.5)
   diagnostics: Diagnostic[];           // the same set validateFlow returns
 };
 

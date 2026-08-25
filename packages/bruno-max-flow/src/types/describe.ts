@@ -71,6 +71,13 @@ export type FlowDescription = {
   nodes: FlowNode[];
   edges: FlowEdge[];
   slots: { name: string; writers: string[]; readers: string[] }[];
+  /**
+   * §5.5's stage boundaries in file order, each resolved to the rank whose column its rule is drawn
+   * in front of. Only the ones the schedule allows: a boundary the run contradicts is dropped here
+   * and reported as a warning instead (§14.3), so the picture never implies an order that is not
+   * real. The entry flow's own; an expanded sub-flow's are not drawn.
+   */
+  stages: { name: string; from: string; rank: number }[];
   /** The same set validateFlow returns. */
   diagnostics: Diagnostic[];
 };
