@@ -1,0 +1,258 @@
+name: Sync with upstream
+
+# Keeps this fork's main up to date with usebruno/bruno by opening a PR, never by pushing
+# to main directly — an upstream merge needs a human to look at it before it lands.
+#
+# Authenticates as the `fixorfail` GitHub App via SYNC_APP_ID + SYNC_APP_PRIVATE_KEY. The App
+# needs Contents, Pull requests, Issues and Workflows at read/write — Workflows because upstream
+# syncs routinely modify .github/workflows/**, which GitHub refuses to push without it.
+#
+# The default GITHUB_TOKEN cannot be used here: PRs it opens do not trigger other workflows,
+# so the test suites would never run on the sync PR.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      test_base_ref:
+        description: 'Testing only: commit/ref to merge from instead of main. Opens a DRAFT PR to prove push + PR creation work. Leave empty for a real sync.'
+        required: false
+        default: ''
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/usebruno/bruno.git
+  UPSTREAM_BRANCH: main
+  # This repo is a true GitHub fork, so every `gh` command would otherwise resolve its target to
+  # the PARENT (usebruno/bruno) — `gh pr create` would propose merging this fork's features into
+  # upstream, and `gh issue create` would file on their tracker. Pinning GH_REPO keeps all of it
+  # here, including any gh call added later.
+  GH_REPO: ${{ github.repository }}
+  # The pre-commit hook runs lint:fix, which needs node_modules. The merge commit below is made
+  # before a full install, so leave the hook out of it; CI lints the PR anyway.
+  HUSKY: 0
+
+jobs:
+  sync:
+    name: Merge upstream and open PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Mint App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.SYNC_APP_ID }}
+          private-key: ${{ secrets.SYNC_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: v22.17.0
+
+      - name: Configure git identity
+        run: |
+          git config user.name 'bruno-max-sync'
+          git config user.email 'bruno-max-sync@users.noreply.github.com'
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Check for new commits
+        id: check
+        env:
+          TEST_BASE_REF: ${{ inputs.test_base_ref }}
+        run: |
+          # A test run deliberately starts from an older commit so there is always something to
+          # merge, which exercises push and PR creation without waiting for an upstream drop.
+          BASE_REF="${TEST_BASE_REF:-HEAD}"
+          git rev-parse --verify "$BASE_REF" >/dev/null
+          echo "base_ref=$BASE_REF" >> "$GITHUB_OUTPUT"
+
+          BEHIND=$(git rev-list --count "$BASE_REF..upstream/$UPSTREAM_BRANCH")
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          if [ "$BEHIND" -eq 0 ]; then
+            echo "Already up to date with upstream."
+          else
+            echo "$BEHIND new upstream commit(s) since $BASE_REF."
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.check.outputs.behind != '0'
+        env:
+          TEST_BASE_REF: ${{ inputs.test_base_ref }}
+        run: |
+          if [ -n "$TEST_BASE_REF" ]; then
+            BRANCH="sync/upstream-test-$(date -u +%Y%m%d-%H%M)"
+          else
+            BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M)"
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH" "${{ steps.check.outputs.base_ref }}"
+
+          if git merge "upstream/$UPSTREAM_BRANCH" --no-edit --no-verify; then
+            echo "resolution=clean" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          CONFLICTS=$(git diff --name-only --diff-filter=U)
+          echo "Conflicted files:"; echo "$CONFLICTS"
+
+          # package-lock.json is the one conflict with a mechanical resolution: take upstream's
+          # tree wholesale, then let npm re-add this fork's workspaces. Hand-merging a lockfile
+          # is not reliable. Anything else conflicting needs a human.
+          if [ "$CONFLICTS" != "package-lock.json" ]; then
+            {
+              echo "conflicts<<EOF"
+              echo "$CONFLICTS"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "resolution=manual" >> "$GITHUB_OUTPUT"
+            git merge --abort
+            exit 0
+          fi
+
+          git checkout --theirs package-lock.json
+          npm install --package-lock-only --legacy-peer-deps
+          git add package-lock.json
+          git commit --no-edit --no-verify
+          echo "resolution=lockfile" >> "$GITHUB_OUTPUT"
+
+      # Runs before the install so a dropped fork seam is reported in seconds, not after a
+      # full dependency build.
+      - name: Fork integration guard
+        if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
+        run: node scripts/fork/check-integration.js
+
+      # Installs deps and builds the shared packages. The build matters: upstream regularly adds
+      # helpers to them that dependent workspaces resolve through dist/, so an un-rebuilt merge
+      # fails in confusing ways.
+      - name: Install dependencies and build shared packages
+        if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
+        uses: ./.github/actions/common/setup-node-deps
+
+      - name: Unit tests
+        if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
+        run: npm test --workspaces --if-present
+
+      - name: Push branch
+        if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
+        run: git push origin "${{ steps.merge.outputs.branch }}"
+
+      - name: Ensure sync label exists
+        if: steps.merge.outputs.resolution != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: gh label create upstream-sync --color 0E8A16 --description "Automated upstream sync" || true
+
+      - name: Open pull request
+        if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ steps.merge.outputs.branch }}
+          BEHIND: ${{ steps.check.outputs.behind }}
+          RESOLUTION: ${{ steps.merge.outputs.resolution }}
+          TEST_BASE_REF: ${{ inputs.test_base_ref }}
+        run: |
+          if [ "$RESOLUTION" = "lockfile" ]; then
+            NOTE="\`package-lock.json\` conflicted and was resolved mechanically: upstream's lockfile
+          plus \`npm install --package-lock-only --legacy-peer-deps\` to re-add this fork's workspaces.
+          **Confirm the diff against upstream adds only the fork's own packages and changes no upstream
+          dependency versions.**"
+          else
+            NOTE="Merged with no conflicts."
+          fi
+
+          # A test run must never look mergeable: draft, flagged in the title, and its body says so.
+          TITLE="chore: sync with upstream ($BEHIND commits)"
+          DRAFT=""
+          PREAMBLE=""
+          if [ -n "$TEST_BASE_REF" ]; then
+            TITLE="[TEST] $TITLE"
+            DRAFT="--draft"
+            PREAMBLE="> **Test run — do not merge.** Started from \`$TEST_BASE_REF\` to exercise push and
+          > PR creation. Close this PR and delete its branch when you are done.
+
+          "
+          fi
+
+          gh pr create \
+            $DRAFT \
+            --base main \
+            --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "$(cat <<EOF
+          ${PREAMBLE}Automated sync of \`main\` with \`usebruno/bruno@main\` — $BEHIND new upstream commit(s).
+
+          $NOTE
+
+          Passing on this branch: the fork integration guard, a shared-package build, and
+          \`npm test --workspaces\`.
+
+          ### Still needs a human
+          - [ ] Playwright e2e — not run here. Upstream changes to \`tests/utils/page/\` helpers are
+                the most likely source of breakage.
+          - [ ] Skim the diff for upstream changes that overlap fork behaviour without conflicting.
+
+          Generated by \`.github/workflows/sync-upstream.yml\`.
+          EOF
+          )" \
+            --label "upstream-sync"
+
+      - name: Report unresolvable conflicts
+        if: steps.merge.outputs.resolution == 'manual'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+          BEHIND: ${{ steps.check.outputs.behind }}
+        run: |
+          TITLE="Upstream sync needs manual conflict resolution"
+
+          # Don't stack duplicate issues week over week.
+          if [ -n "$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')" ]; then
+            echo "An open issue already tracks this."
+            exit 0
+          fi
+
+          gh issue create \
+            --title "$TITLE" \
+            --label "upstream-sync" \
+            --body "$(cat <<EOF
+          The scheduled upstream sync hit conflicts in files other than \`package-lock.json\`, so it
+          stopped rather than guess. $BEHIND upstream commit(s) are waiting.
+
+          Conflicted files:
+          \`\`\`
+          $CONFLICTS
+          \`\`\`
+
+          To resolve locally:
+          \`\`\`bash
+          git remote add upstream $UPSTREAM_REPO   # once
+          git fetch upstream main
+          git checkout -b sync/upstream-manual main
+          git merge upstream/main
+          # resolve, then:
+          node scripts/fork/check-integration.js
+          npm ci --legacy-peer-deps && npm test --workspaces
+          \`\`\`
+
+          Keep fork logic in fork-owned files — see "Fork isolation" in \`.claude/rules/architecture.md\`.
+
+          Generated by \`.github/workflows/sync-upstream.yml\`.
+          EOF
+          )"
