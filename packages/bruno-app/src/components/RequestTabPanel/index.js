@@ -537,7 +537,11 @@ const RequestTabPanel = () => {
   }
 
   if (focusedTab.type === 'variables') {
-    return <VariablesEditor collection={collection} />;
+    return (
+      <ScopedPersistenceProvider scope={focusedTab.uid}>
+        <VariablesEditor collection={collection} />
+      </ScopedPersistenceProvider>
+    );
   }
 
   if (focusedTab.type === 'collection-settings') {
