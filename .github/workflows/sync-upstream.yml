@@ -139,7 +139,21 @@ jobs:
       # full dependency build.
       - name: Fork integration guard
         if: steps.merge.outputs.resolution == 'clean' || steps.merge.outputs.resolution == 'lockfile'
-        run: node scripts/fork/check-integration.js
+        env:
+          TEST_BASE_REF: ${{ inputs.test_base_ref }}
+        run: |
+          # A test run merges into an older base, whose tree can predate the guard script itself.
+          # That is an artefact of testing, not a fork problem — skip it there. On a real sync the
+          # script missing from the merged tree means the fork lost one of its own files, so fail.
+          if [ ! -f scripts/fork/check-integration.js ]; then
+            if [ -n "$TEST_BASE_REF" ]; then
+              echo "::notice::Guard script absent at $TEST_BASE_REF (test base predates it) — skipping."
+              exit 0
+            fi
+            echo "::error::scripts/fork/check-integration.js is missing from the merged tree."
+            exit 1
+          fi
+          node scripts/fork/check-integration.js
 
       # Installs deps and builds the shared packages. The build matters: upstream regularly adds
       # helpers to them that dependent workspaces resolve through dist/, so an un-rebuilt merge
