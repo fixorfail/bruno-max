@@ -127,7 +127,10 @@ jobs:
           fi
 
           git checkout --theirs package-lock.json
-          npm install --package-lock-only --legacy-peer-deps
+          # --ignore-scripts: the root `prepare` script runs husky, which is not installed on a
+          # clean runner (no node_modules yet) and exits 127. Lifecycle scripts play no part in
+          # computing the lockfile, so skipping them is both safe and necessary here.
+          npm install --package-lock-only --ignore-scripts --legacy-peer-deps
           git add package-lock.json
           git commit --no-edit --no-verify
           echo "resolution=lockfile" >> "$GITHUB_OUTPUT"
