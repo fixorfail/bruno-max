@@ -30,7 +30,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       responses: { createThing: CREATED, getState: STATE }
     });
 
-    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'inputs.json', 'run.json', 'summary.json']);
   });
 
   it('computes every path itself, inside the scope root', async () => {
@@ -60,7 +60,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
     const run = await runFlow(entry, { files });
 
-    expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'inputs.json', 'run.json', 'summary.json']);
     // `flowHash` is the flow's own text, which §14.5 records so a reader can tell a run apart from
     // what the file says now — an exact shape, so a field added without a decision fails here.
     expect(run.files.json(path.join(run.captureDir, 'run.json'))).toEqual({
@@ -110,7 +110,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         .filter((target) => target.startsWith(`${run.captureDir}${path.sep}`))
         .map((target) => path.relative(run.captureDir, target));
 
-      expect(relative.sort()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json']);
+      expect(relative.sort()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'inputs.json', 'run.json']);
       expect(run.files.json(path.join(run.captureDir, 'create/attempt-1.json'))).toMatchObject({
         stepId: 'create',
         attempt: 1
@@ -195,6 +195,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         'create/attempt-3.json',
         'flow.json',
         'flow.yml',
+        'inputs.json',
         'run.json',
         'summary.json'
       ]);
@@ -246,6 +247,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       'create/attempt-1.json',
       'flow.json',
       'flow.yml',
+      'inputs.json',
       'run.json',
       'summary.json'
     ]);
@@ -259,6 +261,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     expect(run.layout()).toEqual([
       'flow.json',
       'flow.yml',
+      'inputs.json',
       'iteration-0/consume/attempt-1.json',
       'iteration-0/create/attempt-1.json',
       'iteration-1/consume/attempt-1.json',
@@ -291,7 +294,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
 
     expect(run.captureDir.startsWith(`${elsewhere}${path.sep}`)).toBe(true);
-    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'run.json', 'summary.json']);
+    expect(run.layout()).toEqual(['create/attempt-1.json', 'flow.json', 'flow.yml', 'inputs.json', 'run.json', 'summary.json']);
     // The .gitignore entry names the default location, so relocating the output does not earn one.
     expect(run.files.has(path.join(FIXTURES, '.gitignore'))).toBe(false);
   });
@@ -322,7 +325,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         contentType: 'application/pdf',
         byteLength: 13
       });
-      expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'run.json', 'scan/attempt-1.json', 'summary.json']);
+      expect(run.layout()).toEqual(['flow.json', 'flow.yml', 'inputs.json', 'run.json', 'scan/attempt-1.json', 'summary.json']);
     });
 
     it('captures each multipart part, with the file parts by reference', async () => {

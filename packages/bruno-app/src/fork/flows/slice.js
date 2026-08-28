@@ -30,6 +30,19 @@ const initialState = {
   flowByRunId: {},
   /** pathname -> the stepId whose detail pane is open (002 §9). */
   selectedStep: {},
+  /**
+   * pathname -> the run panel's configuration (002 §7.2) — params, concurrency, dataset.
+   *
+   * Keyed by path for the reason `sources` is: `RequestTabPanel` renders only the focused tab, so a
+   * configuration held in the pane's own `useState` is discarded by every tab switch. A library
+   * flow's params are typed by hand before each run (§12.5), and losing them silently on the way to
+   * another tab is indistinguishable from never having typed them.
+   *
+   * **Deliberately not persisted to disk.** The snapshot middleware writes a curated subset of the
+   * store, and a flow's params routinely hold a password — this one is in memory for the life of the
+   * session and no longer.
+   */
+  configurations: {},
   /** Every request the dispatch port sent, oldest first, for the DevTools network tab (002 §8.5). */
   requestLogs: [],
   /**
@@ -49,9 +62,17 @@ const initialState = {
  */
 const emptySource = () => ({ content: '', saved: '', loading: true, saving: false, valid: true });
 
-const emptyRun = ({ runId, iterationCount, captureDir, description }) => ({
+const emptyRun = ({ runId, iterationCount, captureDir, description, params }) => ({
   runId,
   dir: captureDir,
+  /**
+   * §5.6: what this run was started with, reported at `run:start` rather than read back from the
+   * capture. The inputs node switches from boxes to a record the moment a run begins, and a node
+   * waiting on the artifact would show a live run as having been started with nothing.
+   */
+  params,
+  /** Filled per iteration from `iteration:vars`, keyed the way `steps` is. */
+  vars: {},
   /**
    * The graph this run is executing — 001 §14.5's snapshot, reported at `run:start`.
    *
@@ -152,6 +173,12 @@ const applyEvent = (state, event) => {
       nodesFor(run, event.index);
       break;
 
+    case 'iteration:vars':
+      // §7.3 resolves `vars:` per iteration, so this arrives once per row and never replaces
+      // another iteration's values.
+      run.vars[event.index] = event.vars;
+      break;
+
     case 'run:end':
       run.state = 'complete';
       run.status = event.result.status;
@@ -196,6 +223,37 @@ const slice = createSlice({
       // §6: diagnostics refresh on a watcher change, so a stale description must not survive one.
       if (event === 'changeFile') {
         delete state.descriptions[entry.pathname];
+      }
+    },
+
+    /**
+     * §4.3: the file changed underneath a raw editor that has no unsaved work, so the editor takes
+     * the file's text.
+     *
+     * `loading` is deliberately not touched. Bruno's own save fires the same watcher event, so this
+     * runs after every save — going back through the loading state would flash the pane on each one.
+     * `saved` moves with `content` because the two now agree: this *is* what is on disk.
+     */
+    sourceRefreshed: (state, action) => {
+      const { pathname, content } = action.payload;
+      const source = state.sources[pathname];
+      if (source) {
+        source.content = content;
+        source.saved = content;
+        source.staleOnDisk = false;
+        source.error = undefined;
+      }
+    },
+
+    /**
+     * The file changed underneath an editor that *does* have unsaved work. Taking the file's text
+     * would discard it, and 002 §4.3 makes that the one loss an editor is not allowed — so the
+     * editor keeps what was typed and the pane says the two have diverged.
+     */
+    sourceDivergedOnDisk: (state, action) => {
+      const source = state.sources[action.payload.pathname];
+      if (source) {
+        source.staleOnDisk = true;
       }
     },
 
@@ -277,7 +335,15 @@ const slice = createSlice({
          * before snapshots existed, which falls back to the current graph as it always did.
          */
         description: stored.description,
-        source: stored.source
+        source: stored.source,
+        /**
+         * §5.6: what this run was started with, secrets already masked by the engine (001 §14.4).
+         * `undefined` for a run recorded before inputs were — the panel says "not recorded" rather
+         * than drawing empty boxes, which would claim nothing was supplied.
+         */
+        params: stored.params,
+        /** §5.6: `vars:` as each iteration resolved them, keyed by iteration the way `steps` is. */
+        vars: stored.vars
       };
       state.flowByRunId[stored.runId] = pathname;
     },
@@ -308,6 +374,12 @@ const slice = createSlice({
     iterationSelected: (state, action) => {
       const { pathname, iteration } = action.payload;
       state.runs[pathname].selectedIteration = iteration;
+    },
+
+    /** §7.2's run panel, edited. The whole configuration is replaced: the panel owns it as a unit. */
+    configurationChanged: (state, action) => {
+      const { pathname, configuration } = action.payload;
+      state.configurations[pathname] = configuration;
     },
 
     /** `stepId` is null when the selection is cleared — clicking the selected node again (002 §9). */
@@ -384,6 +456,8 @@ const slice = createSlice({
         source.saved = content;
         source.saving = false;
         source.error = undefined;
+        // Whatever the file held a moment ago, it holds this now.
+        source.staleOnDisk = false;
       }
     },
 
@@ -416,10 +490,13 @@ export const {
   pastRunLoaded,
   runClosed,
   iterationSelected,
+  configurationChanged,
   stepSelected,
   requestLogsReceived,
   sourceLoaded,
   sourceLoadFailed,
+  sourceRefreshed,
+  sourceDivergedOnDisk,
   sourceEdited,
   sourceDescribed,
   sourceDescribeFailed,

@@ -1,13 +1,18 @@
 import React, { forwardRef, useMemo, useRef, useState } from 'react';
 import path from 'path';
 import { useDispatch, useSelector } from 'react-redux';
-import { IconDots, IconEdit, IconSitemap } from '@tabler/icons';
+import { IconDots, IconEdit, IconPlus, IconSitemap } from '@tabler/icons';
+import toast from 'react-hot-toast';
 import Dropdown from 'components/Dropdown';
 import SidebarSection from 'components/Sidebar/SidebarSection';
+import ActionIcon from 'ui/ActionIcon';
+import MenuDropdown from 'ui/MenuDropdown';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
 import { collectionUidForScope } from '../collectionScope';
+import { flowsFolderFor } from '../actions';
+import CreateFlow from '../CreateFlow';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -166,6 +171,38 @@ const FlowSidebarSection = () => {
     = workspaces.find((workspace) => workspace.uid === activeWorkspaceUid)
       || workspaces.find((workspace) => workspace.type === 'default');
 
+  /**
+   * The default location the form opens with, resolved before the form mounts rather than fetched
+   * from inside it. `renderer:flow-folder` is a path join, so it settles in the same tick the click
+   * does — and asking for it here is what keeps the form a plain controlled component with no
+   * loading state of its own.
+   *
+   * `null` while closed, so the modal is not mounted; a directory string once it is.
+   */
+  const [newFlowDirectory, setNewFlowDirectory] = useState(null);
+
+  const openCreateFlow = async () => {
+    try {
+      // A workspace with no path on record leaves the location blank, and Browse is the way in.
+      setNewFlowDirectory(activeWorkspace?.pathname ? await dispatch(flowsFolderFor(activeWorkspace.pathname)) : '');
+    } catch (error) {
+      console.error(error);
+      toast.error('An error occurred while resolving the flows folder');
+    }
+  };
+
+  const sectionActions = (
+    <MenuDropdown
+      data-testid="flows-header-add-menu"
+      items={[{ id: 'create-flow', leftSection: IconPlus, label: 'Create API Flow', onClick: openCreateFlow }]}
+      placement="bottom-end"
+    >
+      <ActionIcon label="Add new Flow" data-testid="flows-header-add">
+        <IconPlus size={14} stroke={1.5} aria-hidden="true" />
+      </ActionIcon>
+    </MenuDropdown>
+  );
+
   const groups = useMemo(() => groupFlows(flowsInWorkspace(flows, activeWorkspace)), [flows, activeWorkspace]);
 
   /**
@@ -202,45 +239,56 @@ const FlowSidebarSection = () => {
   };
 
   return (
-    <SidebarSection id="flows" title="API Flows" icon={IconSitemap} className="flows-section">
-      <StyledWrapper>
-        {groups.length === 0 ? <div className="flows-empty">No flows found</div> : null}
+    <>
+      {newFlowDirectory === null ? null : (
+        <CreateFlow defaultDirectory={newFlowDirectory} onClose={() => setNewFlowDirectory(null)} />
+      )}
+      <SidebarSection
+        id="flows"
+        title="API Flows"
+        icon={IconSitemap}
+        actions={sectionActions}
+        className="flows-section"
+      >
+        <StyledWrapper>
+          {groups.length === 0 ? <div className="flows-empty">No flows found</div> : null}
 
-        {groups.map((group) => (
-          <div key={group.root} className="flow-group">
-            <div className="flow-group-label">{group.label}</div>
-            {group.sections.map((section) => (
-              <div key={section.key} className="flow-subgroup">
-                {section.label ? (
-                  <div className="flow-subgroup-label" data-testid={`flow-subgroup-${section.key}`}>
-                    {section.label}
-                  </div>
-                ) : null}
-                {section.flows.map((flow) => {
-                  const run = runs[flow.pathname];
-
-                  return (
-                    <div
-                      key={flow.pathname}
-                      className="flow-row"
-                      data-testid={`flow-row-${flow.filename}`}
-                      data-run-state={run?.state}
-                      onClick={() => openFlow(flow, 'flow')}
-                    >
-                      <span className="flow-name">{flowLabel(flow)}</span>
-                      <div className="flow-row-actions">
-                        {run ? <span className={`flow-run-mark ${run.status || run.state}`} /> : null}
-                        <FlowMenu flow={flow} onEditYaml={() => openFlow(flow, 'flow-yaml')} />
-                      </div>
+          {groups.map((group) => (
+            <div key={group.root} className="flow-group">
+              <div className="flow-group-label">{group.label}</div>
+              {group.sections.map((section) => (
+                <div key={section.key} className="flow-subgroup">
+                  {section.label ? (
+                    <div className="flow-subgroup-label" data-testid={`flow-subgroup-${section.key}`}>
+                      {section.label}
                     </div>
-                  );
-                })}
-              </div>
-            ))}
-          </div>
-        ))}
-      </StyledWrapper>
-    </SidebarSection>
+                  ) : null}
+                  {section.flows.map((flow) => {
+                    const run = runs[flow.pathname];
+
+                    return (
+                      <div
+                        key={flow.pathname}
+                        className="flow-row"
+                        data-testid={`flow-row-${flow.filename}`}
+                        data-run-state={run?.state}
+                        onClick={() => openFlow(flow, 'flow')}
+                      >
+                        <span className="flow-name">{flowLabel(flow)}</span>
+                        <div className="flow-row-actions">
+                          {run ? <span className={`flow-run-mark ${run.status || run.state}`} /> : null}
+                          <FlowMenu flow={flow} onEditYaml={() => openFlow(flow, 'flow-yaml')} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          ))}
+        </StyledWrapper>
+      </SidebarSection>
+    </>
   );
 };
 

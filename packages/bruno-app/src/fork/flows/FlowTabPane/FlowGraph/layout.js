@@ -376,6 +376,46 @@ const slotPath = (from, to) => {
 };
 
 /**
+ * 002 §5.6's inputs panel — the params and vars a run starts from, drawn as the graph's leftmost
+ * box.
+ *
+ * **A layer beside the graph rather than a rank in it**, laid out the way `layoutSlotLane` is: the
+ * engine's ranks are 001's and dagre is not allowed to re-derive them, so inserting a node at rank
+ * -1 would change what every other rank means. This claims the gutter to the left of the drawing and
+ * leaves the ranks untouched.
+ *
+ * No edges are drawn from it. `{{params.x}}` is read by most steps in a flow that declares any, and
+ * a line from this box to nearly every other one draws a fact the reader already has — the same
+ * reason §5.3's slot layer is off by default.
+ */
+export const INPUTS_WIDTH = 208;
+const INPUTS_GAP = RANK_GAP;
+const INPUTS_HEADER = 26;
+const INPUTS_ROW = 46;
+const INPUTS_SECTION_LABEL = 20;
+const INPUTS_PADDING = 10;
+
+export const layoutInputsPanel = (graph, { params = [], vars = [] }) => {
+  if (!params.length && !vars.length) {
+    return undefined;
+  }
+
+  const sections
+    = (params.length ? INPUTS_SECTION_LABEL + params.length * INPUTS_ROW : 0)
+      + (vars.length ? INPUTS_SECTION_LABEL + vars.length * INPUTS_ROW : 0);
+  const height = INPUTS_HEADER + sections + INPUTS_PADDING;
+
+  return {
+    x: -(INPUTS_WIDTH + INPUTS_GAP),
+    // Against the top of the first rank rather than centred on the drawing: the panel is read once,
+    // on the way in, and a tall flow would otherwise put its inputs halfway down the scroll.
+    y: 0,
+    width: INPUTS_WIDTH,
+    height: Math.min(height, Math.max(graph.height, height))
+  };
+};
+
+/**
  * §5.3 and §9.1: shared slots, as a layer over the laid-out graph.
  *
  * **Every glyph gets its own place in the lane.** The first version centred each on the span of its

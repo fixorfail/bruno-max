@@ -103,4 +103,14 @@ export type RunManifest = {
 export type FlowSnapshot = {
   description: FlowDescription;
   source: string;
+  /**
+   * §12.5's params as the run was started with them — what a host supplied, filled in from the
+   * flow's declared defaults. 002 §5.6 draws these when a stored run is opened, where the inputs
+   * node shows values rather than boxes.
+   *
+   * **A param declared `secret: true` is masked here, not on the way out.** §14.5 requires that a
+   * secret never be written into a file buffer at all, so the masking happens before this reaches
+   * `writeJson` — a reader of `inputs.json` sees `••••` because that is what is on disk.
+   */
+  params: Record<string, unknown>;
 };

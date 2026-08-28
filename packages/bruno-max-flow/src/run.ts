@@ -26,6 +26,7 @@ import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
+import { MASK } from './redact';
 import { runAttempt, retryDelay, sleepFor, wantsRetry, type ScriptRunner } from './step';
 import type { FlowSnapshot } from './types/capture';
 import type { RunOptions } from './types/options';
@@ -207,13 +208,45 @@ const readText = async (state: RunState, file: string): Promise<string> =>
  * can therefore fail on a network the run itself may not need; the run proceeds without a snapshot,
  * and 002 §10 reads such a run the way it read every run before snapshots existed.
  */
-const flowSnapshot = async (state: RunState, entry: string): Promise<FlowSnapshot | undefined> => {
+/**
+ * §14.4: what a run was started with, with the declared secrets replaced before anything serializes
+ * them. `MASK` is not length-preserving, so the record does not leak how long the value was.
+ *
+ * A param the flow does not declare cannot reach here — `paramsFor` builds this from the
+ * declarations — so there is no unclassified value to decide about.
+ */
+const maskedParams = (declared: NormalizedFlow['params'], params: Vars): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(params).map(([name, value]) => [
+      name,
+      declared[name]?.secret && value !== undefined ? MASK : value
+    ])
+  );
+
+/**
+ * The params as a value rather than as an expression: a declared default is written in the file
+ * (`default: "{{testUserPassword}}"`) and a record of the placeholder would say where the value came
+ * from without ever saying what it was.
+ *
+ * Resolved against the run's **environment only**, because that is all that exists this early — the
+ * capture opens before the first step, and `vars:` and `steps.*` are resolved per iteration inside
+ * `executeFlow`. A default reading `{{row.x}}` under a dataset therefore records as written; it has
+ * no single value across iterations, so there is nothing truer to record.
+ */
+const startedWith = (state: RunState, declared: NormalizedFlow['params'], params: Vars): Record<string, unknown> =>
+  maskedParams(declared, interpolateValue(params, { vars: state.environment, namespaces: {} }).value as Vars);
+
+const flowSnapshot = async (
+  state: RunState,
+  entry: string,
+  params: Record<string, unknown>
+): Promise<FlowSnapshot | undefined> => {
   try {
     const [description, source] = await Promise.all([
       describeFlow({ entry, scope: state.options.scope, ports: state.options.ports }),
       readText(state, entry)
     ]);
-    return { description, source };
+    return { description, source, params };
   } catch {
     return undefined;
   }
@@ -385,6 +418,12 @@ const executeFlow = async (
   resolvedVars = interpolateValue(await loadFileVars(flow.vars), scopeFor()).value as Vars;
   if (!prefix) {
     resolvedParams = interpolateValue(run.params, scopeFor()).value as Vars;
+    // 002 §5.6: the values this iteration actually ran with, handed to the capture rather than
+    // re-derived — `{{$guid}}` would generate a different one on a second evaluation. The entry
+    // flow's own only: a sub-flow's `vars:` are its internals, and §5.4 does not draw them.
+    state.capture?.vars(run.iteration, resolvedVars);
+    // The same values, to a host watching the run rather than reading it back afterwards (§5.6).
+    state.emit({ type: 'iteration:vars', index: run.iteration, vars: resolvedVars });
   }
 
   const profiles: Record<string, AuthProfile> = {
@@ -866,6 +905,43 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   });
 
   const flow = await loadFlow(state, options.entry);
+
+  /**
+   * §12.5's required params, for a run that has no caller.
+   *
+   * `validate.ts` already makes this a describe-time error for a `uses:` step, whose `with:` keys are
+   * written in the file — but a top-level run's params come from the host and are not knowable until
+   * now. Unchecked they resolve to `undefined`, and a `params` miss is not a `steps.*` miss: nothing
+   * skips the step and nothing reports it, so `{{params.email}}` reaches the wire verbatim and the
+   * API rejects a request the run then calls successful.
+   *
+   * Thrown before `run:start` and before the capture opens, so a run that was never viable leaves no
+   * artifact behind and no run for a host to attach events to — the same shape as a flow that does
+   * not parse. The predicate is `validate.ts`'s, unchanged: a param with a default is supplied by
+   * its default, and only an absent value is missing.
+   */
+  const missingParams = Object.entries(flow.params)
+    .filter(([name, declared]) => declared.required && declared.default === undefined && options.params?.[name] === undefined)
+    .map(([name]) => name);
+  if (missingParams.length) {
+    throw new Error(
+      `no value was supplied for the required param${missingParams.length > 1 ? 's' : ''} ${missingParams.join(', ')}`
+    );
+  }
+
+  /**
+   * What this run was started with — the host's params over the flow's declared defaults (§12.5).
+   *
+   * Resolved once for the whole run rather than per iteration, because it is an input *to* the run:
+   * every iteration is handed the same set, and the record 002 §5.6 reads has to name one thing.
+   */
+  const runParams = paramsFor(flow.params, options.params || {});
+  /**
+   * The same values the capture records, computed whether or not one is being taken: 002 §5.6's
+   * node reports what the run was started with, and `--no-capture` does not make a run anonymous.
+   */
+  const reportedParams = startedWith(state, flow.params, runParams);
+
   state.budget = new Budget(options.overrides?.concurrency || flow.config.concurrency);
   state.cleanupGrace = flow.config.cleanupGrace;
   state.nestIterations = flow.dataset !== undefined;
@@ -886,7 +962,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
       retainRuns: flow.config.captureRetainRuns,
       redactHeaders: flow.config.redactHeaders
     });
-    snapshot = await flowSnapshot(state, options.entry);
+    snapshot = await flowSnapshot(state, options.entry, reportedParams);
     await state.capture.start(snapshot);
   }
 
@@ -910,7 +986,8 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     flow: options.entry,
     iterationCount: rows.length,
     captureDir: state.capture?.dir,
-    description: snapshot?.description
+    description: snapshot?.description,
+    params: reportedParams
   });
 
   const iterations: IterationResult[] = [];
@@ -952,7 +1029,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
         const { results, verdictCauses } = await executeFlow(state, {
           flow,
           prefix: '',
-          params: paramsFor(flow.params, options.params || {}),
+          params: runParams,
           row,
           iteration: index,
           profiles: {}

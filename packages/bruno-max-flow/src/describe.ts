@@ -227,6 +227,7 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     name: path.basename(options.entry).replace(/\.flow\.yml$/, ''),
     isLibrary: false,
     params: [],
+    vars: [],
     apis: [],
     nodes: [],
     edges: [],
@@ -255,7 +256,14 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     params: Object.entries(flow.params).map(([name, declared]) => ({
       name,
       required: declared.required,
-      default: declared.default
+      default: declared.default,
+      secret: declared.secret
+    })),
+    // The declaration rather than the value: §7.3 resolves `vars:` per iteration, so there is no
+    // one value to report, and the expression is what the author wrote and would change.
+    vars: Object.entries(flow.vars).map(([name, expression]) => ({
+      name,
+      expression: typeof expression === 'string' ? expression : JSON.stringify(expression)
     })),
     // §6.2's bindings, in the order the file declares them — which is the order 002 §5.1 assigns
     // colours in for the ones that declare none.

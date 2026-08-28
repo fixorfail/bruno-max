@@ -69,7 +69,18 @@ const SaveState = ({ source }) => {
     return <span className="yaml-state error">{`Not saved — ${source.error}`}</span>;
   }
   if (source.content !== source.saved) {
-    return <span className="yaml-state dirty">Unsaved changes</span>;
+    /**
+     * The file moved on while there was unsaved work here, so neither side can be taken silently:
+     * the editor kept what was typed, and saving from here will overwrite what is on disk. Saying
+     * so is the whole of the handling — choosing for the author is what an editor must not do.
+     */
+    return source.staleOnDisk ? (
+      <span className="yaml-state error" data-testid="flow-yaml-diverged">
+        Unsaved changes — the file also changed on disk
+      </span>
+    ) : (
+      <span className="yaml-state dirty">Unsaved changes</span>
+    );
   }
   return <span className="yaml-state">Saved</span>;
 };

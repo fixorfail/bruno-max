@@ -24,6 +24,36 @@ const started = (state = undefined, extras = {}) =>
   ]);
 
 describe('the flows slice', () => {
+  /**
+   * 002 §5.6: the inputs node reports a *live* run, not only one read back from disk. The values
+   * arrive on the stream — params at `run:start`, vars once per iteration as they resolve — so the
+   * node stops showing boxes and starts showing the record the moment the run begins.
+   */
+  describe('a run\'s own inputs', () => {
+    it('takes the params the run was started with from run:start', () => {
+      const state = started(undefined, { params: { email: 'qa@example.com', password: '••••' } });
+
+      expect(state.runs[pathname].params).toEqual({ email: 'qa@example.com', password: '••••' });
+    });
+
+    it('folds each iteration\'s vars under its own index', () => {
+      let state = started(undefined, { params: {}, iterationCount: 2 });
+      state = withEvents(state, 'run-1', [
+        { type: 'iteration:vars', index: 0, vars: { runToken: 'a' } },
+        { type: 'iteration:vars', index: 1, vars: { runToken: 'b' } }
+      ]);
+
+      expect(state.runs[pathname].vars).toEqual({ 0: { runToken: 'a' }, 1: { runToken: 'b' } });
+    });
+
+    /** A run reports nothing about vars until an iteration has resolved them. */
+    it('starts a run with no vars rather than with none declared', () => {
+      const state = started(undefined, { params: {} });
+
+      expect(state.runs[pathname].vars).toEqual({});
+    });
+  });
+
   it('replaces one scope on reload without disturbing another', () => {
     const other = { pathname: '/other/flows/a.flow.yml', filename: 'a.flow.yml', workspaceRoot: '/other' };
     let state = reducer(undefined, flowsLoaded({ workspaceRoot: '/other', flows: [other] }));

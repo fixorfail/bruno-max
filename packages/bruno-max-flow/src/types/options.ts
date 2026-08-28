@@ -114,6 +114,18 @@ export type StoredRun = RunIndexEntry & {
   description?: FlowDescription;
   /** The flow's own text at run time — the diff against what it says now. */
   source?: string;
+  /**
+   * §12.5's params this run was started with, secrets already masked (001 §14.4). Absent for a run
+   * recorded before they were, which is *unknown* rather than "none were supplied" — 002 §5.6 says
+   * so rather than drawing an empty set.
+   */
+  params?: Record<string, unknown>;
+  /**
+   * §7.3's `vars:` as each iteration resolved them, keyed by iteration index the way the step
+   * captures are — under a dataset every row resolves its own set. Absent for a run recorded before
+   * them, and for one that was interrupted before `finish` wrote them.
+   */
+  vars?: Record<number, Record<string, unknown>>;
 };
 
 export type ReadCaptureOptions = {

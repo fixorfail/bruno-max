@@ -148,25 +148,6 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
         />
       </label>
 
-      {/* §7.2: parameters are shown only for a library flow (001 §12.5). */}
-      {description?.isLibrary
-        ? description.params.map((param) => (
-            <label key={param.name} className="run-option">
-              {param.name}
-              {param.required ? <span className="required">*</span> : null}
-              <input
-                type="text"
-                value={configuration.params?.[param.name] ?? ''}
-                onChange={(event) =>
-                  onConfigurationChange({
-                    ...configuration,
-                    params: { ...configuration.params, [param.name]: event.target.value }
-                  })}
-              />
-            </label>
-          ))
-        : null}
-
       {run?.summary ? (
         <div className="run-summary" data-testid="flow-run-summary">
           {/* §8.4: flow vocabulary here, step vocabulary on the nodes — 001 §14.6 keeps them

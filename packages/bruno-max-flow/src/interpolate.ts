@@ -10,8 +10,9 @@
  *   could reach a JSON body at all. A scalar that is exactly one `{{...}}` is therefore resolved
  *   here and only embedded references are delegated.
  * - **Engine state the run knows was never written resolves empty, not verbatim.** Leaving
- *   `{{shared.x}}` in place is right for a variable a human may still define and wrong for a slot
- *   (§11.2), where it turns a missing value into a malformed request.
+ *   `{{shared.x}}` or `{{params.x}}` in place is right for a variable a human may still define and
+ *   wrong for a slot or a declared param (§11.2), where it turns a missing value into a malformed
+ *   request — one the API rejects for a reason that names the field rather than the placeholder.
  *
  * Embedded references are resolved here for the same second reason rather than delegated: an
  * unproduced `{{steps.a.b}}` has to be *reported* so its step can be skipped `unresolved-dependency`,
@@ -54,15 +55,39 @@ const lookup = (reference: string, scope: Scope): { found: boolean; value: unkno
 };
 
 /**
- * A reference the run owns and knows is empty (§11.2): a declared slot nothing wrote. A `steps.*`
- * reference is deliberately not in this set — its absence means the step it names did not do what
- * it was for, which is a skip rather than an empty string.
+ * A reference the run owns and knows is empty (§11.2): a declared slot nothing wrote, or a declared
+ * param nothing supplied. A `steps.*` reference is deliberately not in this set — its absence means
+ * the step it names did not do what it was for, which is a skip rather than an empty string.
+ *
+ * **The two roots ask opposite questions of their namespace, because the namespaces are built
+ * oppositely.** `shared` starts empty and gains a key when a step *writes* the slot, so a missing key
+ * is an unwritten one. `params` is built from the flow's declarations before anything runs
+ * (`paramsFor`), so every declared name is already a key — and a key whose value is `undefined` is
+ * the one nobody supplied.
+ *
+ * A `params` name that is not a key there was never declared: a typo rather than an empty value, and
+ * nothing else in the engine will catch it — `references.ts` scans only `steps` and `shared`. The
+ * placeholder is then the only evidence that survives to the wire, so it is left in place.
+ *
+ * Both roots leave a miss on a *sub-path* alone for the same reason: `{{shared.order.id}}` and
+ * `{{params.profile.email}}` name a value that is present and shaped differently than the author
+ * expected, which is not the same claim as "the run knows this is empty".
  */
 const resolvesEmpty = (reference: string, scope: Scope): boolean => {
   const [root, name] = reference.split('.');
-  if (root !== 'shared') return false;
-  const slots = scope.namespaces.shared as Record<string, unknown> | undefined;
-  return Boolean(slots) && !Object.prototype.hasOwnProperty.call(slots, name);
+
+  if (root === 'shared') {
+    const slots = scope.namespaces.shared as Record<string, unknown> | undefined;
+    return Boolean(slots) && !Object.prototype.hasOwnProperty.call(slots, name);
+  }
+
+  if (root === 'params') {
+    const params = scope.namespaces.params as Record<string, unknown> | undefined;
+    if (!params || !Object.prototype.hasOwnProperty.call(params, name)) return false;
+    return params[name] === undefined;
+  }
+
+  return false;
 };
 
 const resolveReference = (reference: string, scope: Scope, unresolved: string[]): unknown => {

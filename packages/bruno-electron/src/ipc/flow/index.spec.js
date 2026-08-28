@@ -271,3 +271,69 @@ describe('the raw YAML editor host', () => {
     await expect(writeFlowSourceHandler({ entry, scope })).rejects.toThrow('needs text');
   });
 });
+
+/** 002 §4.1 — the Create Flow form's two handlers. */
+describe('creating a flow', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { flowsFolderHandler, createFlowHandler } = require('./index');
+
+  let scopeRoot;
+
+  beforeEach(() => {
+    scopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flow-create-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  it('names the scope flows folder without creating it', () => {
+    expect(flowsFolderHandler({ scopeRoot })).toBe(path.join(scopeRoot, 'flows'));
+    expect(fs.existsSync(path.join(scopeRoot, 'flows'))).toBe(false);
+  });
+
+  it('refuses to name a folder for no scope', () => {
+    expect(() => flowsFolderHandler({})).toThrow('needs a scope root');
+  });
+
+  /** The first flow of a workspace lands in a directory nothing has made yet. */
+  it('creates the directory the flow is written into', async () => {
+    const directory = path.join(scopeRoot, 'flows');
+
+    const pathname = await createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 1\n' });
+
+    expect(pathname).toBe(path.join(directory, 'checkout.flow.yml'));
+    expect(fs.readFileSync(pathname, 'utf8')).toBe('version: 1\n');
+  });
+
+  /** The only thing the form knows about a file already there is that the author did not mean it. */
+  it('refuses to overwrite a flow that already exists', async () => {
+    const directory = path.join(scopeRoot, 'flows');
+    await createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 1\n' });
+
+    await expect(
+      createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 2\n' })
+    ).rejects.toThrow('a flow already exists at');
+    expect(fs.readFileSync(path.join(directory, 'checkout.flow.yml'), 'utf8')).toBe('version: 1\n');
+  });
+
+  /** `scanFlows` matches on the extension, so a file written without it is created and then unseen. */
+  it('refuses a filename the watcher would never report', async () => {
+    await expect(createFlowHandler({ directory: scopeRoot, filename: 'checkout.yml', content: '' })).rejects.toThrow(
+      'not a valid flow filename'
+    );
+  });
+
+  it('refuses a filename that is a path', async () => {
+    await expect(
+      createFlowHandler({ directory: scopeRoot, filename: '../escaped.flow.yml', content: '' })
+    ).rejects.toThrow('not a valid flow filename');
+  });
+
+  it('refuses a create with no directory and one with no text', async () => {
+    await expect(createFlowHandler({ filename: 'a.flow.yml', content: '' })).rejects.toThrow('needs a directory');
+    await expect(createFlowHandler({ directory: scopeRoot, filename: 'a.flow.yml' })).rejects.toThrow('needs text');
+  });
+});

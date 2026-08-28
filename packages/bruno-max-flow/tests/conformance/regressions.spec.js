@@ -267,6 +267,219 @@ describe('R4 — a library flow run directly gets its declared defaults', () => 
 });
 
 /**
+ * R4u — §12.5's *required* params, when a host runs a library flow directly.
+ *
+ * R4 above gave the direct path its declared defaults. What it could not give a param that declares
+ * none is a value, and an unsupplied one resolves to `undefined` — a `params` miss rather than a
+ * `steps.*` miss, so §11.2 skips nothing and reports nothing. `{{params.email}}` went to the wire
+ * verbatim and the step passed, leaving the API's rejection of a literal `{{...}}` as the only
+ * evidence the run was never viable.
+ *
+ * `validate.ts` already refuses the same omission at a `uses:` call site, where the `with:` keys are
+ * written in the file. This is the other way in, checked at the only moment it can be.
+ */
+describe('R4u — a required param a host never supplied stops the run', () => {
+  const responses = { login: { status: 200, body: { data: { access_token: 'tok', user: { id: 'u-1' } } } } };
+
+  it('refuses the run, naming the param', async () => {
+    await expect(runFlow('f2-login.flow.yml', { responses })).rejects.toThrow(
+      'no value was supplied for the required param email'
+    );
+  });
+
+  /** Refused *before* `run:start`: a run nothing can attach to is worse than no run at all. */
+  it('dispatches nothing and emits no run', async () => {
+    const events = [];
+
+    await expect(runFlow('f2-login.flow.yml', { responses, onEvent: (event) => events.push(event) })).rejects.toThrow();
+
+    expect(events).toEqual([]);
+  });
+
+  it('names every missing param, not just the first', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (flow) => {
+      flow.params.password = { required: true };
+    });
+
+    await expect(runFlow(entry, { responses, files })).rejects.toThrow(
+      'no value was supplied for the required params email, password'
+    );
+  });
+
+  /** A param with a default is supplied *by* the default — the predicate `validate.ts` already uses. */
+  it('lets a required param with a default through', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (flow) => {
+      flow.params.email = { required: true, default: 'fallback@example.com' };
+    });
+
+    const run = await runFlow(entry, { responses, files });
+
+    expect(run.call('login').json.email).toBe('fallback@example.com');
+  });
+
+  it('runs as before once the param is supplied', async () => {
+    const run = await runFlow('f2-login.flow.yml', { responses, params: { email: 'qa@example.com' } });
+
+    expect(run.call('login').json.email).toBe('qa@example.com');
+  });
+});
+
+/**
+ * R4v — §14.4's provenance mechanism, declared: `params.<name>.secret`.
+ *
+ * 002 §5.6 shows a stored run the values it was started with, which means writing them down — and
+ * §14.5 forbids a secret ever reaching a file buffer. The header denylist in `redact.ts` cannot
+ * decide this one: a header name is not the author's to choose and a param name is, so the flow
+ * declares which of its inputs are secret rather than the engine guessing from the spelling.
+ */
+describe('R4v — a run records what it was started with', () => {
+  const responses = { login: { status: 200, body: { data: { access_token: 'tok', user: { id: 'u-1' } } } } };
+
+  const inputsOf = (run) => JSON.parse(run.files.read(path.join(run.captureDir, 'inputs.json')).toString('utf8'));
+
+  it('writes the params the host supplied, and the defaults it did not', async () => {
+    const run = await runFlow('f2-login.flow.yml', { responses, params: { email: 'qa@example.com' } });
+
+    expect(inputsOf(run).params).toEqual({ email: 'qa@example.com', password: 'hunter2' });
+  });
+
+  /** Masked *before* serialization: the file itself never held the value (§14.5). */
+  it('masks a param the flow declares secret', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.password = { required: true, secret: true };
+    });
+
+    const run = await runFlow(entry, {
+      responses,
+      files,
+      params: { email: 'qa@example.com', password: 'hunter2' }
+    });
+
+    expect(inputsOf(run).params).toEqual({ email: 'qa@example.com', password: '••••' });
+    expect(run.files.read(path.join(run.captureDir, 'inputs.json')).toString('utf8')).not.toContain('hunter2');
+  });
+
+  /** The mask is not length-preserving, so the record does not leak how long the value was (§14.4). */
+  it('masks a long secret and a short one identically', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.password = { required: true, secret: true };
+    });
+
+    const short = await runFlow(entry, { responses, files, params: { email: 'a@b.co', password: 'x' } });
+    const long = await runFlow(entry, {
+      responses,
+      files,
+      params: { email: 'a@b.co', password: 'a-very-long-credential-indeed' }
+    });
+
+    expect(inputsOf(short).params.password).toBe(inputsOf(long).params.password);
+  });
+
+  /** The step still receives the real value — masking is for what is *reported* (§13.2). */
+  it('sends the real value even when it is masked in the record', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.password = { required: true, secret: true };
+    });
+
+    const run = await runFlow(entry, {
+      responses,
+      files,
+      params: { email: 'qa@example.com', password: 'hunter2' }
+    });
+
+    expect(run.call('login').json.password).toBe('hunter2');
+  });
+
+  /**
+   * §7.3's vars are recorded as the run *resolved* them, not as the file writes them: `{{$guid}}`
+   * generates a fresh value per evaluation, so a record derived by re-resolving would name an id no
+   * step ever used.
+   */
+  it('writes the vars each iteration actually resolved', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.vars = { attempt: 'first', tenant: '{{tenantId}}' };
+    });
+
+    const run = await runFlow(entry, { responses, files, params: { email: 'qa@example.com' } });
+
+    expect(inputsOf(run).vars[0]).toMatchObject({ attempt: 'first' });
+  });
+
+  it('records a var by the value the run used, not by re-deriving it', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.vars = { runToken: '{{$guid}}' };
+      doc.steps.find((step) => step.id === 'login').body.password = '{{runToken}}';
+    });
+
+    const run = await runFlow(entry, { responses, files, params: { email: 'qa@example.com' } });
+
+    expect(inputsOf(run).vars[0].runToken).toBe(run.call('login').json.password);
+  });
+
+  /** A sub-flow's vars are its internals — only the entry flow's are the run's inputs. */
+  it('records the entry flow\'s vars and not a sub-flow\'s', async () => {
+    const run = await runFlow('f2-order-fulfillment.flow.yml', {
+      responses: { ...responses, createOrder: { status: 201, body: { data: { id: 'ord-1', total: 100 } } } }
+    });
+
+    expect(Object.keys(inputsOf(run).vars)).toEqual(['0']);
+  });
+
+  /**
+   * 002 §5.6's node reports a *live* run. Read back from the capture it would show a run in
+   * progress as having been started with nothing, and under `--no-capture` there is nothing to read
+   * back at all — so the values ride the event stream as well as the artifact.
+   */
+  it('reports the params on run:start, not only in the record', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.password = { required: true, secret: true };
+    });
+
+    const run = await runFlow(entry, {
+      responses,
+      files,
+      params: { email: 'qa@example.com', password: 'hunter2' }
+    });
+
+    const start = run.events.find((event) => event.type === 'run:start');
+    expect(start.params).toEqual({ email: 'qa@example.com', password: '••••' });
+  });
+
+  it('reports each iteration\'s vars as they resolve', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.vars = { runToken: '{{$guid}}' };
+      doc.steps.find((step) => step.id === 'login').body.password = '{{runToken}}';
+    });
+
+    const run = await runFlow(entry, { responses, files, params: { email: 'qa@example.com' } });
+
+    const reported = run.events.filter((event) => event.type === 'iteration:vars');
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toMatchObject({ index: 0 });
+    expect(reported[0].vars.runToken).toBe(run.call('login').json.password);
+  });
+
+  /** A run is not anonymous just because nothing is being written down. */
+  it('reports the params with capture disabled', async () => {
+    const run = await runFlow('f2-login.flow.yml', {
+      responses,
+      params: { email: 'qa@example.com' },
+      overrides: { capture: { enabled: false } }
+    });
+
+    const start = run.events.find((event) => event.type === 'run:start');
+    expect(start.params).toEqual({ email: 'qa@example.com', password: 'hunter2' });
+  });
+
+  /** Absent `secret:` is the flow it always was — the flag is additive and defaults to off. */
+  it('leaves a flow that declares no secrets exactly as it was', async () => {
+    const run = await runFlow('f2-login.flow.yml', { responses, params: { email: 'qa@example.com' } });
+
+    expect(inputsOf(run).params.password).toBe('hunter2');
+  });
+});
+
+/**
  * R4s — §9.1's two slot shapes.
  *
  * `all` is the join: several branches may run and a reader below them must descend from every writer,
@@ -1207,6 +1420,8 @@ describe('R4r — a spec whose schemas are refs', () => {
 });
 
 describe('R5 — unresolved variables never reach the wire', () => {
+  const responses = { login: { status: 200, body: { data: { access_token: 'tok', user: { id: 'u-1' } } } } };
+
   // Bruno's interpolator leaves an unresolved placeholder in place, which is correct for a user
   // variable and wrong for engine state (§11.2).
   it('sends an empty string rather than the placeholder', async () => {
@@ -1217,6 +1432,53 @@ describe('R5 — unresolved variables never reach the wire', () => {
     const body = run.call('createThing').json;
     expect(body.ref).toBe('');
     expect(body.ref).not.toBe('{{shared.carrierRef}}');
+  });
+
+  /**
+   * A declared param is engine state by the same rule, and was the one root that did not follow it:
+   * an optional param with no default put `{{params.x}}` on the wire, where the API rejects it for a
+   * reason that names the field rather than the placeholder. R4u refuses the *required* case before
+   * the run; this is the case that legitimately has no value.
+   */
+  it('sends an empty string for a declared param nobody supplied', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.password = { required: false };
+    });
+
+    const run = await runFlow(entry, { responses, files, params: { email: 'qa@example.com' } });
+
+    expect(run.call('login').json.password).toBe('');
+  });
+
+  /**
+   * A name the flow never declared is a typo, not an empty value — and nothing else catches it,
+   * since `references.ts` scans only `steps` and `shared`. Blanking it would destroy the only
+   * evidence that reaches the wire.
+   */
+  it('keeps the placeholder for a param the flow does not declare', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.steps.find((step) => step.id === 'login').body.password = '{{params.passwrd}}';
+    });
+
+    const run = await runFlow(entry, { responses, files, params: { email: 'qa@example.com' } });
+
+    expect(run.call('login').json.password).toBe('{{params.passwrd}}');
+  });
+
+  /** A miss on a sub-path of a value that *is* there says the shape differs, not that it is empty. */
+  it('keeps the placeholder for a sub-path of a param that was supplied', async () => {
+    const { entry, files } = variant('f2-login.flow.yml', (doc) => {
+      doc.params.profile = { required: false };
+      doc.steps.find((step) => step.id === 'login').body.password = '{{params.profile.secret}}';
+    });
+
+    const run = await runFlow(entry, {
+      responses,
+      files,
+      params: { email: 'qa@example.com', profile: { name: 'qa' } }
+    });
+
+    expect(run.call('login').json.password).toBe('{{params.profile.secret}}');
   });
 });
 

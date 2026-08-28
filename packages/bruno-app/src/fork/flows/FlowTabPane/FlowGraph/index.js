@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { useTheme } from 'styled-components';
-import { NODE_FOOTER_HEIGHT, layoutGraph, layoutSlotLane, layoutStages } from './layout';
+import { NODE_FOOTER_HEIGHT, layoutGraph, layoutInputsPanel, layoutSlotLane, layoutStages } from './layout';
 import { assignApiColors } from './apiColors';
 import { assignSubflowColors } from './subflowColors';
 import { useFollowActiveNode } from './follow';
@@ -290,7 +290,15 @@ const FlowGraph = ({
   onToggleSubflow,
   showDataEdges,
   showSlotEdges,
-  running
+  running,
+  /**
+   * 002 §5.6. `paramValues` is what the boxes hold; `onParamChange` is absent when the tab is
+   * showing a stored run, and its absence is what makes the panel read-only — a run's inputs are a
+   * fact about that run, and a box you can type in says the opposite.
+   */
+  paramValues,
+  varValues,
+  onParamChange
 }) => {
   const graph = useMemo(
     () => layoutGraph(description, { expandedSubflows }),
@@ -409,6 +417,18 @@ const FlowGraph = ({
 
   const height = graph.height + lane.height;
   const band = stages.length ? STAGE_BAND : 0;
+  /**
+   * §10 draws a stored run from the description *that run* recorded, and one written before §5.6
+   * carries neither list — so these are defaulted rather than read straight off the description.
+   * The panel is then simply absent for an old run, which is the truth about it.
+   */
+  const inputParams = description.params || [];
+  const inputVars = description.vars || [];
+  const inputs = layoutInputsPanel(graph, { params: inputParams, vars: inputVars });
+  // The gutter the panel claims, added to the drawing's extent the way the slot lane adds to its
+  // height — the viewBox starts further left rather than the graph being shifted right. The panel
+  // sits at a negative x, so the room it needs is exactly how far left it starts.
+  const gutter = inputs ? -inputs.x : 0;
 
   /**
    * The drawing scrolls inside this box (§5.2), so the run walks off the edge of it on any flow
@@ -452,9 +472,9 @@ const FlowGraph = ({
       <div className="flow-graph-viewport" ref={viewportRef} data-testid="flow-graph-viewport">
         <svg
           className="flow-graph"
-          viewBox={`${-GRAPH_MARGIN} ${-GRAPH_MARGIN - band} ${graph.width + GRAPH_MARGIN * 2} ${height + GRAPH_MARGIN * 2 + band}`}
-          width={graph.width + GRAPH_MARGIN * 2}
-          height={height + GRAPH_MARGIN * 2 + band}
+          viewBox={`${-GRAPH_MARGIN - gutter} ${-GRAPH_MARGIN - band} ${graph.width + gutter + GRAPH_MARGIN * 2} ${Math.max(height, inputs?.height || 0) + GRAPH_MARGIN * 2 + band}`}
+          width={graph.width + gutter + GRAPH_MARGIN * 2}
+          height={Math.max(height, inputs?.height || 0) + GRAPH_MARGIN * 2 + band}
           data-focus={focusedStep || undefined}
           data-testid="flow-graph"
         >
@@ -463,6 +483,79 @@ const FlowGraph = ({
               <path d="M 0 0 L 8 4 L 0 8 z" />
             </marker>
           </defs>
+
+          {/* 002 §5.6: what the run starts from, in the gutter to the left of rank 0. Editable while
+              the tab shows the flow as it stands; a record of values once it shows a stored run. */}
+          {inputs ? (
+            <g className="flow-inputs" transform={`translate(${inputs.x}, ${inputs.y})`} data-testid="flow-inputs">
+              <rect className="inputs-box" width={inputs.width} height={inputs.height} rx="4" />
+              <foreignObject x="0" y="0" width={inputs.width} height={inputs.height}>
+                <div className="inputs-body" xmlns="http://www.w3.org/1999/xhtml">
+                  <div className="inputs-title">{onParamChange ? 'Inputs' : 'Inputs · as run'}</div>
+
+                  {inputParams.length ? (
+                    <div className="inputs-section">
+                      <div className="inputs-section-label">Params</div>
+                      {inputParams.map((param) => (
+                        <label className="inputs-row" key={param.name}>
+                          <span className="inputs-name">
+                            {param.name}
+                            {param.required ? <span className="inputs-required">*</span> : null}
+                          </span>
+                          {onParamChange ? (
+                            <input
+                              type={param.secret ? 'password' : 'text'}
+                              className="inputs-input"
+                              data-testid={`flow-input-${param.name}`}
+                              value={paramValues?.[param.name] ?? ''}
+                              placeholder={param.default === undefined ? '' : String(param.default)}
+                              onChange={(event) => onParamChange(param.name, event.target.value)}
+                            />
+                          ) : (
+                            /* A run that predates the record says so rather than showing an empty
+                               box, which would read as "nothing was supplied". */
+                            <span className="inputs-value" data-testid={`flow-input-${param.name}`}>
+                              {paramValues === undefined
+                                ? 'not recorded'
+                                : paramValues[param.name] === undefined
+                                  ? '—'
+                                  : String(paramValues[param.name])}
+                            </span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  {/* §7.3 resolves `vars:` per iteration, so what is shown is the expression the
+                      file declares — the same thing in both modes, and what an author would edit. */}
+                  {inputVars.length ? (
+                    <div className="inputs-section">
+                      <div className="inputs-section-label">Vars</div>
+                      {inputVars.map((entry) => (
+                        <div className="inputs-row" key={entry.name}>
+                          <span className="inputs-name">{entry.name}</span>
+                          {/* The value this run resolved where there is one, and the expression
+                              otherwise: `{{$guid}}` is the interesting thing about a flow that has
+                              not run and the least interesting thing about one that has. The
+                              expression stays reachable as the title. */}
+                          <span
+                            className="inputs-value"
+                            title={entry.expression}
+                            data-testid={`flow-var-${entry.name}`}
+                          >
+                            {varValues && entry.name in varValues
+                              ? String(varValues[entry.name])
+                              : entry.expression}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </foreignObject>
+            </g>
+          ) : null}
 
           {/* §5.5: the rule down the gap before a stage's first column, and the stage's name in the
               strip above it. Behind everything, because it divides the drawing rather than being

@@ -141,8 +141,27 @@ export type FlowEvent
      * and a consumer falls back to describing the file itself.
      */
     description?: FlowDescription;
+    /**
+     * §12.5's params this run was started with — what a host supplied over the flow's declared
+     * defaults, with `secret: true` values already masked (§14.4).
+     *
+     * Reported as well as written, for the reason `description` is: 002 §5.6's inputs node switches
+     * from boxes to a record the moment a run starts, and a node that had to wait for the capture to
+     * be read back would show the run it is watching as having been started with nothing. Present
+     * under `--no-capture` too — this is the run saying what it is doing, not the artifact.
+     */
+    params: Record<string, unknown>;
   }
   | { type: 'iteration:start'; index: number; row?: Vars }
+  /**
+   * §7.3's `vars:` as this iteration resolved them, once — after `iteration:start` and before its
+   * first step.
+   *
+   * Its own event rather than a field on `iteration:start`, because the values do not exist when
+   * that one is emitted: `vars:` resolve inside the iteration, against a scope that includes its
+   * row. The entry flow's only; a sub-flow's vars are its internals (§12.3).
+   */
+  | { type: 'iteration:vars'; index: number; vars: Vars }
   | { type: 'step:start'; id: string; index: number; operation?: string }
   | { type: 'step:attempt'; id: string; index: number; attempt: number; status: string; durationMs: number }
   | { type: 'step:end'; id: string; index: number; result: StepResult }

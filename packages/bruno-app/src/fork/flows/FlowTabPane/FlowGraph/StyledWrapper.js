@@ -154,6 +154,74 @@ const StyledWrapper = styled.div`
     cursor: pointer;
   }
 
+  /* 002 §5.6's inputs panel — the same box the steps are drawn in, so it reads as part of the
+     drawing rather than as a control strip that happens to sit beside it. */
+  .flow-inputs .inputs-box {
+    fill: ${(props) => props.theme.sidebar.bg};
+    stroke: ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    stroke-width: 1;
+  }
+
+  .inputs-body {
+    padding: 0.375rem 0.5rem;
+    font-size: 0.6875rem;
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
+  .inputs-title {
+    font-weight: 600;
+    color: ${(props) => props.theme.colors.text.default};
+    margin-bottom: 0.25rem;
+  }
+
+  .inputs-section-label {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 0.5625rem;
+    opacity: 0.75;
+    margin-top: 0.25rem;
+  }
+
+  .inputs-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    padding: 0.1875rem 0;
+  }
+
+  .inputs-name {
+    color: ${(props) => props.theme.colors.text.default};
+  }
+
+  .inputs-required {
+    color: ${(props) => props.theme.colors.text.danger};
+    margin-left: 0.125rem;
+  }
+
+  .inputs-input {
+    width: 100%;
+    padding: 0.125rem 0.25rem;
+    font-size: 0.6875rem;
+    color: ${(props) => props.theme.colors.text.default};
+    background: ${(props) => props.theme.modal.input.bg};
+    border: 1px solid ${(props) => props.theme.modal.input.border};
+    border-radius: 3px;
+
+    &:focus {
+      outline: none;
+      border-color: ${(props) => props.theme.modal.input.focusBorder};
+    }
+  }
+
+  /* A recorded value is text rather than a disabled input: a box you cannot type in still looks
+     like one you should be able to, and this is a fact about a run that already happened. */
+  .inputs-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: monospace;
+  }
+
   .node-box {
     fill: ${(props) => props.theme.sidebar.collection.item.bg};
     stroke: ${(props) => props.theme.sidebar.collection.item.focusBorder};

@@ -8,6 +8,8 @@ import {
   pastRunLoaded,
   sourceLoaded,
   sourceLoadFailed,
+  sourceRefreshed,
+  sourceDivergedOnDisk,
   sourceDescribed,
   sourceDescribeFailed,
   sourceSaving,
@@ -109,6 +111,51 @@ export const readFlowSource = (flow) => async (dispatch) => {
 };
 
 /**
+ * §4.3: the file changed on disk, so the raw editor catches up with it.
+ *
+ * The editor's text lives in the store keyed by path, precisely so an unsaved edit survives a tab
+ * switch — which also means nothing ever re-read the file once it had been read, and an edit made
+ * outside Bruno stayed invisible for the life of the session even across closing and reopening the
+ * tab.
+ *
+ * **A dirty editor is never overwritten.** Bruno's own save fires the same watcher event as an
+ * external edit, and the two are indistinguishable here; taking the file's text unconditionally
+ * would discard whatever was typed while a save was in flight. A clean editor has nothing to lose
+ * and takes the file; a dirty one keeps what was typed and is marked as having diverged.
+ *
+ * No source at all means the flow's raw editor was never opened. Reading it here would put text in
+ * the store for a tab nobody has, so the pane's own first read is left to do that.
+ */
+export const refreshFlowSource = (flow) => async (dispatch, getState) => {
+  const { pathname } = flow;
+  const source = getState().flows.sources[pathname];
+  if (!source || source.loading) {
+    return;
+  }
+
+  if (source.saving || source.content !== source.saved) {
+    dispatch(sourceDivergedOnDisk({ pathname }));
+    return;
+  }
+
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+
+  try {
+    const content = await ipc().invoke('renderer:flow-read-source', { entry: pathname, scope });
+    // Re-checked after the read: the file is read asynchronously and a keystroke during it would
+    // otherwise be overwritten by text that was already stale when it arrived.
+    const current = getState().flows.sources[pathname];
+    if (!current || current.saving || current.content !== current.saved) {
+      dispatch(sourceDivergedOnDisk({ pathname }));
+      return;
+    }
+    dispatch(sourceRefreshed({ pathname, content }));
+  } catch (error) {
+    dispatch(sourceLoadFailed({ pathname, error: error.message }));
+  }
+};
+
+/**
  * §4.3: writing the editor's text back.
  *
  * The content is read from the store at the moment of the write rather than passed in, because the
@@ -136,6 +183,38 @@ export const saveFlowSource = (flow) => async (dispatch, getState) => {
   }
 };
 
+/**
+ * 002 §4.1's flows directory for a scope — the location the Create Flow form defaults to.
+ *
+ * Asked of the main process rather than joined here: the renderer's `path` is a POSIX shim, and the
+ * form shows this string to the author before sending it back to be written.
+ */
+export const flowsFolderFor = (scopeRoot) => async () => ipc().invoke('renderer:flow-folder', { scopeRoot });
+
+/**
+ * §4.1: writing a new flow. Nothing is dispatched on success — the watcher is watching the
+ * directory, so the sidebar row arrives through `flowTreeUpdated` the same way it would for a flow
+ * somebody created outside the app.
+ *
+ * The text comes from the form (`CreateFlow/flowDocument.js`) rather than being built here: this
+ * module is reached eagerly from `fork/registry.js`, and the relative-path helper the document needs
+ * is upstream.
+ */
+export const createFlow = ({ fileName, directory, content }) => async () =>
+  ipc().invoke('renderer:flow-create', { directory, filename: `${fileName}.flow.yml`, content });
+
+/**
+ * §7.2's param inputs, as the engine has to see them.
+ *
+ * A box that was typed into and then cleared holds `''`, and a box never touched has no key at all —
+ * a distinction the author cannot see and did not make. The engine treats *absent* as missing (001
+ * §12.5, the predicate `validate.ts` uses at a `uses:` call site), so blanks are dropped here and
+ * the two agree: an empty box is a param that was not supplied, and a required one stops the run
+ * instead of putting `{{params.x}}` on the wire.
+ */
+const suppliedParams = (params) =>
+  Object.fromEntries(Object.entries(params || {}).filter(([, value]) => String(value ?? '').trim() !== ''));
+
 export const runFlow = ({ flow, configuration }) => async (dispatch, getState) => {
   const state = getState();
   const collection = flow.collectionRoot
@@ -150,7 +229,7 @@ export const runFlow = ({ flow, configuration }) => async (dispatch, getState) =
       globalEnvironments: state.globalEnvironments,
       envVarOverrides: configuration.envVarOverrides
     }),
-    params: configuration.params,
+    params: suppliedParams(configuration.params),
     overrides: {
       concurrency: configuration.concurrency,
       dataset: configuration.dataset,

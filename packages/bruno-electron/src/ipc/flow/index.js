@@ -144,6 +144,58 @@ const writeFlowSourceHandler = async ({ entry, scope, content }) => {
   await fs.promises.writeFile(requireFlowInScope(entry, scope), content, 'utf8');
 };
 
+/**
+ * 002 §4.1's flows directory for a scope — the default location the Create Flow form offers.
+ *
+ * Joined here rather than in the renderer because the renderer's `path` is a POSIX shim: a Windows
+ * workspace would be shown `C:\ws/flows`, and the form displays this string before sending it back
+ * to be written.
+ *
+ * It does not create the directory. Opening a form and cancelling it should leave nothing behind,
+ * and `createFlowHandler` has to make the directory on the write anyway — the user can browse to one
+ * that does not exist yet.
+ */
+const flowsFolderHandler = ({ scopeRoot }) => {
+  if (typeof scopeRoot !== 'string' || !scopeRoot) {
+    throw new Error('a flows folder needs a scope root');
+  }
+  return path.join(scopeRoot, 'flows');
+};
+
+/**
+ * Creating a flow from the sidebar (002 §4.1) — the file, and nothing else. The watcher is already
+ * watching `<scope>/flows`, so the tree update and the sidebar row follow from the write.
+ *
+ * The extension is required rather than appended: `.flow.yml` is what `scanFlows` matches on, and a
+ * file written without it would be created successfully and then be invisible to everything.
+ */
+const createFlowHandler = async ({ directory, filename, content }) => {
+  if (typeof filename !== 'string' || filename !== path.basename(filename) || !filename.endsWith('.flow.yml')) {
+    throw new Error(`flow: ${filename} is not a valid flow filename`);
+  }
+  if (typeof directory !== 'string' || !directory) {
+    throw new Error('a flow needs a directory to be created in');
+  }
+  if (typeof content !== 'string') {
+    throw new Error('a flow needs text to be written');
+  }
+
+  const pathname = path.join(directory, filename);
+  await fs.promises.mkdir(directory, { recursive: true });
+
+  try {
+    // `wx` rather than an existence check: the check and the write are not one operation, and the
+    // race it loses is exactly the one that overwrites somebody's flow.
+    await fs.promises.writeFile(pathname, content, { encoding: 'utf8', flag: 'wx' });
+  } catch (error) {
+    // The form's own message for the one failure it can do something about — `EEXIST`'s text names
+    // the syscall and the flag, which tells the author nothing about the name they just typed.
+    throw error.code === 'EEXIST' ? new Error(`a flow already exists at ${pathname}`) : error;
+  }
+
+  return pathname;
+};
+
 const listRunsHandler = ({ scopeRoot, flow }) => {
   const { readFile, listDirectory } = createPorts({});
   return listRuns({ scopeRoot, flow, ports: { readFile, listDirectory } });
@@ -265,6 +317,8 @@ const registerFlowIpc = (mainWindow) => {
   ipcMain.handle('renderer:flow-list-runs', (event, request) => listRunsHandler(request));
   ipcMain.handle('renderer:flow-read-run', (event, request) => readRunHandler(request));
   ipcMain.handle('renderer:flow-read-capture', (event, request) => readCaptureHandler(request));
+  ipcMain.handle('renderer:flow-folder', (event, request) => flowsFolderHandler(request));
+  ipcMain.handle('renderer:flow-create', (event, request) => createFlowHandler(request));
 
   ipcMain.handle('renderer:flow-watch-scope', (event, scope) => {
     watcher.addWatcher(mainWindow, requireScope(scope));
@@ -280,6 +334,8 @@ module.exports.writeFlowSourceHandler = writeFlowSourceHandler;
 module.exports.listRunsHandler = listRunsHandler;
 module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
+module.exports.flowsFolderHandler = flowsFolderHandler;
+module.exports.createFlowHandler = createFlowHandler;
 module.exports.startRun = startRun;
 module.exports.cancelRun = cancelRun;
 module.exports.shutdown = shutdown;

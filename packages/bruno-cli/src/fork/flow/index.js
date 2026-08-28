@@ -236,6 +236,21 @@ const handler = async (argv) => {
       });
       reporter.flowFinished(result);
       worsen(exitCodeFor(result.status));
+    } catch (error) {
+      /**
+       * A flow that produced no verdict at all — `runFlow` rejects rather than resolving.
+       *
+       * The reachable case is §12.5's required param with no value, refused before `run:start` so
+       * that nothing is dispatched; a crash that escapes the run is the other, and has already
+       * emitted `run:end` through the reporter by the time it lands here. Both are reported in the
+       * shape of the validation errors above, because both mean the same thing to a caller: this
+       * flow did not run, and the message says why. Without this they surfaced as an unhandled
+       * rejection with no exit code of their own.
+       */
+      reporter.diagnostics(forDisplay(file), [
+        { severity: 'error', code: 'run-refused', message: error.message, file }
+      ]);
+      worsen(EXIT.invalid);
     } finally {
       process.off('SIGINT', interrupt);
       process.off('SIGTERM', interrupt);

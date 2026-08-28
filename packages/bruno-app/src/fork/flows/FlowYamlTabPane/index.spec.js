@@ -18,6 +18,9 @@ import flowsReducer from 'fork/flows/slice';
 import themes from 'themes/index';
 import FlowYamlTabPane from './index';
 
+/** The slice's own initial state, so a key added to it does not break every fixture below. */
+const initialFlowsState = () => flowsReducer(undefined, { type: '@@INIT' });
+
 /**
  * 002 §4.3. The graph follows the draft, the file follows the app's save preference, and neither
  * follows text that does not parse.
@@ -43,7 +46,7 @@ const renderPane = ({ autoSave } = {}) => {
       app: () => ({ preferences: { font: {}, autoSave: autoSave || { enabled: false, interval: 500 } } })
     },
     preloadedState: {
-      flows: { flows: [flow], descriptions: {}, runs: {}, flowByRunId: {}, selectedStep: {}, requestLogs: [], sources: {} }
+      flows: { ...initialFlowsState(), flows: [flow] }
     }
   });
 

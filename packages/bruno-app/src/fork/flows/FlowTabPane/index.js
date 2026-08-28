@@ -4,7 +4,7 @@ import find from 'lodash/find';
 import { usePersistedState } from 'hooks/usePersistedState';
 import { useVerticalSplit } from 'fork/hooks/useVerticalSplit';
 import { describeFlow } from '../actions';
-import { stepSelected, iterationSelected } from '../slice';
+import { stepSelected, iterationSelected, configurationChanged } from '../slice';
 import FlowGraph from './FlowGraph';
 import RunControls from './RunControls';
 import StepDetail from './StepDetail';
@@ -27,6 +27,13 @@ import StyledWrapper from './StyledWrapper';
 const MIN_GRAPH_HEIGHT = 120;
 const MIN_DETAIL_HEIGHT = 160;
 const DEFAULT_DETAIL_HEIGHT = 260;
+
+/**
+ * One frozen object for every flow that has no configuration yet — a fresh `{}` per render would be
+ * a new prop identity each time, which is the difference between a memo that holds and one that
+ * never does.
+ */
+const EMPTY_CONFIGURATION = {};
 
 const DiagnosticLine = ({ diagnostic }) => (
   <div className={`diagnostic ${diagnostic.severity}`}>
@@ -114,7 +121,11 @@ const FlowTabPane = ({ tab }) => {
   const dispatch = useDispatch();
   // §7.1 decides capture per run rather than storing it here: this is what the run *panel* keeps
   // between runs, and capture is a property of a run rather than of the tab.
-  const [configuration, setConfiguration] = useState({});
+  //
+  // It lives in the slice, keyed by path, because `RequestTabPanel` renders only the focused tab —
+  // held here it would be discarded by every tab switch, taking a library flow's hand-typed params
+  // with it and leaving boxes that look no different from ones nobody filled.
+  const configuration = useSelector((state) => state.flows.configurations[tab.pathname]) || EMPTY_CONFIGURATION;
   const [expandedSubflows, setExpandedSubflows] = useState([]);
   const [showDataEdges, setShowDataEdges] = useState(true);
   /**
@@ -169,6 +180,11 @@ const FlowTabPane = ({ tab }) => {
 
   const iteration = run?.selectedIteration || 0;
   const isRunning = run?.state === 'running';
+  /**
+   * §10: a run open in the tab — live or restored — is a record, so its inputs are shown rather than
+   * edited. Returning to `current` drops the run (`runClosed`) and the boxes come back.
+   */
+  const viewingRun = Boolean(run);
   const nodeStates = run?.steps?.[iteration] || {};
   const selectedNode = selectedStep ? nodeStates[selectedStep] : undefined;
 
@@ -182,7 +198,8 @@ const FlowTabPane = ({ tab }) => {
         description={description}
         run={run}
         configuration={configuration}
-        onConfigurationChange={setConfiguration}
+        onConfigurationChange={(next) =>
+          dispatch(configurationChanged({ pathname: tab.pathname, configuration: next }))}
       />
 
       {/* §5.3: data edges are toggleable and on by default — on a flow where most steps consume the
@@ -256,6 +273,27 @@ const FlowTabPane = ({ tab }) => {
             expandedSubflows={expandedSubflows}
             showDataEdges={showDataEdges}
             showSlotEdges={showSlotEdges}
+            /**
+             * §5.6: the panel edits the *configuration* while the tab shows the flow as it stands,
+             * and reports the run's own inputs once it shows a stored one. `onParamChange` is what
+             * distinguishes them — a viewer of a past run has nothing to change, and the run it is
+             * looking at has already been started with whatever it was.
+             */
+            paramValues={viewingRun ? run.params : configuration.params}
+            /* The iteration the rest of the view is showing: under a dataset each row resolved its
+               own `vars:`, so the panel and the nodes describe the same one. */
+            varValues={viewingRun ? run.vars?.[iteration] : undefined}
+            onParamChange={
+              viewingRun
+                ? undefined
+                : (name, value) =>
+                    dispatch(
+                      configurationChanged({
+                        pathname: tab.pathname,
+                        configuration: { ...configuration, params: { ...configuration.params, [name]: value } }
+                      })
+                    )
+            }
             onSelectStep={(stepId) => dispatch(stepSelected({ pathname: flow.pathname, stepId }))}
             onToggleSubflow={toggleSubflow}
           />

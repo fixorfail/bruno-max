@@ -61,7 +61,15 @@ export type FlowDescription = {
   name: string;
   /** meta.library: true (§12.5). */
   isLibrary: boolean;
-  params: { name: string; required: boolean; default?: unknown }[];
+  params: { name: string; required: boolean; default?: unknown; secret: boolean }[];
+  /**
+   * The flow's `vars:` as the file declares them — the *expression*, not the resolved value.
+   *
+   * §7.3 resolves these once per iteration against the run's environment, so a value here would be
+   * a value only for one iteration of one run. 002 §5.6 shows them beside the params so the inputs
+   * node is the whole of what a run starts from, and the expression is what an author changes.
+   */
+  vars: { name: string; expression: string }[];
   /**
    * The flow's `apis:` bindings in file order, with §6.2's declared colour where there is one — 002
    * §5.1 draws by binding and is the only reader. Declared rather than used: what the file says.

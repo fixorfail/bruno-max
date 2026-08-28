@@ -9,7 +9,7 @@ jest.mock('utils/common', () => ({
   uuid: () => `uid-${++mockUid}`
 }));
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
@@ -18,6 +18,9 @@ import flowsReducer from 'fork/flows/slice';
 import tabsReducer from 'providers/ReduxStore/slices/tabs';
 import themes from 'themes/index';
 import FlowSidebarSection from './index';
+
+/** The slice's own initial state, so a key added to it does not break every fixture below. */
+const initialFlowsState = () => flowsReducer(undefined, { type: '@@INIT' });
 
 /**
  * 002 §4.1. The section is about one workspace — the active one — the way upstream's collection list
@@ -35,16 +38,17 @@ const flowIn = (workspaceRoot, filename, collectionRoot, extra = {}) => ({
   ...extra
 });
 
-const renderSection = ({ flows, workspaces, activeWorkspaceUid }) => {
+const renderSection = ({ flows, workspaces, activeWorkspaceUid, apiSpecs = [] }) => {
   const store = configureStore({
     reducer: {
       flows: flowsReducer,
       tabs: tabsReducer,
+      apiSpec: () => ({ apiSpecs }),
       collections: () => ({ collections: [] }),
       workspaces: () => ({ workspaces, activeWorkspaceUid })
     },
     preloadedState: {
-      flows: { flows, descriptions: {}, runs: {}, flowByRunId: {}, selectedStep: {}, requestLogs: [], sources: {} }
+      flows: { ...initialFlowsState(), flows }
     }
   });
 
@@ -244,5 +248,199 @@ describe('FlowSidebarSection', () => {
     });
 
     expect(screen.getByText('No flows found')).toBeInTheDocument();
+  });
+  /**
+   * 002 §4.1 — starting a flow from the section header, rather than by hand-writing the file.
+   *
+   * The assertions are on what reaches `renderer:flow-create`, because that payload *is* the flow:
+   * the sidebar row that follows arrives through the watcher, which this test has no way to run.
+   */
+  describe('creating a flow', () => {
+    const workspaceWithSpecs = [
+      {
+        uid: 'one',
+        type: 'default',
+        pathname: '/home/dev/workspace-one',
+        collections: [],
+        apiSpecs: [{ path: '/home/dev/workspace-one/apispec/auth-v2.yaml' }]
+      }
+    ];
+
+    const loadedSpecs = [
+      {
+        uid: 'spec-1',
+        name: 'Auth API',
+        filename: 'auth-v2.yaml',
+        pathname: '/home/dev/workspace-one/apispec/auth-v2.yaml'
+      }
+    ];
+
+    let invoke;
+
+    beforeEach(() => {
+      invoke = jest.fn(async (channel, request) =>
+        (channel === 'renderer:flow-folder' ? `${request.scopeRoot}/flows` : undefined));
+      window.ipcRenderer = { invoke };
+    });
+
+    const openForm = async () => {
+      renderSection({
+        flows: [],
+        workspaces: workspaceWithSpecs,
+        activeWorkspaceUid: 'one',
+        apiSpecs: loadedSpecs
+      });
+
+      fireEvent.click(screen.getByTestId('flows-header-add'));
+      fireEvent.click(screen.getByTestId('flows-header-add-menu-create-flow'));
+      await screen.findByTestId('create-flow-name');
+    };
+
+    it('opens the form on the workspace flows folder', async () => {
+      await openForm();
+
+      expect(invoke).toHaveBeenCalledWith('renderer:flow-folder', { scopeRoot: '/home/dev/workspace-one' });
+      expect(screen.getByTestId('create-flow-location')).toHaveValue('/home/dev/workspace-one/flows');
+    });
+
+    it('writes the name, the description and the checked specs', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Checkout' } });
+      fireEvent.change(screen.getByTestId('create-flow-description'), { target: { value: 'the happy path' } });
+      fireEvent.click(screen.getByTestId('create-flow-api-auth-v2.yaml'));
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request).toMatchObject({
+        directory: '/home/dev/workspace-one/flows',
+        filename: 'checkout.flow.yml'
+      });
+      expect(request.content).toContain('name: Checkout');
+      expect(request.content).toContain('description: the happy path');
+      expect(request.content).toContain('auth-v2: ../apispec/auth-v2.yaml');
+    });
+
+    /**
+     * The name is prose and the file name is a filename; a blank file name is the author saying
+     * "call it after the flow", not the author leaving a required field empty.
+     */
+    it('names the file after the flow when the file name is left blank', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Order Fulfillment' } });
+      fireEvent.blur(screen.getByTestId('create-flow-name'));
+
+      expect(screen.getByTestId('create-flow-file-name')).toHaveValue('order-fulfillment');
+
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request.filename).toBe('order-fulfillment.flow.yml');
+      expect(request.content).toContain('name: Order Fulfillment');
+    });
+
+    it('keeps a file name the author typed', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-file-name'), { target: { value: 'f2-checkout' } });
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Order Fulfillment' } });
+      fireEvent.blur(screen.getByTestId('create-flow-name'));
+
+      expect(screen.getByTestId('create-flow-file-name')).toHaveValue('f2-checkout');
+
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request.filename).toBe('f2-checkout.flow.yml');
+      expect(request.content).toContain('name: Order Fulfillment');
+    });
+
+    /** The name is YAML text, so what it may contain is not what a filename may contain. */
+    it('accepts a name no filename could hold, and files it under a name one can', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Order: fulfillment / v2' } });
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request.filename).toBe('order-fulfillment-v2.flow.yml');
+      expect(request.content).toContain('name: \'Order: fulfillment / v2\'');
+    });
+
+    /** Version suffixes are how the flows and specs on disk are named; `auth-v-2` is not one. */
+    it('keeps a version suffix whole when deriving the file name', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Auth V2' } });
+      fireEvent.blur(screen.getByTestId('create-flow-name'));
+
+      expect(screen.getByTestId('create-flow-file-name')).toHaveValue('auth-v2');
+    });
+
+    /** A file name that survives neither typing nor derivation is the one case with nothing to use. */
+    it('refuses a file name that cannot be derived or typed', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: '///' } });
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(document.querySelector('.text-red-500')).toBeInTheDocument());
+      expect(document.querySelector('.text-red-500').textContent).toBe('File name cannot be empty.');
+      expect(invoke).not.toHaveBeenCalledWith('renderer:flow-create', expect.anything());
+    });
+
+    /** §12.5: a library is one because its author said so, which is the only place that is said. */
+    it('marks the flow a library when the box is checked', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Login' } });
+      fireEvent.click(screen.getByTestId('create-flow-library'));
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request.content).toContain('library: true');
+    });
+
+    /** A spec left unchecked is one the flow does not bind, not one it binds and never uses. */
+    it('binds no api when none is checked', async () => {
+      await openForm();
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Checkout' } });
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
+      expect(request.content).not.toContain('apis:');
+    });
+
+    it('creates nothing without a name', async () => {
+      await openForm();
+
+      fireEvent.click(screen.getByTestId('create-flow-submit-btn'));
+
+      await waitFor(() => expect(document.querySelector('.text-red-500')).toBeInTheDocument());
+      expect(document.querySelector('.text-red-500').textContent).toBe('Name is required');
+      expect(invoke).not.toHaveBeenCalledWith('renderer:flow-create', expect.anything());
+    });
+
+    /** The list is the sidebar's own pairing, so a spec that is not the workspace's is not offered. */
+    it('offers only the api specs the workspace holds', async () => {
+      renderSection({
+        flows: [],
+        workspaces: workspaceWithSpecs,
+        activeWorkspaceUid: 'one',
+        apiSpecs: [...loadedSpecs, { uid: 'spec-2', filename: 'other.yaml', pathname: '/elsewhere/other.yaml' }]
+      });
+
+      fireEvent.click(screen.getByTestId('flows-header-add'));
+      fireEvent.click(screen.getByTestId('flows-header-add-menu-create-flow'));
+      await screen.findByTestId('create-flow-api-auth-v2.yaml');
+
+      expect(screen.queryByTestId('create-flow-api-other.yaml')).not.toBeInTheDocument();
+    });
   });
 });

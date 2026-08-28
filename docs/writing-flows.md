@@ -783,6 +783,7 @@ params:
   password:
     required: false
     default: "{{DEFAULT_PASSWORD}}"
+    secret: true                            # keep the value out of the run record
 
 exports:
   token: steps.authenticate.accessToken     # a full reference, not <step>.<output>
@@ -796,6 +797,21 @@ steps:
     outputs:
       accessToken: data.token
 ```
+
+A required param with no `default` must be supplied — by a caller's `with:`, by `--param` on the
+command line, or in the app's inputs panel. A run started without one is refused before anything is
+dispatched, rather than putting the literal `{{params.email}}` on the wire.
+
+`secret: true` marks a param whose *value* must not be written down. Every run records what it was
+started with, so the graph can show a past run its own inputs; a secret param is masked in that
+record before it is serialized, and is entered in the app as a password field. It is still sent to
+the API in full — the flag governs what is reported, not what is requested.
+
+A run also records the entry flow's `vars:` as each iteration resolved them, so reading a past run
+shows the value it used rather than the expression that produced it — which is the difference
+between `{{$guid}}` and the id the requests actually carried. **Var values are not masked**: unlike a
+param there is no way to declare one secret, so a credential put directly in `vars:` is written to
+the run record.
 
 A caller invokes it with `uses:` and `with:`, and reads its exports like any other step's outputs:
 

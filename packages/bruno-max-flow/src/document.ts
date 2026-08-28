@@ -246,7 +246,7 @@ export type NormalizedFlow = {
   /** §9.1's slots, by name, with the rule a reader of each one answers to. */
   shared: Record<string, SlotDeclaration>;
   dataset?: { source: string; parallel: number };
-  params: Record<string, { required: boolean; default?: unknown }>;
+  params: Record<string, { required: boolean; default?: unknown; secret: boolean }>;
   exports: Record<string, string>;
   /** Retained so a caller can anchor to a node no step owns — an `apis:` binding, say. */
   positions: Positions;
@@ -459,11 +459,20 @@ const normalizeDataset = (raw: unknown): NormalizedFlow['dataset'] => {
   return { source: String(mapping.source), parallel: mapping.parallel === undefined ? 1 : Number(mapping.parallel) };
 };
 
+/**
+ * §12.5's declared params.
+ *
+ * `secret: true` is the author saying this param's *value* must not be written down — 001 §14.4's
+ * provenance mechanism, declared rather than inferred. A name-based guess (`password`, `token`) was
+ * the alternative and is what `redact.ts` already does for header names; it is a denylist precisely
+ * because a header name is not the author's to choose, and a param name is. Defaulting to `false`
+ * keeps every flow written before this one meaning exactly what it did.
+ */
 const normalizeParams = (raw: unknown): NormalizedFlow['params'] =>
   Object.fromEntries(
     Object.entries(asRecord(raw)).map(([name, value]) => {
       const mapping = asRecord(value);
-      return [name, { required: Boolean(mapping.required), default: mapping.default }];
+      return [name, { required: Boolean(mapping.required), default: mapping.default, secret: mapping.secret === true }];
     })
   );
 

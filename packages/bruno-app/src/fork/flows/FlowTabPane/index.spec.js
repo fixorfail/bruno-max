@@ -12,8 +12,12 @@ import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
 import flowsReducer from 'fork/flows/slice';
+
 import themes from 'themes/index';
 import FlowTabPane from './index';
+
+/** The slice's own initial state, so a key added to it does not break every fixture below. */
+const initialFlowsState = () => flowsReducer(undefined, { type: '@@INIT' });
 
 /**
  * 002 §6 — where a flow's diagnostics surface in the run view.
@@ -50,13 +54,10 @@ const renderPane = async (diagnostics, run) => {
     },
     preloadedState: {
       flows: {
+        ...initialFlowsState(),
         flows: [entry],
         descriptions: { [pathname]: { loading: false, description: describedWith(diagnostics) } },
-        runs: run ? { [pathname]: run } : {},
-        flowByRunId: {},
-        selectedStep: {},
-        requestLogs: [],
-        sources: {}
+        runs: run ? { [pathname]: run } : {}
       }
     }
   });

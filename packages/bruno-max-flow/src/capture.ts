@@ -38,6 +38,8 @@ export const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
 /** §14.5's snapshot of the flow the run executed — the graph a viewer draws, and the text it came from. */
 export const FLOW_DESCRIPTION_FILE = 'flow.json';
 export const FLOW_SOURCE_FILE = 'flow.yml';
+/** §12.5's params the run was started with, secrets already masked — 002 §5.6's inputs node. */
+export const RUN_INPUTS_FILE = 'inputs.json';
 
 /**
  * What `run.json` records so a reader can tell a run apart from the flow's current text without
@@ -220,6 +222,16 @@ export type Capture = {
    * beside it, and ignores the capture root on first creation.
    */
   start(snapshot?: FlowSnapshot): Promise<void>;
+  /**
+   * §7.3's `vars:` as *this* iteration resolved them — 002 §5.6's inputs node, for a run being read
+   * back.
+   *
+   * Handed in rather than re-derived, because re-resolving would not reproduce them: `{{$guid}}`
+   * generates a fresh value on every evaluation, so a second pass would record an id no step ever
+   * used. Accumulated here and written by `finish`, since the values do not exist until the run is
+   * under way and an iteration is the unit that has one set of them.
+   */
+  vars(iteration: number, values: Record<string, unknown>): void;
   /** Returns the step's directory, for `StepResult.capturePath`. */
   attempt(record: AttemptRecord): Promise<string>;
   finish(result: RunResult): Promise<void>;
@@ -289,9 +301,18 @@ export const createCapture = (setup: CaptureSetup): Capture => {
   const root = setup.dir || path.join(setup.scopeRoot, CAPTURE_DIRNAME);
   const dir = path.join(root, runDirectoryName(setup.startedAt, setup.context.runId));
   const redactor = createRedactor(setup.redactHeaders);
+  /** What `start` recorded, held so `finish` can rewrite the file with the vars beside it. */
+  let startedWithParams: Record<string, unknown> | undefined;
+  // Keyed by iteration the way the step directories are: under a dataset each row resolves its own
+  // `vars:`, so there is no single set to record (§7.3).
+  const resolvedVars: Record<number, Record<string, unknown>> = {};
 
   return {
     dir,
+
+    vars: (iteration, values) => {
+      resolvedVars[iteration] = values;
+    },
 
     /**
      * The snapshot is optional because recording history must never be able to fail a run: a flow
@@ -310,9 +331,14 @@ export const createCapture = (setup: CaptureSetup): Capture => {
       await writeJson(setup, path.join(dir, 'run.json'), manifest);
 
       if (snapshot) {
+        startedWithParams = snapshot.params;
         await Promise.all([
           writeJson(setup, path.join(dir, FLOW_DESCRIPTION_FILE), snapshot.description),
-          setup.ports.writeFile(path.join(dir, FLOW_SOURCE_FILE), Buffer.from(snapshot.source, 'utf8'), setup.context)
+          setup.ports.writeFile(path.join(dir, FLOW_SOURCE_FILE), Buffer.from(snapshot.source, 'utf8'), setup.context),
+          // Already masked by `maskedParams` — nothing is redacted after serialization here (§14.5).
+          // Written now as well as at `finish` so an interrupted run still says what it was started
+          // with; the vars are not resolved yet and that version simply has none.
+          writeJson(setup, path.join(dir, RUN_INPUTS_FILE), { params: snapshot.params })
         ]);
       }
 
@@ -347,6 +373,13 @@ export const createCapture = (setup: CaptureSetup): Capture => {
       return target;
     },
 
-    finish: (result) => writeJson(setup, path.join(dir, 'summary.json'), result)
+    finish: async (result) => {
+      await writeJson(setup, path.join(dir, 'summary.json'), result);
+      // Rewritten rather than appended: the vars only exist once the run is under way, and the
+      // version `start` wrote is the same params with nothing beside them.
+      if (startedWithParams !== undefined) {
+        await writeJson(setup, path.join(dir, RUN_INPUTS_FILE), { params: startedWithParams, vars: resolvedVars });
+      }
+    }
   };
 };

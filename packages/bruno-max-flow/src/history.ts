@@ -17,6 +17,7 @@ import {
   CAPTURE_DIRNAME,
   FLOW_DESCRIPTION_FILE,
   FLOW_SOURCE_FILE,
+  RUN_INPUTS_FILE,
   RUN_DIRECTORY,
   attemptFile,
   flowDigest,
@@ -194,6 +195,13 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
     context
   );
   const source = await readText(options.ports.readFile, path.join(options.dir, FLOW_SOURCE_FILE), context);
+  // Absent for a run recorded before inputs were, which 002 §5.6 reports as unknown rather than as
+  // a run that was started with nothing.
+  const inputs = await readJson<{ params: Record<string, unknown>; vars?: Record<number, Record<string, unknown>> }>(
+    options.ports.readFile,
+    path.join(options.dir, RUN_INPUTS_FILE),
+    context
+  );
 
   const stepIds = description ? description.nodes.map((node) => node.id) : options.stepIds || [];
   const captured = await Promise.all(
@@ -221,7 +229,9 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
     result,
     capturedSteps: captured.filter((stepId): stepId is string => stepId !== undefined),
     description,
-    source
+    source,
+    params: inputs?.params,
+    vars: inputs?.vars
   };
 };
 

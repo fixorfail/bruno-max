@@ -1,5 +1,5 @@
 import { flowTreeUpdated, runEventsReceived, requestLogsReceived } from './slice';
-import { watchScope } from './actions';
+import { refreshFlowSource, watchScope } from './actions';
 
 /**
  * The push half of 002 §11.3, folded into the slice.
@@ -14,6 +14,18 @@ export const registerFlowIpcEvents = (dispatch) => {
 
   const removeTreeListener = ipcRenderer.on('main:flow-tree-updated', (event, entry) => {
     dispatch(flowTreeUpdated({ event, entry }));
+    /**
+     * §4.3's raw editor holds the file's text in the store, so unlike the description — which the
+     * reducer above simply drops — it has to be re-read to follow an edit made outside Bruno.
+     *
+     * `addFile` as well as `changeFile`: an editor that saves atomically writes a temporary file and
+     * renames it over the original, which chokidar reports as an unlink followed by an add rather
+     * than as a change. Ignoring it there would leave the whole class of editors that save that way
+     * unable to refresh at all.
+     */
+    if (event === 'changeFile' || event === 'addFile') {
+      dispatch(refreshFlowSource(entry));
+    }
   });
 
   const removeRunEventListener = ipcRenderer.on('main:flow-run-event', (batch) => {
