@@ -69,6 +69,8 @@ tests/benchmarks/results/
 CLAUDE.local.md
 AGENTS.md
 *.plan.md
+*.local
+.claude/**/local-*
 
 # Flow run captures (001 §14.5)
 .bruno-runs/
