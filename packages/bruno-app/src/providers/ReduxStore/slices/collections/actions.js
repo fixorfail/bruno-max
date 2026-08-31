@@ -23,7 +23,11 @@ import {
   isItemARequest,
   getAllVariables,
   transformRequestToSaveToFilesystem,
-  transformCollectionRootToSave
+  transformCollectionRootToSave,
+  generateTransientRequestName,
+  isPutObjectPresignedUrl,
+  flattenItems,
+  resolveEnabledVariable
 } from 'utils/collections';
 import { uuid, waitForNextTick } from 'utils/common';
 import { cancelNetworkRequest, connectWS, sendGrpcRequest, sendNetworkRequest, sendWsRequest } from 'utils/network/index';
@@ -93,7 +97,7 @@ import {
   isPathOrDescendant
 } from 'utils/collections/index';
 import { sanitizeName } from 'utils/common/regex';
-import { applyScriptEnvVars, getScriptModifiedKeys, writesCollidingSecrets, resolveSecretNameCollision, DUPLICATE_SECRET_NAMES_ERROR } from 'utils/environments';
+import { applyScriptEnvVars, getScriptModifiedKeys, writesCollidingSecrets, DUPLICATE_SECRET_NAMES_ERROR } from 'utils/environments';
 import { getInvalidVariableNames, invalidVariableNamesError } from 'utils/common/variables';
 import { safeParseJSON, safeStringifyJSON } from 'utils/common/index';
 import { resolveInheritedAuth } from 'utils/auth';
@@ -1311,6 +1315,7 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
     body,
     auth,
     settings,
+    requestPaneTab,
     isTransient = false
   } = params;
 
@@ -1394,7 +1399,8 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
               type: 'OPEN_REQUEST',
               collectionUid,
               itemPathname: result?.pathname || fullName,
-              preview: false
+              preview: false,
+              ...(requestPaneTab ? { requestPaneTab } : {})
             })
           );
           resolve();
@@ -1417,7 +1423,8 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
               uid: uuid(),
               type: 'OPEN_REQUEST',
               collectionUid,
-              itemPathname: result?.pathname || fullName
+              itemPathname: result?.pathname || fullName,
+              ...(requestPaneTab ? { requestPaneTab } : {})
             })
           );
           resolve();
@@ -1439,7 +1446,8 @@ export const newHttpRequest = (params) => (dispatch, getState) => {
                 uid: uuid(),
                 type: 'OPEN_REQUEST',
                 collectionUid,
-                itemPathname: result?.pathname || fullName
+                itemPathname: result?.pathname || fullName,
+                ...(requestPaneTab ? { requestPaneTab } : {})
               })
             );
             resolve();
@@ -1665,6 +1673,63 @@ export const newWsRequest = (params) => (dispatch, getState) => {
   });
 };
 
+/**
+ * Opens a URL clicked inside a CodeMirror editor (see utils/codemirror/linkAware.js) as a new
+ * transient request in the same collection. `requestType` is decided by the caller - either the
+ * type of the request tab the link was clicked from, or the collection's presets when clicked
+ * from collection/folder settings.
+ */
+export const openLinkedRequest = ({ url, collectionUid, requestType }) => (dispatch, getState) => {
+  const state = getState();
+  const collection = findCollectionByUid(state.collections.collections, collectionUid);
+  if (!collection || !url) {
+    return Promise.reject(new Error('Collection not found'));
+  }
+
+  const requestName = generateTransientRequestName(collection);
+  const filename = sanitizeName(requestName);
+
+  if (requestType === 'grpc-request') {
+    return dispatch(
+      newGrpcRequest({ requestName, filename, requestUrl: url, collectionUid, itemUid: null, isTransient: true })
+    );
+  }
+
+  if (requestType === 'ws-request') {
+    return dispatch(
+      newWsRequest({
+        requestName,
+        requestMethod: 'ws',
+        filename,
+        requestUrl: url,
+        collectionUid,
+        itemUid: null,
+        isTransient: true
+      })
+    );
+  }
+
+  const isGraphqlRequest = requestType === 'graphql-request';
+  const isPutObject = !isGraphqlRequest && isPutObjectPresignedUrl(url);
+
+  return dispatch(
+    newHttpRequest({
+      requestName,
+      filename,
+      requestType, // 'http-request' | 'graphql-request'
+      requestUrl: url,
+      requestMethod: isGraphqlRequest ? 'POST' : (isPutObject ? 'PUT' : 'GET'),
+      collectionUid,
+      itemUid: null,
+      isTransient: true,
+      auth: { mode: 'none' },
+      settings: { encodeUrl: false },
+      ...(isGraphqlRequest ? { body: { mode: 'graphql', graphql: { query: '', variables: '' } } } : {}),
+      ...(isPutObject ? { requestPaneTab: 'body' } : {})
+    })
+  );
+};
+
 const DEFAULT_APP_STARTER = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1710,7 +1775,7 @@ export const newApp = (params) => (dispatch, getState) => {
       type: 'app',
       name: appName,
       filename,
-      app: { code: DEFAULT_APP_STARTER },
+      app: { code: '' },
       settings: {}
     };
 
@@ -2108,6 +2173,21 @@ const executeVariableUpdate = (dispatch, action, successMessage) => {
 };
 
 /**
+ * @returns {{ variable: Object|undefined, updatedVariables: Array }} `variable` is the pre-existing
+ *   entry that was updated, or undefined when a new one was appended instead.
+ */
+const resolveOrCreateEnabledVariable = (variables, variableName, newValue, secret) => {
+  const variable = resolveEnabledVariable(variables, variableName);
+  const newVariable = { uid: uuid(), name: variableName, value: newValue, type: 'text', enabled: true, secret: !!secret };
+
+  const updatedVariables = variable
+    ? variables.map((v) => (v.uid === variable.uid ? { ...v, value: newValue } : v))
+    : [...(variables || []), newVariable];
+
+  return { variable, updatedVariables };
+};
+
+/**
  * Update a variable value in its detected scope (inline editing)
  * @param {string} variableName - Name of the variable to update
  * @param {string} newValue - New value for the variable
@@ -2143,24 +2223,19 @@ export const updateVariableInScope = (variableName, newValue, scopeInfo, collect
 
       switch (type) {
         case 'environment': {
-          const { environment, variable } = data;
+          const environment = findEnvironmentInCollection(collection, data.environment?.uid);
 
-          if (!variable) {
-            return reject(new Error('Variable not found'));
+          if (!environment) {
+            return reject(new Error('Environment not found'));
           }
 
-          const updatedVariables = environment.variables.map((v) => {
-            if (v.uid === variable.uid) {
-              return { ...v, value: newValue };
-            }
-            return v;
-          });
+          const { variable, updatedVariables } = resolveOrCreateEnabledVariable(environment.variables, variableName, newValue, data.secret);
 
-          const resolvedVariables = resolveSecretNameCollision(updatedVariables, variable);
-
-          return dispatch(saveEnvironment(resolvedVariables, environment.uid, collectionUid))
+          // not pre-resolving a secret-name collision here
+          // saveEnvironment's writesCollidingSecrets guard rejects it instead.
+          return dispatch(saveEnvironment(updatedVariables, environment.uid, collectionUid))
             .then(() => {
-              toast.success(`Variable "${variableName}" updated`);
+              toast.success(`Variable "${variableName}" ${variable ? 'updated' : 'created'}`);
             })
             .then(resolve)
             .catch(reject);
@@ -2259,27 +2334,16 @@ export const updateVariableInScope = (variableName, newValue, scopeInfo, collect
             return reject(new Error('Global environment not found'));
           }
 
-          const variable = environment.variables.find((v) => v.name === variableName && v.enabled);
+          const { variable, updatedVariables } = resolveOrCreateEnabledVariable(environment.variables, variableName, newValue, data.secret);
 
-          if (!variable) {
-            return reject(new Error('Variable not found'));
-          }
-
-          const updatedVariables = environment.variables.map((v) => {
-            if (v.uid === variable.uid) {
-              return { ...v, value: newValue };
-            }
-            return v;
-          });
-
-          const resolvedVariables = resolveSecretNameCollision(updatedVariables, variable);
-
+          // Deliberately not pre-resolving a secret-name collision here.
+          // saveEnvironment's writesCollidingSecrets guard rejects it instead
           return dispatch(saveGlobalEnvironment({
-            variables: resolvedVariables,
+            variables: updatedVariables,
             environmentUid: activeGlobalEnvUid
           }))
             .then(() => {
-              toast.success(`Variable "${variableName}" updated`);
+              toast.success(`Variable "${variableName}" ${variable ? 'updated' : 'created'}`);
             })
             .then(resolve)
             .catch(reject);
