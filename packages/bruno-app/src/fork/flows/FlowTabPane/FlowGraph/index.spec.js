@@ -809,8 +809,28 @@ describe('FlowGraph node footer', () => {
       renderWith(computing(true));
 
       expect(screen.getByTestId('flow-node-pre-probe').querySelector('title')).toHaveTextContent(
-        'Computes values before its request (pre:)'
+        'step includes a pre script'
       );
+    });
+
+    /* The strip's <title> is the accessible name, but it is not what a reader hovering the strip
+       gets: the foreignObjects over it take the pointer first. The tooltip is an HTML title
+       attribute on a target sized to the strip's column — the same mechanism as the footer
+       markers, which are the one tooltip on this box known to fire. */
+    it('puts the tooltip on a target over the strip, not on the strip itself', () => {
+      renderWith(computing(true));
+
+      const hit = screen.getByTestId('flow-node-pre-hit-probe');
+
+      expect(hit).toHaveAttribute('title', 'step includes a pre script');
+      // Sized to the strip it stands over, so the tooltip is the strip's rather than the box's.
+      expect(hit).toHaveStyle({ width: '6px' });
+    });
+
+    it('has no hover target on a step that computes nothing', () => {
+      renderWith(computing(false));
+
+      expect(screen.queryByTestId('flow-node-pre-hit-probe')).not.toBeInTheDocument();
     });
 
     it('is absent from a step that computes nothing', () => {

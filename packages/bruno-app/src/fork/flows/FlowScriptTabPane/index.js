@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import find from 'lodash/find';
 import get from 'lodash/get';
+import { JSHINT } from 'jshint';
 import CodeEditor from 'components/CodeEditor';
 import { useTheme } from 'providers/Theme';
 import { useAutoSave } from 'fork/hooks/useAutoSave';
@@ -25,21 +26,44 @@ import StyledWrapper from './StyledWrapper';
  */
 
 /**
+ * The lint the editor itself runs, asked as a yes/no. `esversion`, `expr` and `asi` are
+ * `CodeEditor`'s own `lintOptions`, so the badge and the squiggles under the cursor cannot disagree
+ * about what is broken.
+ */
+const LINT_OPTIONS = { esversion: 11, expr: true, asi: true };
+
+/**
  * Whether the draft is JavaScript that parses — the narrow question §4.3 asks of YAML, asked of the
  * other language.
  *
  * It gates auto-save, and that matters more here than it does there: a script is composed into the
  * prelude of **every** script position in every flow that names it (001 §8.6), so writing a
  * half-typed line to disk breaks all of them at once, with `script-error` naming whichever step
- * happened to run first. `new Function` compiles without running, which is the whole of what is
- * being asked.
+ * happened to run first.
+ *
+ * **JSHint rather than `new Function`, because the renderer may not evaluate strings.** The app
+ * serves itself under a CSP whose `script-src` carries no `'unsafe-eval'`
+ * (`bruno-electron/src/index.js`), so `new Function` throws `EvalError` here on *every* input —
+ * which a gate that reads a throw as a syntax error reports as invalid JavaScript for a file that is
+ * perfectly fine, and then never auto-saves it again. JSHint parses without evaluating, and it is
+ * already loaded: `utils/codemirror/javascript-lint` registers it as the lint helper for this very
+ * editor.
+ *
+ * **Only `E` codes count.** JSHint returns style warnings in the same list as syntax errors, and a
+ * `W` disarming auto-save would be the same bug wearing different clothes. Two things follow from
+ * the prelude that are worth knowing: top-level `await` is reported (`composeLibrary` wraps the file
+ * in a non-async arrow, so it genuinely would not compose), and ESM `export` is not (JSHint accepts
+ * it, the prelude does not) — the gate is a safety net, not the run's verdict.
  */
 const parses = (content) => {
   try {
-    new Function(content);
-    return true;
+    JSHINT(content, LINT_OPTIONS);
+    return !(JSHINT.data().errors || []).some((error) => String(error?.code || '').startsWith('E'));
   } catch {
-    return false;
+    // The linter itself failed, which says nothing about the draft. Failing *open* is deliberate:
+    // the bug this replaced was an environment error read as a verdict on the file, and a gate that
+    // cannot answer should get out of the author's way rather than silently stop saving their work.
+    return true;
   }
 };
 
@@ -79,9 +103,13 @@ const FlowScriptTabPane = ({ tab }) => {
 
   const dirty = Boolean(source) && source.content !== source.saved;
 
+  // Derived rather than stored, so it is a verdict on the text that is actually in the editor —
+  // including the text `sourceRefreshed` puts there when the file changes underneath a clean pane.
+  const valid = useMemo(() => parses(source?.content ?? ''), [source?.content]);
+
   useAutoSave({
     trigger: source?.content,
-    armed: dirty && Boolean(source?.valid) && !source?.saving,
+    armed: dirty && valid && !source?.saving,
     onSave: () => dispatch(saveFlowSource(script)).catch(() => undefined)
   });
 
@@ -114,7 +142,7 @@ const FlowScriptTabPane = ({ tab }) => {
         <span className="script-filename">{script.filename}</span>
         <span className="script-badge">script</span>
 
-        {source.valid ? null : (
+        {valid ? null : (
           <span className="script-state error" data-testid="flow-script-invalid">
             Invalid JavaScript — not saving
           </span>
@@ -142,7 +170,7 @@ const FlowScriptTabPane = ({ tab }) => {
           enableVariableHighlighting={false}
           enableBrunoVarInfo={false}
           onEdit={(edited) =>
-            dispatch(sourceEdited({ pathname: tab.pathname, content: edited, valid: parses(edited) }))}
+            dispatch(sourceEdited({ pathname: tab.pathname, content: edited }))}
           onRun={() => {}}
         />
       </div>

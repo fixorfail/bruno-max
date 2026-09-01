@@ -296,6 +296,8 @@ const StyledWrapper = styled.div`
      than the box used to run out of it. */
   .node-content {
     height: 100%;
+    /* Containing block for the pre: strip's hover target below. */
+    position: relative;
     /* The box is a click target (§5.1) and a drag across it should not start selecting its label. */
     user-select: none;
     padding: 0.25rem 0.625rem;
@@ -313,6 +315,23 @@ const StyledWrapper = styled.div`
       overflow-wrap: anywhere;
       line-height: 1.25;
     }
+  }
+
+  /* The pre: strip is an SVG <path> and carries a <title>, but no pointer ever reaches it: the two
+     foreignObjects tile the whole box, and HTML in a foreignObject takes the pointer across its
+     entire rect whether or not anything is painted there. That is why the footer's and the node's
+     own <title> elements never show either, and why the footer markers — plain HTML title
+     attributes — are the one tooltip on this box that does.
+
+     So the strip borrows the mechanism that works: an empty HTML element over the strip's column,
+     carrying the title attribute. It is a hover target only — the colour underneath is still the
+     path's — and it is scoped to the strip so the tooltip belongs to the strip rather than to the
+     whole step. Its width is set inline from PRE_STRIP_WIDTH so the two cannot drift apart. */
+  .node-pre-hit {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
   }
 
   .node-id {

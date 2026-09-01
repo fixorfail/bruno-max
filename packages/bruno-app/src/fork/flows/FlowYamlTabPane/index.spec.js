@@ -149,6 +149,47 @@ describe('FlowYamlTabPane', () => {
     expect(invoked('renderer:flow-describe').length).toBeGreaterThan(before);
   });
 
+  /**
+   * The verdict is derived from the text in the editor, so it cannot outlive that text.
+   *
+   * It used to be a field on the source written only by `sourceEdited`, which meant every other path
+   * that moves `content` left the old verdict behind. `sourceRefreshed` is that path — the watcher
+   * fires it after a save and after any edit made outside Bruno, and a clean editor takes the file's
+   * text. So a flow saved unparseable and then fixed on disk kept the "Invalid YAML" banner and a
+   * graph that had stopped following the draft, with auto-save disarmed, for the rest of the
+   * session; closing the tab did not clear it, because nothing re-reads a source still in the store.
+   */
+  it('takes back the banner when the file is fixed underneath a clean editor', async () => {
+    const { store } = renderPane({ autoSave: { enabled: true, interval: 500 } });
+    await act(async () => {});
+
+    type(INVALID);
+    await settle(600);
+    expect(screen.getByText(/Invalid YAML/)).toBeInTheDocument();
+
+    // The author saves it anyway, so the editor is clean and holds unparseable text.
+    await act(async () => {
+      store.dispatch({ type: 'flows/sourceSaved', payload: { pathname: flow.pathname, content: INVALID } });
+    });
+    expect(screen.getByText(/Invalid YAML/)).toBeInTheDocument();
+
+    // Fixed outside Bruno. A clean editor takes the file's text (§4.3).
+    await act(async () => {
+      store.dispatch({ type: 'flows/sourceRefreshed', payload: { pathname: flow.pathname, content: VALID } });
+    });
+    await settle(400);
+
+    expect(screen.getByTestId('yaml-editor')).toHaveValue(VALID);
+    expect(screen.queryByText(/Invalid YAML/)).not.toBeInTheDocument();
+
+    // …and the graph follows the draft again, rather than staying frozen for the session.
+    const before = invoked('renderer:flow-describe').length;
+    type(`${VALID}  - id: pay\n`);
+    await settle(600);
+    expect(invoked('renderer:flow-describe').length).toBeGreaterThan(before);
+    expect(invoked('renderer:flow-write-source')).toHaveLength(1);
+  });
+
   describe('saving (§4.3)', () => {
     it('auto-saves a valid draft after the configured interval', async () => {
       renderPane({ autoSave: { enabled: true, interval: 500 } });

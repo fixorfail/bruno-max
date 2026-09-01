@@ -60,7 +60,7 @@ const initialState = {
  * rather than a flag — a flag has to be cleared by every path that changes either side, and the one
  * that forgets leaves the tab claiming an edit that was written minutes ago.
  */
-const emptySource = () => ({ content: '', saved: '', loading: true, saving: false, valid: true });
+const emptySource = () => ({ content: '', saved: '', loading: true, saving: false });
 
 const emptyRun = ({ runId, iterationCount, captureDir, description, params }) => ({
   runId,
@@ -400,15 +400,19 @@ const slice = createSlice({
     },
 
     /**
-     * `valid` is the editor's own YAML parse, not a verdict on the flow: a document that parses but
-     * declares a step twice is *invalid as a flow* and still draws, with its diagnostics, exactly as
-     * §6 requires of the run view. What it gates is redrawing and auto-saving, and both want the
-     * narrower question — is there a document here at all.
+     * **Whether the draft parses is derived by the pane, not stored here.** It used to be a field on
+     * the source, written only by this reducer — so every *other* path that moves `content`
+     * (`sourceRefreshed` above, after a save or an edit made outside Bruno) left behind a verdict on
+     * text that was no longer in the editor. One transient half-typed line then pinned "not saving"
+     * for the rest of the session, over a file that had since been fixed on disk.
+     *
+     * The panes ask their own parser at render (§4.3's YAML, §4.5's JavaScript), which is also the
+     * only place that knows which language this path is in. There is nothing to keep in step.
      */
     sourceEdited: (state, action) => {
-      const { pathname, content, valid } = action.payload;
+      const { pathname, content } = action.payload;
       const source = state.sources[pathname] || emptySource();
-      state.sources[pathname] = { ...source, content, valid, error: undefined };
+      state.sources[pathname] = { ...source, content, error: undefined };
     },
 
     /**

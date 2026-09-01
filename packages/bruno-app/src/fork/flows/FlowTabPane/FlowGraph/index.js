@@ -748,7 +748,7 @@ const FlowGraph = ({
                     d={preStripPath(node.height)}
                     data-testid={`flow-node-pre-${node.id}`}
                   >
-                    <title>Computes values before its request (pre:)</title>
+                    <title>step includes a pre script</title>
                   </path>
                 ) : null}
 
@@ -761,6 +761,17 @@ const FlowGraph = ({
                 */}
                 <foreignObject x="0" y="0" width={node.width} height={node.height - NODE_FOOTER_HEIGHT}>
                   <div xmlns="http://www.w3.org/1999/xhtml" className="node-content">
+                    {/* The hover target for the pre: strip painted below this layer — see
+                        .node-pre-hit in the stylesheet for why the strip's own <title> cannot be
+                        the tooltip. */}
+                    {node.markers.computesValues ? (
+                      <span
+                        className="node-pre-hit"
+                        style={{ width: PRE_STRIP_WIDTH }}
+                        title="step includes a pre script"
+                        data-testid={`flow-node-pre-hit-${node.id}`}
+                      />
+                    ) : null}
                     <div className="node-id">{node.name || node.id}</div>
                     <div className="node-operation">
                       {node.operation ? `${node.operation.method} ${node.operation.path}` : node.uses}

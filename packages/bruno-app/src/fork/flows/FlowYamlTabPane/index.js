@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import find from 'lodash/find';
 import get from 'lodash/get';
@@ -117,8 +117,11 @@ const FlowYamlTabPane = ({ tab }) => {
   }, [dispatch, flow, source]);
 
   const content = source?.content;
-  const valid = source?.valid;
   const loading = source?.loading;
+
+  // Derived rather than stored, so it is a verdict on the text that is actually in the editor —
+  // including the text `sourceRefreshed` puts there when the file changes underneath a clean pane.
+  const valid = useMemo(() => parses(content ?? ''), [content]);
 
   // Redraws from the draft, debounced. The dependency on `content` is what re-arms it, so a pause in
   // typing is what triggers the describe rather than a timer running through it.
@@ -140,7 +143,7 @@ const FlowYamlTabPane = ({ tab }) => {
    */
   useAutoSave({
     trigger: source?.content,
-    armed: dirty && Boolean(valid) && !source?.saving,
+    armed: dirty && valid && !source?.saving,
     // The failure is already on screen — the thunk records it and the toolbar states it. Letting the
     // rejection escape an unattended timer would add an unhandled rejection and say nothing more.
     onSave: () => dispatch(saveFlowSource(flow)).catch(() => undefined)
@@ -184,7 +187,7 @@ const FlowYamlTabPane = ({ tab }) => {
         <span className="yaml-badge">raw yaml</span>
 
         {/* §4.3: what the graph is currently drawn from, whenever that is not the text on screen. */}
-        {source.valid ? null : <span className="yaml-state error">Invalid YAML — the graph is not updating</span>}
+        {valid ? null : <span className="yaml-state error">Invalid YAML — the graph is not updating</span>}
         {source.describeError ? <span className="yaml-state error">{source.describeError}</span> : null}
 
         <div className="yaml-toolbar-right">
@@ -245,7 +248,7 @@ const FlowYamlTabPane = ({ tab }) => {
             enableVariableHighlighting={false}
             enableBrunoVarInfo={false}
             onEdit={(edited) =>
-              dispatch(sourceEdited({ pathname: flow.pathname, content: edited, valid: parses(edited) }))}
+              dispatch(sourceEdited({ pathname: flow.pathname, content: edited }))}
             onRun={() => {}}
           />
         </div>

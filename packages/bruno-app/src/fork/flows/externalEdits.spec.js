@@ -53,7 +53,7 @@ describe('a flow changed on disk', () => {
    */
   it('never overwrites unsaved work', async () => {
     let state = loaded('version: 1\n');
-    state = reducer(state, sourceEdited({ pathname, content: 'version: 1\nsteps: []\n', valid: true }));
+    state = reducer(state, sourceEdited({ pathname, content: 'version: 1\nsteps: []\n' }));
 
     const result = await run(state, 'version: 1\nmeta:\n  name: Edited\n');
 
@@ -78,7 +78,7 @@ describe('a flow changed on disk', () => {
     const state = loaded('version: 1\n');
     let current = state;
     const invoke = jest.fn().mockImplementation(async () => {
-      current = reducer(current, sourceEdited({ pathname, content: 'typed while reading', valid: true }));
+      current = reducer(current, sourceEdited({ pathname, content: 'typed while reading' }));
       return 'version: 2\n';
     });
     window.ipcRenderer = { invoke };
