@@ -21,8 +21,14 @@
 import { mockDataFunctions } from '@usebruno/common';
 import { get } from '@usebruno/query';
 
-/** §7.3's namespaces, plus `process`. A variable with one of these names is shadowed. */
-export const RESERVED_ROOTS = ['res', 'req', 'steps', 'row', 'params', 'shared', 'flow', 'process'];
+/**
+ * §7.3's namespaces, plus `process`. A variable with one of these names is shadowed.
+ *
+ * `pre` is the one that is not run-scoped (§8.7): it addresses the values *this* step computed, so a
+ * scope built for one step carries different contents under it than the next step's, and outside a
+ * step it carries none.
+ */
+export const RESERVED_ROOTS = ['res', 'req', 'steps', 'row', 'params', 'shared', 'flow', 'pre', 'process'];
 
 export type Scope = {
   /** The flattened variable chain — what a bare `{{name}}` reads. */

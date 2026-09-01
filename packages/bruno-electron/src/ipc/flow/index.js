@@ -1,7 +1,15 @@
 const fs = require('fs');
 const path = require('path');
 const { ipcMain } = require('electron');
-const { runFlow, describeFlow, listRuns, readRun, readCapture } = require('@bruno-max/flow');
+const {
+  runFlow,
+  describeFlow,
+  listRuns,
+  readRun,
+  readCapture,
+  readFlowProperties,
+  writeFlowProperties
+} = require('@bruno-max/flow');
 const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
 const { buildVariables } = require('./variables');
@@ -129,9 +137,32 @@ const describeFlowHandler = ({ entry, scope, content }) => {
   return describeFlow({ entry, scope, ports: { readFile: readDraft, readSpec } });
 };
 
-/** 002 §4.3 — the flow's own text, for the raw editor. */
+/**
+ * A file the renderer may edit as text — 002 §4.3's flow, and §4.5's script.
+ *
+ * The two are one rule with one extra condition, rather than two guards: a script is `.js` **and**
+ * lives under `flows/scripts/`, which is what keeps "any `.js` inside the scope" — every helper the
+ * user has ever npm-installed included — from being writable through this channel.
+ */
+const requireScriptInScope = (entry, scope) => {
+  requireScope(scope);
+  const root = path.resolve(scope.collectionRoot || scope.workspaceRoot);
+  const resolved = path.resolve(entry);
+  const relative = path.relative(path.join(root, 'flows', 'scripts'), resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('script is outside the scope flows/scripts directory');
+  }
+  return resolved;
+};
+
+const requireEditableInScope = (entry, scope) =>
+  (typeof entry === 'string' && entry.toLowerCase().endsWith('.js')
+    ? requireScriptInScope(entry, scope)
+    : requireFlowInScope(entry, scope));
+
+/** 002 §4.3 — the flow's own text, for the raw editor; §4.5's script, for its own. */
 const readFlowSourceHandler = async ({ entry, scope }) =>
-  fs.promises.readFile(requireFlowInScope(entry, scope), 'utf8');
+  fs.promises.readFile(requireEditableInScope(entry, scope), 'utf8');
 
 /**
  * The editor writes the file the watcher is already watching, so the tree update, the re-describe
@@ -141,7 +172,86 @@ const writeFlowSourceHandler = async ({ entry, scope, content }) => {
   if (typeof content !== 'string') {
     throw new Error('a flow needs text to be written');
   }
-  await fs.promises.writeFile(requireFlowInScope(entry, scope), content, 'utf8');
+  await fs.promises.writeFile(requireEditableInScope(entry, scope), content, 'utf8');
+};
+
+/**
+ * A flow filename the renderer may create or rename to — 002 §4.1 and §4.4.
+ *
+ * `.flow.yml` is required rather than appended: it is what `scanFlows` matches on, so a file written
+ * without it is created successfully and then invisible to everything. The basename check is what
+ * keeps a "filename" from carrying a path — `../../elsewhere.flow.yml` would otherwise pass every
+ * other rule here.
+ */
+const requireFlowFilename = (filename) => {
+  if (typeof filename !== 'string' || filename !== path.basename(filename) || !filename.endsWith('.flow.yml')) {
+    throw new Error(`flow: ${filename} is not a valid flow filename`);
+  }
+  return filename;
+};
+
+/**
+ * A rename inside one directory, refusing to land on a file already there.
+ *
+ * `rename` overwrites its target silently on POSIX, so the check is the only thing standing between
+ * a rename and somebody else's file. It is not atomic with the rename that follows — the window is a
+ * directory nobody else is writing to, and losing the race is what `wx` guards against in
+ * `createFlowHandler`, for which a rename has no equivalent flag.
+ */
+const renameWithin = async (pathname, target, kind) => {
+  if (target === pathname) {
+    return pathname;
+  }
+
+  const clash = await fs.promises.access(target).then(() => true, () => false);
+  if (clash) {
+    throw new Error(`a ${kind} already exists at ${target}`);
+  }
+
+  await fs.promises.rename(pathname, target);
+  return target;
+};
+
+/** 002 §4.4 — the `meta:` block the properties dialog opens on. */
+const readFlowPropertiesHandler = async ({ entry, scope }) => {
+  const pathname = requireFlowInScope(entry, scope);
+  const properties = readFlowProperties(await fs.promises.readFile(pathname, 'utf8'));
+
+  if (!properties) {
+    // The dialog edits a document, and there is none. Reporting it is the whole of the handling:
+    // offering to rewrite `meta:` on text that does not parse would discard the file.
+    throw new Error(`${path.basename(pathname)} is not a YAML document — fix it in the YAML editor first`);
+  }
+
+  return { filename: path.basename(pathname), ...properties };
+};
+
+/**
+ * 002 §4.4 — the same block written back, and the file renamed if its name changed.
+ *
+ * **The two are one call because they are one edit**, and doing them here rather than as two round
+ * trips is what keeps the renderer from having to describe a half-applied state to the author.
+ *
+ * **Content first, then the rename.** Neither order is atomic, so the question is which failure is
+ * legible: a rename that fails after the write leaves the properties applied under the old name,
+ * which is what the returned error says and what the sidebar already shows. The reverse leaves a
+ * renamed file carrying stale meta, and nothing on screen would distinguish it from a success.
+ *
+ * A rename never moves the flow. §4.4 is a rename, and the directory a flow lives in decides its
+ * scope (001 §5.1) — a dialog that silently changed which environment tier a flow resolves against
+ * would be doing something other than what it said.
+ */
+const updateFlowPropertiesHandler = async ({ entry, scope, filename, properties }) => {
+  const pathname = requireFlowInScope(entry, scope);
+  const target = path.join(path.dirname(pathname), requireFlowFilename(filename));
+
+  const written = writeFlowProperties(await fs.promises.readFile(pathname, 'utf8'), properties);
+  if (!written) {
+    throw new Error(`${path.basename(pathname)} is not a YAML document — fix it in the YAML editor first`);
+  }
+  await fs.promises.writeFile(pathname, written, 'utf8');
+
+  return renameWithin(pathname, target, 'flow');
 };
 
 /**
@@ -170,9 +280,7 @@ const flowsFolderHandler = ({ scopeRoot }) => {
  * file written without it would be created successfully and then be invisible to everything.
  */
 const createFlowHandler = async ({ directory, filename, content }) => {
-  if (typeof filename !== 'string' || filename !== path.basename(filename) || !filename.endsWith('.flow.yml')) {
-    throw new Error(`flow: ${filename} is not a valid flow filename`);
-  }
+  requireFlowFilename(filename);
   if (typeof directory !== 'string' || !directory) {
     throw new Error('a flow needs a directory to be created in');
   }
@@ -194,6 +302,29 @@ const createFlowHandler = async ({ directory, filename, content }) => {
   }
 
   return pathname;
+};
+
+/**
+ * 002 §4.5 — renaming a script, and nothing else.
+ *
+ * A script has no `meta:` to edit alongside its name (§4.4 is the flow's equivalent and edits both),
+ * so this is the rename on its own. It stays inside `flows/scripts/`: the directory is what makes a
+ * `.js` a listed script at all, and moving one out of it would delete it from the sidebar as the
+ * result of a rename.
+ *
+ * **Nothing follows the `use:` entries that named it.** 001 §8.6 resolves a script by the path the
+ * flow wrote, so renaming one breaks every flow naming the old name — `bru flow validate` reports it
+ * as `unresolved-function-library`, before anything runs. Rewriting other files from here would edit
+ * flows the author did not open, on a guess about which paths meant this one.
+ */
+const renameFlowScriptHandler = async ({ entry, scope, filename }) => {
+  const pathname = requireScriptInScope(entry, scope);
+
+  if (typeof filename !== 'string' || filename !== path.basename(filename) || !filename.toLowerCase().endsWith('.js')) {
+    throw new Error(`flow: ${filename} is not a valid script filename`);
+  }
+
+  return renameWithin(pathname, path.join(path.dirname(pathname), filename), 'script');
 };
 
 const listRunsHandler = ({ scopeRoot, flow }) => {
@@ -319,6 +450,9 @@ const registerFlowIpc = (mainWindow) => {
   ipcMain.handle('renderer:flow-read-capture', (event, request) => readCaptureHandler(request));
   ipcMain.handle('renderer:flow-folder', (event, request) => flowsFolderHandler(request));
   ipcMain.handle('renderer:flow-create', (event, request) => createFlowHandler(request));
+  ipcMain.handle('renderer:flow-read-properties', (event, request) => readFlowPropertiesHandler(request));
+  ipcMain.handle('renderer:flow-update-properties', (event, request) => updateFlowPropertiesHandler(request));
+  ipcMain.handle('renderer:flow-rename-script', (event, request) => renameFlowScriptHandler(request));
 
   ipcMain.handle('renderer:flow-watch-scope', (event, scope) => {
     watcher.addWatcher(mainWindow, requireScope(scope));
@@ -336,6 +470,9 @@ module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
 module.exports.flowsFolderHandler = flowsFolderHandler;
 module.exports.createFlowHandler = createFlowHandler;
+module.exports.readFlowPropertiesHandler = readFlowPropertiesHandler;
+module.exports.updateFlowPropertiesHandler = updateFlowPropertiesHandler;
+module.exports.renameFlowScriptHandler = renameFlowScriptHandler;
 module.exports.startRun = startRun;
 module.exports.cancelRun = cancelRun;
 module.exports.shutdown = shutdown;

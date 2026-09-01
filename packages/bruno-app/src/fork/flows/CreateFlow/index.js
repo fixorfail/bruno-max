@@ -6,30 +6,10 @@ import toast from 'react-hot-toast';
 import Modal from 'components/Modal';
 import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
 import { matchLoadedApiSpecs } from 'components/Sidebar/ApiSpecs/matchLoadedApiSpecs';
-import { validateName, validateNameError } from 'utils/common/regex';
 import { createFlow } from '../actions';
+import { kebabCase, flowFileNameError } from '../flowFileName';
 import { aliasFor, buildFlowDocument } from './flowDocument';
 import StyledWrapper from './StyledWrapper';
-
-/** 255 is the limit on the whole filename, and `.flow.yml` is appended to what the author typed. */
-const MAX_FILE_NAME_LENGTH = 255 - '.flow.yml'.length;
-
-/**
- * Lowercase, words joined by hyphens — how the flows and specs already on disk are named.
- *
- * **Not lodash's `kebabCase`**, which splits a letter from a digit: it turns `Auth V2` into
- * `auth-v-2`, and version suffixes are everywhere here (`auth-v2.yml`, `f2-login.flow.yml`). Only a
- * lower-to-upper boundary starts a new word, so `OrderFulfillment` still splits.
- *
- * Letters and digits are kept by Unicode class rather than by `a-z0-9`, so a name written in a
- * non-Latin script yields a filename instead of an empty string — `validateName` accepts those.
- */
-const kebabCase = (value) =>
-  String(value || '')
-    .replace(/(\p{Ll}|\p{N})(\p{Lu})/gu, '$1-$2')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
-    .replace(/^-+|-+$/gu, '');
 
 /**
  * A blank file name means "call it after the flow", which is what it is called nine times in ten.
@@ -42,7 +22,8 @@ const effectiveFileName = ({ fileName, flowName }) => (fileName || '').trim() ||
  * 002 §4.1 — starting a flow from the sidebar rather than by hand-writing the file.
  *
  * The form answers the questions a blank `.flow.yml` cannot be written without: where the file goes,
- * what it is called, what it is for, whether it is a library, and which OpenAPI documents it binds.
+ * what it is called, what it is for, how it is selected, whether it is a library, and which OpenAPI
+ * documents it binds. §4.4's properties dialog is the same set once the flow exists.
  * Everything after that is §4.3's editor, which is why nothing here offers to add a step.
  *
  * **The name and the file name are separate fields.** §4.1 lists a flow by its `meta.name`, which is
@@ -71,6 +52,7 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
       fileName: '',
       flowLocation: defaultDirectory,
       description: '',
+      tags: '',
       library: false,
       apiSpecUids: []
     },
@@ -79,16 +61,8 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
       // it is there — the filename rules below belong to the field that becomes a filename.
       flowName: Yup.string().trim().required('Name is required'),
       fileName: Yup.string().test('is-valid-filename', function (value) {
-        const effective = effectiveFileName({ fileName: value, flowName: this.parent.flowName });
-        if (!effective) {
-          return this.createError({ message: 'File name cannot be empty.' });
-        }
-        // `.flow.yml` is appended, and 255 is the limit on the whole filename rather than on the
-        // part the author typed.
-        if (effective.length > MAX_FILE_NAME_LENGTH) {
-          return this.createError({ message: `File name cannot exceed ${MAX_FILE_NAME_LENGTH} characters.` });
-        }
-        return validateName(effective) ? true : this.createError({ message: validateNameError(effective) });
+        const error = flowFileNameError(effectiveFileName({ fileName: value, flowName: this.parent.flowName }));
+        return error ? this.createError({ message: error }) : true;
       }),
       flowLocation: Yup.string().required('Location is required')
     }),
@@ -105,6 +79,7 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
             content: buildFlowDocument({
               name: values.flowName.trim(),
               description: values.description,
+              tags: values.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
               library: values.library,
               directory: values.flowLocation,
               apiSpecs: selected
@@ -253,6 +228,25 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
             onChange={formik.handleChange}
             value={formik.values.description}
           />
+
+          <label htmlFor="flow-tags" className="block font-semibold mt-3">
+            Tags
+          </label>
+          <input
+            id="flow-tags"
+            type="text"
+            name="tags"
+            className="block textbox mt-2 w-full"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            placeholder="checkout, smoke"
+            data-testid="create-flow-tags"
+            onChange={formik.handleChange}
+            value={formik.values.tags}
+          />
+          <div className="flow-library-hint">Comma separated. `bru flow run --tags` selects on these.</div>
 
           <label className="flow-library-option mt-3">
             <input

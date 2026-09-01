@@ -133,7 +133,7 @@ bru run request.bru
 bru run folder --env Local
 ```
 
-For the full command reference, see the [Bruno CLI documentation](https://docs.usebruno.com/bru-cli/overview).
+For the full command reference, see the [Bruno CLI documentation](https://docs.usebruno.com/bru-cli/overview). To write multi-step `.flow.yml` test sequences, see [Writing Flows](docs/writing-flows.md).
 
 ## Run with Docker
 

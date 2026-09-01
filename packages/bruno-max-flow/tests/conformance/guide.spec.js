@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { runFlow, validateFlow, FLOWS } = require('./harness');
+const { runFlow, validate, FLOWS } = require('./harness');
 
 const guide = (name, body) => {
   const entry = path.join(FLOWS, `guide-${name}.flow.yml`);
@@ -175,7 +175,7 @@ steps:
     expect(run.result.iterations[0].steps.map((step) => step.status)).toEqual(['success', 'success', 'success']);
   });
 
-  /** Every documented diagnostic code is one `validateFlow` can actually produce. */
+  /** Every documented diagnostic code is one the validator can actually produce. */
   it('names only diagnostic codes the validator emits', () => {
     // The diagnostics table only — the CLI options table a few lines above is also backticked rows.
     const guideText = fs.readFileSync(path.join(__dirname, '../../../../docs/writing-flows.md'), 'utf8');
@@ -267,4 +267,285 @@ describe('the flow-writer skill', () => {
       expect({ reason, declared: source.includes(`'${reason}'`) }).toEqual({ reason, declared: true });
     }
   });
+});
+
+/**
+ * `pre:` and `functions:` — the two positions the guide documents last, and the two whose examples
+ * are easiest to write in a shape the engine does not accept.
+ *
+ * Everything above this line was documented first and tested afterwards. These two were written
+ * together, which is the order that catches a guide describing a field the engine spells
+ * differently: the example here is the guide's, and if it stops running the guide is wrong.
+ */
+describe('the pre: and functions: documentation', () => {
+  const flowFile = (name, body) => {
+    const entry = path.join(FLOWS, `guide-${name}.flow.yml`);
+    return { entry, files: { [entry]: body } };
+  };
+
+  it('runs a request built from a computed value and a library helper', async () => {
+    const { entry, files } = flowFile('pre', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+config:
+  baseUrl: "{{apiBaseUrl}}"
+
+functions:
+  tail: |
+    (value) => String(value).slice(-4)
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    outputs:
+      token: data.access_token
+
+  - id: add_product
+    operation: shop-api#addProduct
+    pre:
+      shortToken: |
+        (ctx) => tail(ctx.steps.sign_in.token)
+    body:
+      name: "Widget {{pre.shortToken}}"
+      price: 1299
+    outputs:
+      productId: data.id
+      shortToken: { from: pre }
+      fingerprint: { from: pre, path: shortToken }
+    assert:
+      - res.status eq 201
+`);
+
+    const run = await runFlow(entry, { files, responses: { login: LOGGED_IN, addProduct: PRODUCT } });
+
+    expect(run.result.status).toBe('passed');
+    // The library helper ran, its value reached the request, and both promotion forms carried it out.
+    expect(run.result.iterations[0].steps[1].outputs).toEqual({
+      productId: 'prod-1',
+      shortToken: 'ok-1',
+      fingerprint: 'ok-1'
+    });
+  });
+
+  /** The typo the guide warns about: a promotion naming a value the step never computes. */
+  it('reports an output promoting a pre value the step does not compute', async () => {
+    const { entry, files } = flowFile('pre-typo', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    pre:
+      shortToken: |
+        () => 'abcd'
+    outputs:
+      fingerprint: { from: pre, path: shortTokn }
+`);
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'unknown-pre-value', severity: 'error', stepId: 'sign_in' })
+    );
+  });
+
+  /**
+   * The mistake the shape invites: an output's string form is a path into the response, so an
+   * interpolation written there selects nothing and the output is silently unset.
+   */
+  it('warns on an interpolation written where an output path belongs', async () => {
+    const { entry, files } = flowFile('pre-interpolated', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    pre:
+      shortToken: |
+        () => 'abcd'
+    outputs:
+      fingerprint: "{{pre.shortToken}}"
+`);
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'interpolation-in-output-path', severity: 'warning', stepId: 'sign_in' })
+    );
+  });
+  /**
+   * The limitation the guide states, pinned so it cannot change silently.
+   *
+   * The context handed to these scripts is built once, before the first of them runs, so `ctx.pre`
+   * is empty for every entry however they are ordered — computing a nonce on one line and signing it
+   * on the next does not work, and does not say so. This asserts today's behaviour rather than
+   * endorsing it: if the engine ever makes siblings visible, this test failing is the reminder that
+   * both documents describe the old rule.
+   */
+  it('does not let a pre script read a sibling pre value', async () => {
+    const { entry, files } = flowFile('pre-siblings', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+config:
+  baseUrl: "{{apiBaseUrl}}"
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    pre:
+      nonce: |
+        () => 'abcd'
+      derived: |
+        (ctx) => (ctx.pre && ctx.pre.nonce) === undefined ? 'sibling-not-visible' : 'sibling-visible'
+    outputs:
+      derived: { from: pre }
+`);
+
+    const run = await runFlow(entry, { files, responses: { login: LOGGED_IN } });
+
+    expect(run.result.iterations[0].steps[0].outputs).toEqual({ derived: 'sibling-not-visible' });
+  });
+
+  /**
+   * And the warning that stops it being silent. The rule above is deliberate — `outputs:` behaves
+   * the same way — so what is reported is not the semantics but the fact that reading a sibling
+   * looks like it works, compiles, runs, and resolves `undefined` every time.
+   */
+  it('warns when a pre script reads a sibling value', async () => {
+    const { entry, files } = flowFile('pre-sibling-read', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    pre:
+      nonce: |
+        () => 'abcd'
+      signature: |
+        (ctx) => 'sig:' + ctx.pre.nonce
+`);
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'pre-reads-sibling-value', severity: 'warning', stepId: 'sign_in' })
+    );
+    // The entry that computes the value is fine; only the one reading a sibling is reported.
+    expect(diagnostics.filter((diagnostic) => diagnostic.code === 'pre-reads-sibling-value')).toHaveLength(1);
+    expect(diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).toEqual([]);
+  });
+});
+
+/**
+ * The reverse of every check above, and the one that actually catches drift.
+ *
+ * The tests further up ask *is everything documented real* — they read the tables and look each
+ * entry up in the engine. That direction only ever catches a document describing something that was
+ * removed. It cannot catch the far more common failure, which is the engine growing a code and
+ * nobody writing it down: `functions:` shipped two diagnostics that reached neither document, and
+ * every check in this file passed the whole time.
+ *
+ * So this asks the other question — *is everything real documented* — of both documents at once,
+ * because the portable copy drifts from the guide as readily as either drifts from the engine.
+ *
+ * Membership is tested against the whole document rather than a named section. A stricter check
+ * would pin each code to its table, and would then fail every time someone reorganized a heading —
+ * which is a test that trains people to edit the test. "Appears nowhere in the file" is the failure
+ * worth blocking a commit for.
+ */
+describe('the documents cover the engine', () => {
+  const ENGINE = path.join(__dirname, '../../src');
+  const DOCUMENTS = {
+    'docs/writing-flows.md': path.join(__dirname, '../../../../docs/writing-flows.md'),
+    '.claude/skills/flow-writer/references/dsl.md': path.join(
+      __dirname,
+      '../../../../.claude/skills/flow-writer/references/dsl.md'
+    )
+  };
+
+  /**
+   * Codes are read from the call sites rather than from a list, because a list is the thing that
+   * goes stale. `\s*` spans the line break, since the longer calls wrap their arguments.
+   */
+  const emittedCodes = () => {
+    const source = fs.readFileSync(path.join(ENGINE, 'validate.ts'), 'utf8');
+    const found = new Set();
+    for (const match of source.matchAll(/(?:error|warn)\(\s*'([a-z][a-z-]+)'|code:\s*'([a-z][a-z-]+)'/g)) {
+      found.add(match[1] || match[2]);
+    }
+    return [...found].sort();
+  };
+
+  /** The `StepReason` union only — the file also declares statuses, which are not reasons. */
+  const declaredReasons = () => {
+    const source = fs.readFileSync(path.join(ENGINE, 'types/result.ts'), 'utf8');
+    const union = source.slice(source.indexOf('export type StepReason'));
+    return [...union.slice(0, union.indexOf(';')).matchAll(/'([a-z][a-z-]+)'/g)].map((match) => match[1]).sort();
+  };
+
+  /**
+   * Anything deliberately left out, with the reason it is left out. An empty list is the goal, not
+   * an accident: adding a name here is a decision that this is not an author's concern, and the
+   * comment is what makes that decision reviewable later.
+   */
+  const UNDOCUMENTED = {
+    'docs/writing-flows.md': [],
+    '.claude/skills/flow-writer/references/dsl.md': []
+  };
+
+  const missing = (names, file) => {
+    const text = fs.readFileSync(DOCUMENTS[file], 'utf8');
+    return names.filter((name) => !UNDOCUMENTED[file].includes(name) && !text.includes(`\`${name}\``));
+  };
+
+  it('finds diagnostic codes to check', () => {
+    // A regex that silently matched nothing would make every assertion below vacuously true.
+    expect(emittedCodes().length).toBeGreaterThan(15);
+    expect(declaredReasons().length).toBeGreaterThan(10);
+  });
+
+  for (const file of Object.keys(DOCUMENTS)) {
+    it(`${file} documents every diagnostic the validator emits`, () => {
+      expect({ file, missing: missing(emittedCodes(), file) }).toEqual({ file, missing: [] });
+    });
+
+    it(`${file} documents every step reason the engine can report`, () => {
+      expect({ file, missing: missing(declaredReasons(), file) }).toEqual({ file, missing: [] });
+    });
+  }
 });

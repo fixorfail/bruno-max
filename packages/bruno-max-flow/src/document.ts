@@ -130,11 +130,21 @@ export type RetryPolicy = {
 };
 
 export type OutputSpec = {
+  /** §8.7's fourth source: `pre` takes the value from what the step computed before its request. */
   name: string;
-  from: 'body' | 'headers' | 'status';
+  from: 'body' | 'headers' | 'status' | 'pre';
   path?: string;
   script?: string;
 };
+
+/**
+ * §8.7's `pre:` block — a name and the script that produces it, in declaration order.
+ *
+ * An array rather than a record because the order is the evaluation order, and a throw stops the
+ * rest: which ones ran is what the author has to reason about, and a record's key order is a weaker
+ * promise than the list the file was written as.
+ */
+export type PreSpec = { name: string; script: string };
 
 export type AssertionSpec = { expr: string; op: string; value?: string; source: string };
 
@@ -173,6 +183,8 @@ export type NormalizedStep = {
   when: (string | { script: string })[];
   body?: unknown;
   bodyFile?: string;
+  /** §8.7, evaluated after `when:` and before the request is materialized. */
+  pre: PreSpec[];
   query: Record<string, unknown>;
   headers: Record<string, unknown>;
   pathParams: Record<string, unknown>;
@@ -303,12 +315,22 @@ const normalizeOutputs = (raw: unknown): OutputSpec[] =>
     if (typeof value === 'string') return { name, from: 'body' as const, path: value.replace(/^\$\./, '') };
     const mapping = asRecord(value);
     if (typeof mapping.script === 'string') return { name, from: 'body' as const, script: mapping.script };
+    const from = (mapping.from as OutputSpec['from']) || 'body';
     return {
       name,
-      from: (mapping.from as OutputSpec['from']) || 'body',
-      path: mapping.path === undefined ? undefined : String(mapping.path).replace(/^\$\./, '')
+      from,
+      // §8.7: `path` names which `pre` value to take and defaults to the output's own name, so
+      // promoting one under the name it already has is `{ from: pre }` and nothing else.
+      path:
+        mapping.path === undefined
+          ? (from === 'pre' ? name : undefined)
+          : String(mapping.path).replace(/^\$\./, '')
     };
   });
+
+/** §8.7. A value is the script, as `functions:` entries are — the block has no other shape. */
+const normalizePre = (raw: unknown): PreSpec[] =>
+  Object.entries(asRecord(raw)).map(([name, script]) => ({ name, script: String(script) }));
 
 /**
  * §9.1's declarations. The list form names slots and takes the default rule; the mapping form gives
@@ -571,6 +593,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       headers: asRecord(raw.headers),
       pathParams: asRecord(raw.pathParams),
       contentType: raw.contentType === undefined ? undefined : String(raw.contentType),
+      pre: normalizePre(raw.pre),
       outputs: normalizeOutputs(raw.outputs),
       shared: normalizeShared(raw.shared),
       assert: asArray(raw.assert).map(parseAssertion),

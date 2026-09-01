@@ -79,6 +79,17 @@ const StyledWrapper = styled.div`
     }
   }
 
+  .detail-message-toggle {
+    margin-top: 0.25rem;
+    color: ${(props) => props.theme.colors.text.muted};
+    text-decoration: underline;
+    text-underline-offset: 2px;
+
+    &:hover {
+      color: ${(props) => props.theme.text};
+    }
+  }
+
   .detail-tabs {
     display: flex;
     gap: 0.25rem;
@@ -108,6 +119,25 @@ const StyledWrapper = styled.div`
     min-height: 0;
     padding: 0.75rem 1rem;
     overflow: auto;
+  }
+
+  /* §14.6's message is one sentence for most reasons and a list for the schema ones, where a comma
+     run of paths is unreadable at exactly the moment it matters most. */
+  /* Expanded, the list scrolls in a box of its own rather than pushing the tabs off the pane: the
+     message explains the outcome, and the request that caused it is below. */
+  .detail-message-list {
+    margin: 0.25rem 0 0;
+    padding-left: 1rem;
+    list-style: disc;
+
+    &.is-expanded {
+      max-height: 14rem;
+      overflow-y: auto;
+    }
+
+    li {
+      padding: 0.0625rem 0;
+    }
   }
 
   .detail-row {
@@ -147,12 +177,16 @@ const StyledWrapper = styled.div`
      its content puts every line of a large captured body in the DOM, and 001 §14.5 caps the size of
      a capture nowhere. A definite height also settles the percentage chain the editor sizes itself
      through: it is h-full over an editor-container at 100%, which resolve to nothing over a parent
-     that has no height of its own. */
+     that has no height of its own.
+
+     The height is set inline, measured from the content, so the box is as tall as the body it holds
+     and the pane is the only thing that scrolls. Past the cap it stays definite and the editor
+     scrolls inside it, which is what keeps a very large capture from putting every line in the DOM. */
   .detail-body {
     margin-top: 0.5rem;
     border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
     border-radius: 3px;
-    height: 18rem;
+    overflow: hidden;
 
     .CodeMirror {
       background: transparent;

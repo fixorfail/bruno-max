@@ -38,7 +38,7 @@ const flowIn = (workspaceRoot, filename, collectionRoot, extra = {}) => ({
   ...extra
 });
 
-const renderSection = ({ flows, workspaces, activeWorkspaceUid, apiSpecs = [] }) => {
+const renderSection = ({ flows, workspaces, activeWorkspaceUid, apiSpecs = [], sources = {} }) => {
   const store = configureStore({
     reducer: {
       flows: flowsReducer,
@@ -48,7 +48,7 @@ const renderSection = ({ flows, workspaces, activeWorkspaceUid, apiSpecs = [] })
       workspaces: () => ({ workspaces, activeWorkspaceUid })
     },
     preloadedState: {
-      flows: { ...initialFlowsState(), flows }
+      flows: { ...initialFlowsState(), flows, sources }
     }
   });
 
@@ -207,6 +207,165 @@ describe('FlowSidebarSection', () => {
       const store = open();
 
       expect(store.getState().tabs.tabs).toHaveLength(0);
+    });
+  });
+
+  /**
+   * 002 §4.5 — the `.js` helpers `use:` names, listed so they are visible without opening a flow.
+   * Last, below the libraries: the list answers "what can I run here" from the top down, and a
+   * script is the furthest thing from an answer to it.
+   */
+  describe('scripts (§4.5)', () => {
+    const scriptIn = (root, filename) => ({
+      pathname: `${root}/flows/scripts/${filename}`,
+      filename,
+      workspaceRoot: root,
+      script: true
+    });
+
+    const mixed = [
+      flowIn('/home/dev/workspace-one', 'checkout.flow.yml'),
+      flowIn('/home/dev/workspace-one', 'login.flow.yml', undefined, { library: true }),
+      scriptIn('/home/dev/workspace-one', 'text.js')
+    ];
+
+    const rowOrder = () =>
+      [...document.querySelectorAll('.flow-subgroup-label, .flow-row')].map((element) =>
+        (element.classList.contains('flow-row') ? element.dataset.testid : element.textContent));
+
+    it('lists them last, under their own label', () => {
+      renderSection({ flows: mixed, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(rowOrder()).toEqual([
+        'flow-row-checkout.flow.yml',
+        'Libraries',
+        'flow-row-login.flow.yml',
+        'Scripts',
+        'flow-row-text.js'
+      ]);
+    });
+
+    it('labels nothing when a scope has no scripts', () => {
+      renderSection({ flows: [mixed[0]], workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.queryByTestId('flow-subgroup-scripts')).not.toBeInTheDocument();
+    });
+
+    it('opens the script in its own editor tab, named by its file', () => {
+      const { store } = renderSection({ flows: mixed, workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-row-text.js'));
+
+      expect(store.getState().tabs.tabs).toHaveLength(1);
+      expect(store.getState().tabs.tabs[0]).toMatchObject({
+        type: 'flow-script',
+        pathname: '/home/dev/workspace-one/flows/scripts/text.js',
+        tabName: 'text.js'
+      });
+    });
+
+    /**
+     * §4.5: one item, because a `.js` has one thing about it to change. `Edit Yaml` and the flow
+     * properties both act on a `meta:` block a script does not have.
+     */
+    it('carries a row menu holding Rename and nothing else', () => {
+      renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+
+      expect(screen.getByTestId('script-rename-text.js')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-edit-yaml-text.js')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('flow-properties-text.js')).not.toBeInTheDocument();
+    });
+
+    it('opens the rename dialog on the name the file already has', async () => {
+      window.ipcRenderer = { invoke: jest.fn(async () => undefined) };
+      renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      fireEvent.click(screen.getByTestId('script-rename-text.js'));
+
+      // The stem, not the filename — the extension is the form's, not the author's.
+      expect(await screen.findByTestId('rename-script-file-name')).toHaveValue('text');
+    });
+
+    /** A click meant for the menu must not also open the script behind it. */
+    it('does not open the script when the menu itself is clicked', () => {
+      const { store } = renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+
+      expect(store.getState().tabs.tabs).toHaveLength(0);
+    });
+
+    /** A script is named by its file and nothing else — the watcher reads no `meta:` from one. */
+    it('is listed by its filename', () => {
+      renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByText('text.js')).toBeInTheDocument();
+    });
+  });
+
+  /**
+   * 002 §4.4 — the row menu's second item: the `meta:` block and the file's own name, together,
+   * because they are the two things that carry a flow's name and neither is editable anywhere else.
+   */
+  describe('the properties dialog (§4.4)', () => {
+    const named = { ...flowIn('/home/dev/workspace-one', 'checkout.flow.yml'), name: 'Checkout' };
+
+    let invoke;
+
+    beforeEach(() => {
+      invoke = jest.fn(async (channel) =>
+        (channel === 'renderer:flow-read-properties'
+          ? { filename: 'checkout.flow.yml', name: 'Checkout', description: 'the happy path', tags: ['smoke'], library: false }
+          : undefined));
+      window.ipcRenderer = { invoke };
+    });
+
+    const openMenu = (sources = {}) => {
+      const rendered = renderSection({ flows: [named], workspaces, activeWorkspaceUid: 'one', sources });
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      return rendered;
+    };
+
+    it('opens on what the file says, not on what the sidebar row shows', async () => {
+      openMenu();
+
+      fireEvent.click(screen.getByTestId('flow-properties-checkout.flow.yml'));
+
+      await screen.findByTestId('flow-properties-name');
+      expect(screen.getByTestId('flow-properties-name')).toHaveValue('Checkout');
+      expect(screen.getByTestId('flow-properties-description')).toHaveValue('the happy path');
+      expect(screen.getByTestId('flow-properties-tags')).toHaveValue('smoke');
+      // The extension is the form's, not the author's — the field holds the stem.
+      expect(screen.getByTestId('flow-properties-file-name')).toHaveValue('checkout');
+      expect(invoke).toHaveBeenCalledWith('renderer:flow-read-properties', expect.objectContaining({
+        entry: named.pathname
+      }));
+    });
+
+    /**
+     * The dialog writes the text on disk. A dirty editor means the disk is already behind what the
+     * author is looking at, and the next auto-save would put the draft back over the properties
+     * they had just set — with nothing on either surface saying so.
+     */
+    it('refuses to open over a raw editor with unsaved changes', async () => {
+      openMenu({ [named.pathname]: { content: 'version: 2\n', saved: 'version: 1\n' } });
+
+      fireEvent.click(screen.getByTestId('flow-properties-checkout.flow.yml'));
+
+      await waitFor(() => expect(invoke).not.toHaveBeenCalledWith('renderer:flow-read-properties', expect.anything()));
+      expect(screen.queryByTestId('flow-properties-name')).not.toBeInTheDocument();
+    });
+
+    /** A clean editor has nothing to lose, so having one open is not a reason to refuse. */
+    it('opens over a raw editor whose text matches the file', async () => {
+      openMenu({ [named.pathname]: { content: 'version: 1\n', saved: 'version: 1\n' } });
+
+      fireEvent.click(screen.getByTestId('flow-properties-checkout.flow.yml'));
+
+      await screen.findByTestId('flow-properties-name');
     });
   });
 

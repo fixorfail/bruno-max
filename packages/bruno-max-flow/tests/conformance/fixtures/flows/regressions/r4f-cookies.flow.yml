@@ -1,0 +1,30 @@
+# R4f — §7.6's jar is scoped to a run and shared by every step in it.
+#
+# The login step receives a `Set-Cookie`; the step after it must carry that session without either
+# step declaring anything, which is the whole reason §8's named-output model cannot cover cookies.
+version: 1
+
+meta:
+  name: R4f — one jar per run
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: login
+    operation: regress-api#createThing
+    body:
+      name: session
+
+  - id: read
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1
+
+  - id: read_again
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-2

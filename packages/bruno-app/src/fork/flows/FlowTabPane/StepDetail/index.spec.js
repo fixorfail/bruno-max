@@ -2,7 +2,14 @@ import React from 'react';
 
 // The real editor pulls the store in through its CodeMirror setup; these scenarios are about which
 // capture the pane asks for and how it reports a read that failed, not about syntax highlighting.
-jest.mock('components/CodeEditor', () => ({ value }) => <pre data-testid="body">{value}</pre>);
+// The real editor is CodeMirror, which jsdom cannot lay out. The `CodeMirror-sizer` wrapper is kept
+// because §9's viewport measures its height to size itself, so a mock without one would let that
+// measurement silently pass by never running.
+jest.mock('components/CodeEditor', () => ({ value }) => (
+  <div className="CodeMirror-sizer">
+    <pre data-testid="body">{value}</pre>
+  </div>
+));
 jest.mock('providers/Theme', () => ({ useTheme: () => ({ displayedTheme: 'dark' }) }));
 
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
@@ -377,6 +384,133 @@ describe('StepDetail', () => {
       expect(screen.getByTestId('flow-step-message')).toHaveTextContent('never produced: steps.login.token');
     });
 
+    /**
+     * A schema failure's message ends with every error on one comma-separated line, which for a
+     * response that missed several fields is the least readable form at the moment it matters most.
+     */
+    describe('a schema failure', () => {
+      const errors = [
+        { path: '/data/id', message: 'must be string' },
+        { path: '/data/state', message: 'must be equal to one of the allowed values' }
+      ];
+      const invalid = {
+        ...skipped,
+        state: 'failed',
+        reason: 'schema-validation-failed',
+        message: `response does not match the 201 schema: ${errors.map((e) => `${e.path} ${e.message}`).join(', ')}`,
+        validation: { response: { valid: false, errors } }
+      };
+
+      it('lists the errors as bullets, leaving the sentence that introduces them', () => {
+        renderPane({ iteration: undefined, node: invalid });
+
+        expect(screen.getByTestId('flow-step-message')).toHaveTextContent('response does not match the 201 schema:');
+        const items = [...screen.getByTestId('flow-step-message-list').querySelectorAll('li')];
+        expect(items.map((item) => item.textContent)).toEqual([
+          '/data/id must be string',
+          '/data/state must be equal to one of the allowed values'
+        ]);
+      });
+
+      /** One error is a sentence, not a list — a bulleted list of one is a list for its own sake. */
+      it('leaves a single error in the sentence', () => {
+        const one = errors.slice(0, 1);
+        renderPane({
+          iteration: undefined,
+          node: {
+            ...invalid,
+            message: `response does not match the 201 schema: ${one[0].path} ${one[0].message}`,
+            validation: { response: { valid: false, errors: one } }
+          }
+        });
+
+        expect(screen.queryByTestId('flow-step-message-list')).not.toBeInTheDocument();
+        expect(screen.getByTestId('flow-step-message')).toHaveTextContent('/data/id must be string');
+      });
+
+      /**
+       * The join is reconstructed and checked, so wording the engine changed shows whole rather than
+       * being silently truncated to a lead with nothing under it.
+       */
+      it('shows the whole message when it does not end with the list it rebuilt', () => {
+        renderPane({
+          iteration: undefined,
+          node: { ...invalid, message: 'response does not match the 201 schema: something else entirely' }
+        });
+
+        expect(screen.queryByTestId('flow-step-message-list')).not.toBeInTheDocument();
+        expect(screen.getByTestId('flow-step-message')).toHaveTextContent('something else entirely');
+      });
+
+      /**
+       * A response that missed forty fields produces forty bullets, which pushes §9's tabs off the
+       * pane — the outcome is at the top and the request that caused it is below the fold, with no
+       * way to scroll past.
+       */
+      describe('when there are more errors than fit', () => {
+        const many = Array.from({ length: 12 }, (unused, index) => ({
+          path: `/data/field${index}`,
+          message: 'must be string'
+        }));
+        const crowded = {
+          ...invalid,
+          message: `response does not match the 201 schema: ${many.map((e) => `${e.path} ${e.message}`).join(', ')}`,
+          validation: { response: { valid: false, errors: many } }
+        };
+
+        const shown = () => [...screen.getByTestId('flow-step-message-list').querySelectorAll('li')];
+
+        it('shows the first few and says how many are behind them', () => {
+          renderPane({ iteration: undefined, node: crowded });
+
+          expect(shown()).toHaveLength(3);
+          expect(screen.getByTestId('flow-step-message-toggle')).toHaveTextContent('Show 9 more');
+        });
+
+        it('shows the rest when asked, and goes back', () => {
+          renderPane({ iteration: undefined, node: crowded });
+
+          fireEvent.click(screen.getByTestId('flow-step-message-toggle'));
+
+          expect(shown()).toHaveLength(12);
+          expect(screen.getByTestId('flow-step-message-toggle')).toHaveTextContent('Show less');
+
+          fireEvent.click(screen.getByTestId('flow-step-message-toggle'));
+          expect(shown()).toHaveLength(3);
+        });
+
+        /** Expanded it scrolls in a box of its own rather than growing without bound. */
+        it('bounds itself once expanded', () => {
+          renderPane({ iteration: undefined, node: crowded });
+
+          expect(screen.getByTestId('flow-step-message-list')).not.toHaveClass('is-expanded');
+          fireEvent.click(screen.getByTestId('flow-step-message-toggle'));
+          expect(screen.getByTestId('flow-step-message-list')).toHaveClass('is-expanded');
+        });
+
+        /** The lead names the failure and is what the collapsed form is for. */
+        it('keeps the sentence visible either way', () => {
+          renderPane({ iteration: undefined, node: crowded });
+
+          expect(screen.getByTestId('flow-step-message')).toHaveTextContent('response does not match the 201 schema:');
+        });
+      });
+
+      /** A list short enough to read whole has nothing to collapse. */
+      it('offers no toggle when every error already fits', () => {
+        renderPane({ iteration: undefined, node: invalid });
+
+        expect(screen.queryByTestId('flow-step-message-toggle')).not.toBeInTheDocument();
+      });
+
+      /** Every other reason is one sentence and must not grow a list. */
+      it('leaves a non-schema message alone', () => {
+        renderPane({ iteration: undefined, node: skipped });
+
+        expect(screen.queryByTestId('flow-step-message-list')).not.toBeInTheDocument();
+      });
+    });
+
     /** The step's verdict, so it belongs with the attempt that settled the step and no other. */
     it('withholds it on an earlier attempt', () => {
       window.ipcRenderer.invoke.mockResolvedValue({});
@@ -526,6 +660,51 @@ describe('StepDetail', () => {
     // §9 puts the payload last, after the headers and the declared outputs.
     const rendered = [...document.querySelectorAll('.detail-row, [data-testid="body"]')];
     expect(rendered[rendered.length - 1]).toBe(body);
+  });
+
+  /**
+   * §9's bodies opened at a fixed height, which is wrong for exactly the captures worth opening: a
+   * large response read through a box sized for a small one, inside a pane that also scrolls.
+   */
+  describe('a body viewport sized to its content', () => {
+    const withBody = { body: { kind: 'text', contentType: 'application/json', text: '{"a":1}' } };
+
+    /** jsdom lays nothing out, so the sizer's height is stubbed to stand in for a rendered editor. */
+    const sizerHeight = (px) => {
+      Object.defineProperty(HTMLElement.prototype, 'offsetHeight', { configurable: true, get: () => px });
+    };
+
+    afterEach(() => {
+      delete HTMLElement.prototype.offsetHeight;
+    });
+
+    it('takes its height from the body it holds', async () => {
+      sizerHeight(742);
+      window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
+      renderPane({ iteration: undefined });
+
+      expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '750px' });
+    });
+
+    /**
+     * CodeMirror virtualizes against its own height, so a box as tall as a 50,000-line response puts
+     * every one of those lines in the DOM — and 001 §14.5 caps the size of a capture nowhere.
+     */
+    it('stops growing at the cap, leaving the editor to scroll inside it', async () => {
+      sizerHeight(90000);
+      window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
+      renderPane({ iteration: undefined });
+
+      expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '4000px' });
+    });
+
+    it('keeps a floor, so an empty body is not a hairline', async () => {
+      sizerHeight(2);
+      window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
+      renderPane({ iteration: undefined });
+
+      expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '96px' });
+    });
   });
 
   describe('headers (§9)', () => {

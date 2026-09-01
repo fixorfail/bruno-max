@@ -7,10 +7,36 @@ const { readFlowMeta } = require('@bruno-max/flow');
 const FLOW_SUFFIX = '.flow.yml';
 const IGNORED_DIRECTORIES = ['node_modules', '.git'];
 
+/**
+ * 002 §4.5's conventional home for 001 §8.6's raw-source helpers, directly inside the directory
+ * already watched — so a script needs no second watcher and no second scope rule.
+ */
+const SCRIPTS_DIRECTORY = 'scripts';
+
 const isFlowFile = (pathname) => pathname.endsWith(FLOW_SUFFIX);
 
 /** A collection-scoped flow lives under the collection, a workspace-scoped one under the workspace (001 §5.1). */
 const flowsDirectoryFor = ({ workspaceRoot, collectionRoot }) => path.join(collectionRoot || workspaceRoot, 'flows');
+
+/**
+ * §4.5: a `.js` file under `flows/scripts/`, at any depth.
+ *
+ * **Only under that directory.** A `.js` beside a flow is an ordinary `use:` target and always was
+ * (001 §8.6 takes any extension), and listing every one of them would make the section a file
+ * browser rather than a place helpers are kept. The convention is what gives the section a meaning
+ * to state.
+ *
+ * Nothing here reads the file. A script declares no name and no flag — it is source, and the only
+ * thing the sidebar can honestly say about one is what it is called.
+ */
+const isScriptFile = (pathname, scope) => {
+  if (path.extname(pathname).toLowerCase() !== '.js') {
+    return false;
+  }
+  const relative = path.relative(flowsDirectoryFor(scope), pathname);
+  const [first] = relative.split(path.sep);
+  return first === SCRIPTS_DIRECTORY && !relative.startsWith('..');
+};
 
 /**
  * 002 §4.1's display name and library flag — `meta.name` and `meta.library`, and nothing else the
@@ -37,8 +63,20 @@ const declaredMetaOf = (pathname) => {
   }
 };
 
-const buildEntry = (pathname, { workspaceRoot, collectionRoot }) => {
+const buildEntry = (pathname, scope) => {
+  const { workspaceRoot, collectionRoot } = scope;
   const entry = { pathname, filename: path.basename(pathname), workspaceRoot };
+  if (collectionRoot) {
+    entry.collectionRoot = collectionRoot;
+  }
+
+  // §4.5: source, not a document — there is no `meta:` to read and reading it would be a file read
+  // per script on every tree change, for a field a script does not have.
+  if (!isFlowFile(pathname)) {
+    entry.script = true;
+    return entry;
+  }
+
   const { name, library } = declaredMetaOf(pathname);
   if (name) {
     entry.name = name;
@@ -48,13 +86,10 @@ const buildEntry = (pathname, { workspaceRoot, collectionRoot }) => {
   if (library) {
     entry.library = true;
   }
-  if (collectionRoot) {
-    entry.collectionRoot = collectionRoot;
-  }
   return entry;
 };
 
-const scanFlows = async (directory) => {
+const scanFlows = async (directory, scope) => {
   let entries;
   try {
     entries = await fs.readdir(directory, { withFileTypes: true });
@@ -68,9 +103,9 @@ const scanFlows = async (directory) => {
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (!IGNORED_DIRECTORIES.includes(entry.name)) {
-        found.push(...(await scanFlows(target)));
+        found.push(...(await scanFlows(target, scope)));
       }
-    } else if (isFlowFile(entry.name)) {
+    } else if (isFlowFile(entry.name) || isScriptFile(target, scope)) {
       found.push(target);
     }
   }
@@ -116,7 +151,7 @@ class FlowsWatcher {
     });
 
     const report = (event) => (pathname) => {
-      if (isFlowFile(pathname)) {
+      if (isFlowFile(pathname) || isScriptFile(pathname, scope)) {
         win.webContents.send('main:flow-tree-updated', event, buildEntry(pathname, scope));
       }
     };
@@ -131,7 +166,7 @@ class FlowsWatcher {
    * rather than accumulating the watcher's initial `add` burst forever (002 §11.3).
    */
   async listFlows(scope) {
-    const pathnames = await scanFlows(flowsDirectoryFor(scope));
+    const pathnames = await scanFlows(flowsDirectoryFor(scope), scope);
     // Path order rather than directory-read order, so the sidebar reads the same on every machine.
     return pathnames.sort().map((pathname) => buildEntry(pathname, scope));
   }

@@ -118,6 +118,27 @@ const BAND_PAD = 12;
 const RING_PAD = 4;
 
 /**
+ * §5.1: the strip down the left edge of a step that computes values before its request (001 §8.7).
+ *
+ * A marker on the footer bar says *that* a step has something; this says it at a glance across a
+ * whole graph, which is what a reader scanning for where a signature is built actually does. It is
+ * the one fact on the box that changes what the step **sends**, and the footer is already the busiest
+ * part of it.
+ *
+ * `NODE_BOX_RADIUS` matches the box's own `rx`, so the strip's left corners follow the box rather
+ * than poking out of it — the right edge stays square because it meets the box's fill, not its edge.
+ */
+const PRE_STRIP_WIDTH = 6;
+const NODE_BOX_RADIUS = 4;
+
+const preStripPath = (height) =>
+  `M ${NODE_BOX_RADIUS},0`
+  + ` H ${PRE_STRIP_WIDTH} V ${height} H ${NODE_BOX_RADIUS}`
+  + ` A ${NODE_BOX_RADIUS},${NODE_BOX_RADIUS} 0 0 1 0,${height - NODE_BOX_RADIUS}`
+  + ` V ${NODE_BOX_RADIUS}`
+  + ` A ${NODE_BOX_RADIUS},${NODE_BOX_RADIUS} 0 0 1 ${NODE_BOX_RADIUS},0 Z`;
+
+/**
  * Where §5.4's expansion hint sits below its node: clear of the box, and inside both the 32px gap
  * between siblings and the margin the viewBox leaves around the drawing, so it never lands on the
  * step below it or gets clipped off the bottom rank.
@@ -719,7 +740,17 @@ const FlowGraph = ({
                     {...haloProps(node)}
                   />
                 ) : null}
-                <rect className="node-box" width={node.width} height={node.height} rx="4" />
+                <rect className="node-box" width={node.width} height={node.height} rx={NODE_BOX_RADIUS} />
+
+                {node.markers.computesValues ? (
+                  <path
+                    className="node-pre-strip"
+                    d={preStripPath(node.height)}
+                    data-testid={`flow-node-pre-${node.id}`}
+                  >
+                    <title>Computes values before its request (pre:)</title>
+                  </path>
+                ) : null}
 
                 {/**
                 * The node's text is laid out as HTML rather than as SVG `<text>`, because SVG text

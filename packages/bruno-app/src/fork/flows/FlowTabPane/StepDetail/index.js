@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import get from 'lodash/get';
 import { IconLoader2 } from '@tabler/icons';
@@ -126,9 +126,49 @@ const Outputs = ({ outputs }) => {
  * a bespoke highlighter here would be a second one to maintain and would not follow the user's
  * theme or code-font preference.
  */
-const Body = ({ body }) => {
+/**
+ * A body viewport is as tall as the body it holds, up to a point.
+ *
+ * A fixed height is wrong for exactly the captures worth opening — a large response read through a
+ * box sized for a small one is the complaint this answers — and two nested scrollers, the pane's and
+ * the editor's, is the other half of it. Sized to its content there is one scroller: the pane.
+ *
+ * **The cap is what keeps that affordable.** CodeMirror virtualizes against its own height, so a box
+ * as tall as a 50,000-line response puts every one of those lines in the DOM, and 001 §14.5 caps the
+ * size of a capture nowhere. Past the cap the editor keeps a definite height and scrolls internally,
+ * which is the only way a body that large stays usable at all.
+ */
+const MAX_BODY_HEIGHT = 4000;
+const MIN_BODY_HEIGHT = 96;
+/** The editor's own padding and border, which the sizer does not carry. */
+const BODY_CHROME = 8;
+
+const Body = ({ body, side }) => {
   const { displayedTheme } = useTheme();
   const preferences = useSelector((state) => state.app.preferences);
+  const [height, setHeight] = useState(MIN_BODY_HEIGHT);
+
+  /**
+   * Measured rather than estimated from the line count: wrapping, the code font and its size all
+   * decide how tall a line is, and `CodeMirror-sizer` carries the whole document's height even while
+   * the editor is virtualizing — which is what makes the measurement true without disabling it.
+   */
+  const measure = useCallback((node) => {
+    if (!node) return undefined;
+
+    const fit = () => {
+      const sizer = node.querySelector('.CodeMirror-sizer');
+      if (!sizer) return;
+      const content = sizer.offsetHeight + BODY_CHROME;
+      setHeight(Math.max(MIN_BODY_HEIGHT, Math.min(content, MAX_BODY_HEIGHT)));
+    };
+
+    fit();
+    // The editor lays out after this ref fires, and again when its content or font changes.
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   if (!body) {
     return <div className="detail-empty">No body</div>;
@@ -166,7 +206,7 @@ const Body = ({ body }) => {
   const value = isJson ? safeStringifyJSON(safeParseJSON(body.text), true) : body.text;
 
   return (
-    <div className="detail-body">
+    <div className="detail-body" ref={measure} style={{ height }} data-testid={`flow-step-body-${side}`}>
       <CodeEditor
         theme={displayedTheme}
         font={get(preferences, 'font.codeFont', 'default')}
@@ -179,6 +219,85 @@ const Body = ({ body }) => {
         onRun={() => {}}
         readOnly
       />
+    </div>
+  );
+};
+
+/**
+ * §14.6's message, split back into the parts the engine joined.
+ *
+ * A schema failure's message ends with every error on one comma-separated line, which for a response
+ * that missed six fields is the least readable form at exactly the moment it matters most. The parts
+ * are still in `validation`, so the list is rebuilt from those rather than from string surgery on the
+ * sentence.
+ *
+ * **The join is reconstructed and checked rather than assumed.** If the message does not end with the
+ * exact list this rebuilds, the engine has changed its wording and the whole message is shown
+ * unaltered — a wrong guess would silently drop the half that says what failed.
+ */
+const splitSchemaMessage = (message, validation) => {
+  const errors = ['request', 'response']
+    .map((side) => validation?.[side])
+    .filter((side) => side && !side.valid)
+    .flatMap((side) => side.errors || []);
+
+  if (!message || errors.length < 2) {
+    return { lead: message, items: [] };
+  }
+
+  const joined = errors.map((error) => `${error.path} ${error.message}`).join(', ');
+  return message.endsWith(joined)
+    ? { lead: message.slice(0, -joined.length).trim(), items: errors }
+    : { lead: message, items: [] };
+};
+
+/**
+ * How many errors a collapsed message shows before it stops.
+ *
+ * A response that missed forty fields produces forty bullets, which is a message that pushes §9's
+ * tabs off the pane and cannot be scrolled past — the outcome is at the top and the request that
+ * caused it is below the fold. Three is enough to see what kind of failure it is; the count on the
+ * toggle says how much is behind it.
+ */
+const MESSAGE_PREVIEW_ITEMS = 3;
+
+/**
+ * 001 §14.6's message: the reason names the rule, this names the occurrence.
+ *
+ * It sits above the tabs rather than inside one because a step that never dispatched has no tab that
+ * would carry it — which is also why it must not be allowed to grow without bound there.
+ */
+const StepMessage = ({ node }) => {
+  const [expanded, setExpanded] = useState(false);
+  const { lead, items } = splitSchemaMessage(node.message, node.validation);
+
+  const collapsible = items.length > MESSAGE_PREVIEW_ITEMS;
+  const shown = collapsible && !expanded ? items.slice(0, MESSAGE_PREVIEW_ITEMS) : items;
+  const hidden = items.length - shown.length;
+
+  return (
+    <div className={`detail-message ${node.state}`} data-testid="flow-step-message">
+      {lead}
+      {items.length ? (
+        <ul
+          className={`detail-message-list${expanded ? ' is-expanded' : ''}`}
+          data-testid="flow-step-message-list"
+        >
+          {shown.map((error, index) => (
+            <li key={index}>{`${error.path} ${error.message}`}</li>
+          ))}
+        </ul>
+      ) : null}
+      {collapsible ? (
+        <button
+          type="button"
+          className="detail-message-toggle"
+          onClick={() => setExpanded(!expanded)}
+          data-testid="flow-step-message-toggle"
+        >
+          {expanded ? 'Show less' : `Show ${hidden} more`}
+        </button>
+      ) : null}
     </div>
   );
 };
@@ -451,14 +570,7 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpand
         ) : null}
       </div>
 
-      {/* 001 §14.6's message: the reason names the rule, this names the occurrence — which response,
-          which reference, which assertion. It sits above the tabs rather than inside one because a
-          step that never dispatched has no tab that would carry it. */}
-      {showsStepOutcome && node.message ? (
-        <div className={`detail-message ${node.state}`} data-testid="flow-step-message">
-          {node.message}
-        </div>
-      ) : null}
+      {showsStepOutcome && node.message ? <StepMessage node={node} /> : null}
 
       <div className="detail-tabs">
         {TABS.map((name) => (
@@ -506,7 +618,7 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpand
               <Row label="Method">{capture.request.method}</Row>
               <Row label="URL">{capture.request.url}</Row>
               <Headers headers={capture.request.headers} />
-              <Body body={capture.request.body} />
+              <Body body={capture.request.body} side="request" />
             </>
           ) : (
             <div className="detail-empty">Nothing was sent</div>
@@ -525,7 +637,7 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpand
 
             {showsStepOutcome ? <Outputs outputs={node.outputs} /> : null}
 
-            {read.status === 'loaded' && capture?.response ? <Body body={capture.response.body} /> : null}
+            {read.status === 'loaded' && capture?.response ? <Body body={capture.response.body} side="response" /> : null}
             {read.status === 'loaded' && !capture?.response ? (
               <div className="detail-empty">No response arrived</div>
             ) : null}

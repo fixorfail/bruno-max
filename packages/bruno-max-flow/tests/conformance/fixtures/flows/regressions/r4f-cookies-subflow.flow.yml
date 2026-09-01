@@ -1,0 +1,22 @@
+# R4f — §7.6: a sub-flow uses the caller's jar, because a login sub-flow exists precisely to
+# establish a session for its caller. Consistent with §12.3 rather than an exception to it: a jar is
+# ambient configuration of the transport, and what does not cross is anything the flow *names*.
+version: 1
+
+meta:
+  name: R4f — a sub-flow shares the caller's jar
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: sign_in
+    uses: ./r4f-cookies-login.flow.yml
+
+  - id: read
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1

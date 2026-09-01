@@ -8,12 +8,13 @@
  */
 
 /**
- * 002 §4.2's tab type and §4.3's, both keyed on the flow's pathname.
+ * 002 §4.2's tab type, §4.3's and §4.5's, each keyed on its file's pathname.
  *
- * They are separate types rather than one tab with a mode, because upstream dedupes a tab on
- * pathname *and* type: a flow's run view and its raw editor are then two tabs of one file, each
- * reopening into itself, and neither can displace the other.
+ * The first two are separate types rather than one tab with a mode, because upstream dedupes a tab
+ * on pathname *and* type: a flow's run view and its raw editor are then two tabs of one file, each
+ * reopening into itself, and neither can displace the other. §4.5's is a third because it opens a
+ * different file entirely — a `.js` helper, which has no run view and no graph.
  */
-export const FORK_TAB_TYPES = ['flow', 'flow-yaml'];
+export const FORK_TAB_TYPES = ['flow', 'flow-yaml', 'flow-script'];
 
 export const isForkTab = (tab) => FORK_TAB_TYPES.includes(tab?.type);

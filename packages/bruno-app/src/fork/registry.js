@@ -32,6 +32,9 @@ const FlowTabLabel = withSuspense(lazy(() => import('./flows/FlowTabLabel')));
 const FlowTabHeader = withSuspense(lazy(() => import('./flows/FlowTabHeader')));
 const FlowYamlTabPane = withSuspense(lazy(() => import('./flows/FlowYamlTabPane')));
 const FlowYamlTabLabel = withSuspense(lazy(() => import('./flows/FlowYamlTabLabel')));
+const FlowScriptTabPane = withSuspense(lazy(() => import('./flows/FlowScriptTabPane')));
+const FlowScriptTabLabel = withSuspense(lazy(() => import('./flows/FlowScriptTabLabel')));
+const FlowSpecialTab = withSuspense(lazy(() => import('./flows/ForkSpecialTab')));
 
 export const forkReducers = {
   flows: flowsReducer
@@ -52,14 +55,20 @@ export const ForkTabPane = ({ tab }) => {
   if (tab.type === 'flow') {
     return <FlowTabPane tab={tab} />;
   }
-  return tab.type === 'flow-yaml' ? <FlowYamlTabPane tab={tab} /> : null;
+  if (tab.type === 'flow-yaml') {
+    return <FlowYamlTabPane tab={tab} />;
+  }
+  return tab.type === 'flow-script' ? <FlowScriptTabPane tab={tab} /> : null;
 };
 
 export const ForkTabLabel = ({ type, tabName }) => {
   if (type === 'flow') {
     return <FlowTabLabel tabName={tabName} />;
   }
-  return type === 'flow-yaml' ? <FlowYamlTabLabel tabName={tabName} /> : null;
+  if (type === 'flow-yaml') {
+    return <FlowYamlTabLabel tabName={tabName} />;
+  }
+  return type === 'flow-script' ? <FlowScriptTabLabel tabName={tabName} /> : null;
 };
 
 /**
@@ -67,6 +76,13 @@ export const ForkTabLabel = ({ type, tabName }) => {
  * flow tab types share it: the strip is the feature's, not the view's.
  */
 export const ForkTabHeader = ({ tab }) => (isForkTab(tab) ? <FlowTabHeader tab={tab} /> : null);
+
+/**
+ * The strip's tab itself for a fork tab (002 §4.3) — upstream's `SpecialTab` plus the unsaved state
+ * only the fork can see. `null` for anything else, so the caller falls through to its own branch.
+ */
+export const ForkSpecialTab = ({ tab, onClose }) =>
+  (isForkTab(tab) ? <FlowSpecialTab tab={tab} onClose={onClose} /> : null);
 
 /**
  * Registers every fork IPC listener and returns **one** disposer. The count in 002 §12.1's manifest

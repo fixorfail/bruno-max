@@ -402,15 +402,196 @@ behind, since only a watcher event clears the entry. Two descriptions of one flo
 they differ exactly while the editor is ahead of the file, and saving is what makes them agree —
 through the watcher, which clears the stored description on the change the save causes.
 
-Two limits, stated rather than discovered:
+**The editor follows a file changed underneath it, and a dirty one never loses what was typed.** The
+draft living in the store keyed by path is what lets it survive a tab switch, and it is also what
+made the file's own changes invisible: nothing re-read a flow once it had been read, so an edit made
+elsewhere — another tool, a branch switch — stayed hidden for the life of the session, reopening the
+tab included, because the tab was never where the text lived. The watcher's `changeFile` re-reads it
+instead, and what happens next is decided by what the editor has to lose:
 
-- Diagnostics are on the graph's nodes and **not anchored into the editor's gutter**. §6's line
-  anchors exist and this view is where they would pay off most; using them here is future work.
-- **The editor does not reload a file changed underneath it.** It reads the flow when it opens and
-  the watcher's change events do not reach it, so an edit made elsewhere — another tool, a branch
-  switch — is invisible until the tab is reopened, and saving over it is silent. Upstream's own
-  editors keep a draft across an external change for the same reason (the draft is the thing you were
-  working on), but they reload when there is *no* draft, and this view does not yet.
+- **A clean editor takes the file.** It has nothing to lose, and it is now showing what is on disk.
+  It does not go back through its loading state to get there — Bruno's own save fires this same
+  event, and flashing the pane on every save is not what following the file means.
+- **A dirty editor keeps what was typed** and says the two have diverged — *"Unsaved changes — the
+  file also changed on disk"*. Saving from there overwrites the file, which is exactly what the
+  author may mean; choosing for them is what an editor must not do, and saying nothing is what makes
+  the overwrite silent.
+- **An editor with a save in flight is left alone**, and marked the same way. The write it is waiting
+  on is the change being reported, and reading the file mid-flight answers with whichever of the two
+  texts happened to land first.
+
+Because the read is asynchronous, the decision is taken again when it returns: a keystroke landing
+during the read would otherwise be overwritten by text that was already stale when it arrived.
+
+`addFile` counts as a change for the same purpose: an editor that saves atomically writes a temporary
+file and renames it over the original, which chokidar reports as an unlink followed by an add rather
+than as a change, and ignoring it there would leave that whole class of editors unable to refresh at
+all. Bruno's own save fires the same event as an external edit and the two are indistinguishable
+here, which is why these cases are told apart by comparing the draft against what was last written
+rather than by knowing who wrote.
+
+One limit, stated rather than discovered: diagnostics are on the graph's nodes and **not anchored
+into the editor's gutter**. §6's line anchors exist and this view is where they would pay off most;
+using them here is future work.
+
+### 4.4 Flow properties
+
+**The two things that carry a flow's name are edited in one place.** §4.1 lists a flow by its
+`meta.name`, which is prose, and the file it lives in is read in a directory listing and named by
+`uses:` from other flows — §4.1's create form asks for them separately for that reason. Once the flow
+exists there is nowhere to change either: §4.3's editor reaches `meta:` and cannot rename a file at
+all, and nothing else in the app touches a flow's filename.
+
+**It is the second item on the same row menu**, beside `Edit Yaml`. The menu is where a per-flow
+action goes (§4.3), and this is the second one; it costs no new affordance on the row and no upstream
+edit, which is the saving that menu was put there for.
+
+The dialog holds 001 §5.2's `meta:` block and the filename, and nothing else:
+
+| Field | Writes |
+|---|---|
+| Flow Name | `meta.name` — required, because §4.1 lists the flow by it |
+| File Name | the file, renamed in place; the `.flow.yml` extension is the form's, not the author's |
+| Description | `meta.description` |
+| Tags | `meta.tags`, one comma-separated line — 001 §14.1's `--tags` selects on these |
+| Library | `meta.library` — 001 §12.5's flag, which decides whether a glob run includes it |
+
+**A cleared field is written as an absence.** `description: ''`, `tags: []` and `library: false` all
+mean to the engine what the missing key means, so clearing one deletes it. §4.1's create form already
+writes a new flow that way; the alternative makes edit-and-undo leave a file that no longer matches
+the one it started as.
+
+**Everything outside `meta:` survives the write.** A `.flow.yml` is committed and hand-edited (001
+§5.1), so a dialog that reformatted the steps underneath would make every property edit an
+unreviewable diff. The engine owns the write for the reason it owns `readFlowMeta` — 001 §5.1 buys
+one parser and one serializer, and a host editing the block with a YAML library of its own would be
+the second serializer that decision exists to avoid. One cosmetic exception, unavoidable in the
+serializer: padding used to align a column of trailing comments collapses to a single space.
+
+**The file does not move.** A flow's directory decides its scope (001 §5.1) — which environment tier
+it resolves against, and whose auth it inherits — so a control that relocated it would change what
+the flow *does* from a box labelled with what it is called. Moving a flow stays a filesystem
+operation, and the sidebar re-reads it either way.
+
+**A `uses:` reference is not rewritten**, and the dialog says so where the rename is typed. 001 §5.2
+makes a flow's identity its path and states that renaming a file is just a rename; another flow
+naming this one stops resolving, and `bru flow validate` is what reports it. Rewriting other files
+from here would edit flows the author did not open, on a guess about which paths meant this one.
+
+**It refuses to open over a raw editor with unsaved changes.** The dialog edits the text *on disk*; a
+dirty editor means the disk is already behind what the author is looking at, and §4.3's auto-save
+would then write the draft back over the properties they had just set, with nothing on either surface
+saying it had happened. Saving or discarding first is a decision only the author can make, so it is
+the one asked for — and because it is asked, a rename can never strand a draft.
+
+**A rename retargets the flow's open tabs.** A tab is keyed on pathname and type (§4.3), so the
+alternative is every tab of that flow addressing a file that is gone, and reopening the flow making a
+second tab beside the dead one. Everything the flows slice holds about the flow — the run being
+watched, the params typed into the run panel, the selected step — is keyed the same way and moves
+with it: `unlinkFile` and `addFile` arrive as two unrelated facts, and folding them that way drops
+state belonging to a file that never stopped existing.
+
+The tabs are **closed and reopened** rather than edited in place, which costs a retargeted tab its
+position in the strip. Editing them in place would mean a reducer in upstream's `tabs.js` — a merge
+conflict re-paid at every upstream merge, for a strip position — and `closeTabs` and `addTab` already
+do exactly this. §12.1's manifest is the reason that trade is worth naming.
+
+**Closing a dirty raw editor asks first.** §4.3's draft lives in the flows slice, so closing its tab
+does not lose it *within a session* — reopening the tab restores it — but nothing persists that
+slice, and a quit after the close loses the edit silently. It is the only unsaved state in the app
+upstream's tab strip cannot see, every other draft hanging off a collection item, so the fork
+supplies both the prompt and the tab's unsaved marker. Upstream's `ConfirmRequestClose` shape
+deliberately: a flow's editor is one more tab in the same strip, and a prompt that behaved
+differently would read as a different kind of loss than the one three tabs along.
+
+
+### 4.5 Scripts
+
+001 §8.6 lets a flow draw functions from a raw `.js` file, and says nothing about where one lives —
+so in practice they live wherever the author put them, and the only way to find out a flow has any is
+to read its `functions:` block. **`flows/scripts/` is a conventional home for them, and the sidebar
+lists what is in it.**
+
+**The convention changes nothing about resolution.** A script is reached by `use:` and by nothing
+else; putting a file in the folder does not make a flow see it. That is 001 §8.6's rule and this
+section deliberately does not soften it — *"an output resolved from a file you did not know about is
+a value with a provenance, while a function resolved from one is arbitrary code"*. The folder makes
+helpers findable; `use:` still decides what a flow can call.
+
+```
+workspace/
+  flows/
+    connectors.yml
+    checkout.flow.yml
+    scripts/
+      text.js               # listed under Scripts
+      money/format.js       # nested, also listed
+```
+
+```yaml
+# checkout.flow.yml — the folder saves nobody from writing this
+functions:
+  use:
+    - ./scripts/text.js
+```
+
+**Only `.js`, and only under that directory.** A `.js` beside a flow is an ordinary `use:` target and
+always was — 001 §8.6 takes any extension that is not `.yml` — and listing every one of them would
+make the section a file browser rather than a place helpers are kept. The convention is what gives
+the section a meaning to state. A `.yml` library document is not listed either, for the same reason
+`flows/connectors.yml` is not: the directory names what is in it, and `.yml` files in the flows tree
+are already three different things.
+
+**A script row carries a menu holding one item, `Rename`.** §4.3's `Edit Yaml` and §4.4's properties
+both act on a flow's `meta:`, and a `.js` file has none — so the menu is the row's, not a copy of the
+flow's. What is left is the one thing about a script there is to change: what it is called. It is
+listed by that filename, because the watcher reads nothing else out of it — a script declares no
+name, and 001 §8.6 lists a raw `use:` file as the file it is precisely because nothing in the
+toolchain parses JavaScript to find out what it declares.
+
+**The rename stays inside `flows/scripts/`**, including the subdirectory the script was in. The
+directory is what makes a `.js` a listed script at all, so a rename that moved it out would delete it
+from the sidebar as a side effect of naming it. It refuses to land on a file already there, and it
+retargets the script's open tab exactly as §4.4's rename does — through the same `flowPathRenamed`
+and the same close-and-reopen, so an unsaved edit in the script's editor crosses with the file.
+
+**Nothing follows the `use:` entries that named it**, and the dialog says so where the rename is
+typed. 001 §8.6 resolves a script by the path the flow wrote, so every flow naming the old one stops
+resolving — reported by `bru flow validate` as `unresolved-function-library`, before anything runs.
+Rewriting other files from here would edit flows the author did not open, on a guess about which
+paths meant this one; §4.4 makes the same call about a flow's own rename.
+
+**Clicking one opens a third tab type**, `flow-script` — the app's editor in JavaScript mode, with
+§4.3's editing session behind it: the text in the flows slice keyed by path, the same dirty
+comparison, the same auto-save, the same close prompt, and the same divergence handling when the file
+moves underneath it. What it does not have is the graph. A script is not a flow, has no `describeFlow`
+to draw and no steps to draw it from, and half a view showing nothing would be answering a question
+nobody asked of this file.
+
+It costs **no upstream edit**, which is the registry earning its keep for the third time: every
+upstream consumer reaches a fork tab through `FORK_TAB_TYPES` or `isForkTab`, so adding the type
+wires it into the strip, the pane, the header and §4.4's close guard at once.
+
+**Auto-save is gated on the file parsing**, the way §4.3's is gated on the YAML parsing, and the
+stakes are higher here. A flow's YAML breaks that flow; a script is composed into the prelude of
+*every* script position in *every* flow that names it (001 §8.6), so a half-typed line saved to disk
+fails all of them at once with `script-error` naming whichever step happened to run first. An
+explicit save still writes — the gate belongs to the timer, not to the author.
+
+**One thing the folder makes tempting and `require` does not support.** Scripts run through the
+host's `RunScript` port, which resolves `require` against the **collection or workspace root** — not
+against the requiring file. So two scripts sitting side by side in `flows/scripts/` cannot require
+each other by a relative path:
+
+```js
+require('./money/format')          // ✗ resolved from the scope root, not from scripts/
+require('lodash')                  // ✓ bare names are unaffected
+```
+
+Composition between scripts is `use:`'s job, and `use:` *does* resolve relative to the file that
+named it (001 §8.6) — a `.yml` library document listing several `.js` files is the shape that works.
+Stated here because the folder invites the assumption that the other one would.
+
 
 ## 5. The graph
 
@@ -455,6 +636,23 @@ relationship nobody draws that way — and there is no conventional glyph for *t
 flow*, so the key that declares it is the most recognisable mark available. The remaining three are
 symbols because they mark a *property* rather than a key a reader would search for: a retry count
 that must carry its number, and two one-character flags.
+
+**001 §8.7's `pre:` is marked with a strip down the box's left edge, not with a footer marker.** It
+earns a mark for the reason the negative-test flag does — it changes what the step *sends*, and
+nothing else on the box says so — but it is marked differently because it is read differently. A
+footer marker answers "what does this step have" once you are already looking at the step; a strip
+answers "where in this flow is a value built" across the whole graph at once, which is the question
+someone hunting for where a signature is assembled is actually asking. The footer is also already the
+busiest part of the box, and this is the seventh thing that wanted to live there.
+
+The strip is purple because every other hue on the graph already means an outcome — green passed,
+yellow running, danger and warning failed — and a coloured strip in any of them would read as a
+status the step does not have. Selection uses purple as a *stroke*, and this is a fill.
+
+Its values are step-local, so they are not outputs and the node's `outputs` list is not where they
+belong: that list is what other steps can read, and these are readable by nobody. `FlowNode` carries
+them as their own list. A `pre` value promoted with `from: pre` appears in **both** — once as a
+computed value and once as a declared output, which is what it is.
 
 They were drawn over the box's top-right corner, which is where the step's *name* is — and the names
 worth reading are the long ones. A bar of their own gives them a fixed place to be looked for, room
@@ -1896,6 +2094,7 @@ The watcher starts from inside `registerFlowIpc`, so it rides 001's existing ent
 | `packages/bruno-app/src/components/Devtools/Console/index.js` | import, and select the request list through the registry (§8.5) | 2 |
 | `packages/bruno-app/src/components/Devtools/Console/NetworkTab/index.js` | the same import and selection | 2 |
 | `packages/bruno-app/src/components/RequestTabs/index.js` | imports, the strip's grouping rule, and the header a fork tab gets instead (§4.2) | 5 |
+| `packages/bruno-app/…/RequestTabs/RequestTab/index.js` | §4.4's close guard: one import, and a branch handing a fork tab to the registry | +3 |
 | `packages/bruno-app/package.json` | the `@dagrejs/dagre` dependency the graph's layout needs (§5.2) | 1 |
 | `packages/bruno-app/jest.config.js` | a second `setupFiles` entry, pointing at the fork's own test setup | 1 |
 
@@ -1906,6 +2105,23 @@ file whose conflicts are already routine. The `jest.config.js` line buys the sam
 registry does: jsdom ships no `structuredClone`, which dagre calls, and the shim lives in
 `src/fork/jest.setup.js` rather than in upstream's `jest.setup.js` — so the fork's *next* test-environment
 gap costs no upstream edit at all.
+
+**§4.5 adds nothing at all**, and it is the clearest case the registry has made yet: a third tab
+type, its own pane, its own label, its own editing session and a new sidebar section, reaching the
+app entirely through delegation points that already exist. `FORK_TAB_TYPES` is fork-owned, so adding
+`flow-script` wires the type into `specialTabs`, the pane registry, the strip's grouping, the header
+and §4.4's close guard in one line of fork code. The watcher needed no new scope either — chokidar
+already watches `flows/` recursively, and `.js` files were being watched and filtered out.
+
+**§4.4 adds no row, and grows one.** `RequestTab/index.js` is already in 001 §13.4's table at three
+lines, and the close guard takes it to six: `isForkTab` joins the `fork/tabTypes` import that was
+already there, the registry supplies the tab, and the branch is two lines. Everything the guard
+actually does — the dirty test, the prompt, the save — is fork-owned, because the line is a
+delegation and not the feature. The rest of §4.4 costs nothing at all: the dialog is a sidebar-row
+menu item, its IPC rides `preload.js`'s pass-through, and the rename retargets tabs through
+`closeTabs` and `addTab` rather than through a reducer of its own. That last one is a deliberate
+trade — a retargeted tab moves to the end of the strip — and it is the shape of trade this section
+keeps making, because the alternative is a conflict re-paid at every merge.
 
 **§4.3 adds nothing to this table, and that is the registry earning its keep.** A whole second tab
 type — its own pane, its own label, its own IPC channels, a menu on the sidebar row — reaches the app

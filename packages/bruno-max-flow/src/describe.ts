@@ -135,13 +135,15 @@ const nodesOf = (flow: NormalizedFlow, specs: Map<string, SpecIndex>, prefix: st
       parent,
       rank: ranks.get(step.id) as number,
       outputs: step.outputs.map((output) => output.name),
+      pre: step.pre.map((entry) => entry.name),
       markers: {
         conditional: step.when.length > 0,
         retryMaxAttempts: step.retry.maxAttempts > 1 ? step.retry.maxAttempts : undefined,
         allowsErrorStatus: !step.flags.failOnStatusCode,
         usesSharedSlot:
           step.shared.length > 0
-          || referencesOf(step, flow).some((reference) => reference.root === 'shared')
+          || referencesOf(step, flow).some((reference) => reference.root === 'shared'),
+        computesValues: step.pre.length > 0
       },
       position: step.position as FlowNode['position']
     };

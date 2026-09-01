@@ -1,5 +1,8 @@
 jest.mock('electron', () => ({ ipcMain: { handle: jest.fn(), on: jest.fn() } }));
+// The engine's own reader and writer are real here: they are the format's only serializer (001
+// §5.1), and a properties handler tested against a stub of them would assert its own plumbing.
 jest.mock('@bruno-max/flow', () => ({
+  ...jest.requireActual('@bruno-max/flow'),
   runFlow: jest.fn(),
   describeFlow: jest.fn(),
   listRuns: jest.fn(),
@@ -335,5 +338,245 @@ describe('creating a flow', () => {
   it('refuses a create with no directory and one with no text', async () => {
     await expect(createFlowHandler({ filename: 'a.flow.yml', content: '' })).rejects.toThrow('needs a directory');
     await expect(createFlowHandler({ directory: scopeRoot, filename: 'a.flow.yml' })).rejects.toThrow('needs text');
+  });
+});
+
+/** 002 §4.4 — the properties dialog: the `meta:` block, and the file's own name. */
+describe('a flow\'s properties', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { readFlowPropertiesHandler, updateFlowPropertiesHandler } = require('./index');
+
+  const NONE = { tags: [], library: false };
+
+  let scopeRoot;
+  let scope;
+  let entry;
+
+  const FLOW = 'version: 1\nmeta:\n  name: Checkout\n\nsteps:\n  - id: charge # the one that matters\n';
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-props-')));
+    scope = { workspaceRoot: scopeRoot };
+    entry = path.join(scopeRoot, 'checkout.flow.yml');
+    fs.writeFileSync(entry, FLOW, 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  it('reads the meta block and the filename the dialog opens with', async () => {
+    expect(await readFlowPropertiesHandler({ entry, scope })).toEqual({
+      filename: 'checkout.flow.yml',
+      name: 'Checkout',
+      ...NONE
+    });
+  });
+
+  /** The raw editor is where text that does not parse gets fixed; a form cannot offer to. */
+  it('refuses to read a flow that is not a YAML document', async () => {
+    fs.writeFileSync(entry, 'version: 1\nsteps:\n  - id: a\n   bad indent\n', 'utf8');
+
+    await expect(readFlowPropertiesHandler({ entry, scope })).rejects.toThrow('is not a YAML document');
+  });
+
+  it('writes the meta block and leaves the rest of the file alone', async () => {
+    const pathname = await updateFlowPropertiesHandler({
+      entry,
+      scope,
+      filename: 'checkout.flow.yml',
+      properties: { name: 'Checkout v2', description: 'Settles it.', tags: ['smoke'], library: false }
+    });
+
+    expect(pathname).toBe(entry);
+    expect(fs.readFileSync(entry, 'utf8')).toBe(
+      'version: 1\nmeta:\n  name: Checkout v2\n  description: Settles it.\n  tags:\n    - smoke\n\nsteps:\n  - id: charge # the one that matters\n'
+    );
+  });
+
+  it('renames the file, in place, and reports where it went', async () => {
+    const pathname = await updateFlowPropertiesHandler({
+      entry,
+      scope,
+      filename: 'settlement.flow.yml',
+      properties: { ...NONE, name: 'Settlement' }
+    });
+
+    expect(pathname).toBe(path.join(scopeRoot, 'settlement.flow.yml'));
+    expect(fs.existsSync(entry)).toBe(false);
+    expect(fs.readFileSync(pathname, 'utf8')).toContain('name: Settlement');
+  });
+
+  /** `rename` overwrites its target silently, and the target is somebody else's flow. */
+  it('refuses to rename over a flow that already exists', async () => {
+    fs.writeFileSync(path.join(scopeRoot, 'settlement.flow.yml'), 'version: 1\n', 'utf8');
+
+    await expect(
+      updateFlowPropertiesHandler({ entry, scope, filename: 'settlement.flow.yml', properties: NONE })
+    ).rejects.toThrow('a flow already exists at');
+    expect(fs.readFileSync(path.join(scopeRoot, 'settlement.flow.yml'), 'utf8')).toBe('version: 1\n');
+  });
+
+  it('refuses a filename that is a path, and one the watcher would never report', async () => {
+    await expect(
+      updateFlowPropertiesHandler({ entry, scope, filename: '../escaped.flow.yml', properties: NONE })
+    ).rejects.toThrow('not a valid flow filename');
+    await expect(
+      updateFlowPropertiesHandler({ entry, scope, filename: 'checkout.yml', properties: NONE })
+    ).rejects.toThrow('not a valid flow filename');
+  });
+
+  /** The same two rules §4.3's editor depends on: it is a flow, and it is inside the named scope. */
+  it('refuses a flow outside its scope, and a file that is not a flow', async () => {
+    await expect(
+      readFlowPropertiesHandler({ entry: path.join(scopeRoot, '..', 'elsewhere.flow.yml'), scope })
+    ).rejects.toThrow('outside its scope');
+    await expect(readFlowPropertiesHandler({ entry: path.join(scopeRoot, 'notes.txt'), scope })).rejects.toThrow(
+      'not a flow file'
+    );
+  });
+});
+
+/**
+ * 002 §4.5 — a script is editable as text through the same two channels a flow is.
+ *
+ * The guard is the point of these. The preload forwards any channel with no allowlist, so "a `.js`
+ * inside the scope" would make every helper the user has ever npm-installed writable from the
+ * renderer; the rule is `.js` **and** under `flows/scripts/`.
+ */
+describe('a flow script', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { readFlowSourceHandler, writeFlowSourceHandler } = require('./index');
+
+  let scopeRoot;
+  let scope;
+  let scriptsDir;
+  let entry;
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-script-')));
+    scope = { workspaceRoot: scopeRoot };
+    scriptsDir = path.join(scopeRoot, 'flows', 'scripts');
+    fs.mkdirSync(scriptsDir, { recursive: true });
+    entry = path.join(scriptsDir, 'text.js');
+    fs.writeFileSync(entry, 'const lastFour = (v) => String(v).slice(-4);\n', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  it('reads and writes it as text', async () => {
+    expect(await readFlowSourceHandler({ entry, scope })).toContain('lastFour');
+
+    await writeFlowSourceHandler({ entry, scope, content: 'const a = 1;\n' });
+
+    expect(fs.readFileSync(entry, 'utf8')).toBe('const a = 1;\n');
+  });
+
+  it('reads one nested inside the scripts directory', async () => {
+    const nested = path.join(scriptsDir, 'money', 'format.js');
+    fs.mkdirSync(path.dirname(nested), { recursive: true });
+    fs.writeFileSync(nested, 'const cents = 1;\n', 'utf8');
+
+    expect(await readFlowSourceHandler({ entry: nested, scope })).toContain('cents');
+  });
+
+  /** The whole reason the rule names a directory rather than an extension. */
+  it('refuses a .js outside flows/scripts, inside the scope though it is', async () => {
+    const loose = path.join(scopeRoot, 'flows', 'helper.js');
+    fs.writeFileSync(loose, 'const a = 1;\n', 'utf8');
+
+    await expect(readFlowSourceHandler({ entry: loose, scope })).rejects.toThrow('outside the scope flows/scripts');
+    await expect(writeFlowSourceHandler({ entry: loose, scope, content: '' })).rejects.toThrow(
+      'outside the scope flows/scripts'
+    );
+  });
+
+  it('refuses a .js in another scope, and one reached by climbing out', async () => {
+    await expect(
+      readFlowSourceHandler({ entry: path.join(scopeRoot, '..', 'elsewhere.js'), scope })
+    ).rejects.toThrow('outside the scope flows/scripts');
+    await expect(
+      readFlowSourceHandler({ entry: path.join(scriptsDir, '..', '..', '..', 'secrets.js'), scope })
+    ).rejects.toThrow('outside the scope flows/scripts');
+  });
+
+  /** A sibling scope whose path starts with this one's is not inside it. */
+  it('refuses a script in a scope whose path merely shares a prefix', async () => {
+    const sibling = `${scopeRoot}-two`;
+    await expect(
+      readFlowSourceHandler({ entry: path.join(sibling, 'flows', 'scripts', 'text.js'), scope })
+    ).rejects.toThrow('outside the scope flows/scripts');
+  });
+
+  it('still refuses a file that is neither a flow nor a script', async () => {
+    await expect(readFlowSourceHandler({ entry: path.join(scriptsDir, 'notes.md'), scope })).rejects.toThrow(
+      'not a flow file'
+    );
+  });
+
+  it('needs a scope, like every other channel naming a file', async () => {
+    await expect(readFlowSourceHandler({ entry, scope: {} })).rejects.toThrow('needs a workspaceRoot');
+  });
+
+  /** 002 §4.5's rename — the name, and nothing else a script does not have. */
+  describe('renaming it', () => {
+    const { renameFlowScriptHandler } = require('./index');
+
+    it('renames it in place and reports where it went', async () => {
+      const pathname = await renameFlowScriptHandler({ entry, scope, filename: 'digits.js' });
+
+      expect(pathname).toBe(path.join(scriptsDir, 'digits.js'));
+      expect(fs.existsSync(entry)).toBe(false);
+      expect(fs.readFileSync(pathname, 'utf8')).toContain('lastFour');
+    });
+
+    /** The directory is what makes a `.js` a listed script, so a rename must not leave it. */
+    it('keeps it in the directory it was in, including a nested one', async () => {
+      const nested = path.join(scriptsDir, 'money', 'format.js');
+      fs.mkdirSync(path.dirname(nested), { recursive: true });
+      fs.writeFileSync(nested, 'const cents = 1;\n', 'utf8');
+
+      const pathname = await renameFlowScriptHandler({ entry: nested, scope, filename: 'cents.js' });
+
+      expect(pathname).toBe(path.join(scriptsDir, 'money', 'cents.js'));
+    });
+
+    it('refuses to rename over a script already there', async () => {
+      fs.writeFileSync(path.join(scriptsDir, 'digits.js'), 'const a = 1;\n', 'utf8');
+
+      await expect(renameFlowScriptHandler({ entry, scope, filename: 'digits.js' })).rejects.toThrow(
+        'a script already exists at'
+      );
+      expect(fs.readFileSync(path.join(scriptsDir, 'digits.js'), 'utf8')).toBe('const a = 1;\n');
+    });
+
+    it('refuses a filename that is a path, and one that is not .js', async () => {
+      await expect(renameFlowScriptHandler({ entry, scope, filename: '../escaped.js' })).rejects.toThrow(
+        'not a valid script filename'
+      );
+      await expect(renameFlowScriptHandler({ entry, scope, filename: 'text.txt' })).rejects.toThrow(
+        'not a valid script filename'
+      );
+    });
+
+    it('refuses a source outside flows/scripts', async () => {
+      const loose = path.join(scopeRoot, 'flows', 'helper.js');
+      fs.writeFileSync(loose, 'const a = 1;\n', 'utf8');
+
+      await expect(renameFlowScriptHandler({ entry: loose, scope, filename: 'other.js' })).rejects.toThrow(
+        'outside the scope flows/scripts'
+      );
+    });
+
+    it('renaming to the same name changes nothing', async () => {
+      expect(await renameFlowScriptHandler({ entry, scope, filename: 'text.js' })).toBe(entry);
+      expect(fs.existsSync(entry)).toBe(true);
+    });
   });
 });

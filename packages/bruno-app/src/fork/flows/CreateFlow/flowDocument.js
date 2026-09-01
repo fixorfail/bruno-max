@@ -56,7 +56,7 @@ const relativeSource = (directory, pathname) => {
   return relative.startsWith('.') ? relative : `./${relative}`;
 };
 
-export const buildFlowDocument = ({ name, description, library, directory, apiSpecs = [] }) => {
+export const buildFlowDocument = ({ name, description, tags = [], library, directory, apiSpecs = [] }) => {
   const taken = new Set();
   const apis = Object.fromEntries(
     apiSpecs.map((apiSpec) => [uniqueAlias(aliasFor(apiSpec), taken), relativeSource(directory, apiSpec.pathname)])
@@ -66,6 +66,9 @@ export const buildFlowDocument = ({ name, description, library, directory, apiSp
   const meta = {
     name,
     ...(trimmedDescription ? { description: trimmedDescription } : {}),
+    // Written only when there are any, for the same reason `library` is: `tags: []` is what §14.1's
+    // `--tags` filtering already does with a flow that declares none.
+    ...(tags.length ? { tags } : {}),
     // 001 §12.5's flag is written only when it is set: `library: false` and an absent key mean the
     // same thing to the engine (`Boolean(meta.library)`), and a flow that spells out the default
     // invites being read as having opted into something.

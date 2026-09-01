@@ -134,6 +134,71 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     if (step.operation && step.uses) {
       error('operation-and-uses', `${step.id} declares both operation: and uses:`, step.id);
     }
+
+    /**
+     * §8.7's promotions, checked here because both failures are silent at run time.
+     *
+     * A `from: pre` naming nothing the step computes extracts `undefined`, which §8.1 makes an
+     * ordinary "not produced" — so the output is simply missing and the reference to it skips a
+     * downstream step for a reason that names the reference rather than the typo.
+     */
+    const computed = new Set(step.pre.map((entry) => entry.name));
+    for (const output of step.outputs) {
+      if (output.from === 'pre' && !computed.has(output.path as string)) {
+        error(
+          'unknown-pre-value',
+          `${step.id}: outputs.${output.name} takes from: pre ${output.path}, which the step does not compute`,
+          step.id,
+          ['outputs', output.name]
+        );
+      }
+
+      /**
+       * §8.1's string form is a **path**, not an interpolation, and `{{pre.x}}` written there
+       * selects nothing — leaving the output unset with no error anywhere. It is the mistake the
+       * shape invites, so it is the one worth reporting.
+       */
+      if (output.path && /\{\{.*\}\}/.test(output.path)) {
+        warn(
+          'interpolation-in-output-path',
+          `${step.id}: outputs.${output.name} is a path into the response, not an interpolation`
+          + ` — ${output.path} selects nothing`,
+          step.id,
+          ['outputs', output.name]
+        );
+      }
+    }
+
+    /**
+     * The third silent failure in this position, and the one the shape invites hardest.
+     *
+     * §8.7's scripts all share one context, built before the first of them runs, so `ctx.pre` is
+     * empty in every one of them however they are ordered. Computing a nonce in one entry and
+     * signing `ctx.pre.nonce` in the next therefore signs `undefined` — and nothing says so: the
+     * script returns a value, the step succeeds, and a real request goes out carrying a signature
+     * over nothing. An assertion downstream is the earliest anything notices, and only if the API
+     * happens to reject it.
+     *
+     * This is `outputs:`' behaviour too, which is the point — §8.7 is that block one stage earlier
+     * and inherits the property by being built the same way. So the rule is not what is reported
+     * here; the silence is. Reading a sibling stays legal JavaScript and always resolves the same
+     * way, which is exactly why it needs saying out loud.
+     *
+     * A source check rather than a semantic one: `ctx.pre.x` is the form people write, and
+     * destructuring the parameter slips past. A warning that catches the common spelling is worth
+     * more than none, and a false positive costs a reader one glance at a line they did mean.
+     */
+    for (const entry of step.pre) {
+      if (/\bctx\s*\??\.\s*pre\b/.test(entry.script)) {
+        warn(
+          'pre-reads-sibling-value',
+          `${step.id}: pre.${entry.name} reads ctx.pre, which is empty in every pre: script`
+          + ' — compute both halves in one entry, or share a functions: helper',
+          step.id,
+          ['pre', entry.name]
+        );
+      }
+    }
   }
 
   const cycle = hasCycle(flow);

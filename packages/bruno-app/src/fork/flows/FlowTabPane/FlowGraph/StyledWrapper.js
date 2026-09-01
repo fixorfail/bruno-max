@@ -228,6 +228,16 @@ const StyledWrapper = styled.div`
     stroke-width: 1;
   }
 
+  /**
+   * Purple because every other hue on this graph already means an outcome — green passed, yellow
+   * running, danger and warning failed — and a strip in any of them would read as a status the step
+   * does not have. Selection uses purple as a *stroke*; this is a fill, so the two do not collide.
+   */
+  .node-pre-strip {
+    fill: ${(props) => props.theme.colors.text.purple};
+    stroke: none;
+  }
+
   .node.selected .node-box {
     stroke: ${(props) => props.theme.colors.text.purple};
     stroke-width: 2;

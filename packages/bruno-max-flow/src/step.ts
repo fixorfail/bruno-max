@@ -11,7 +11,7 @@ import Ajv, { type ErrorObject } from 'ajv';
 import addFormats from 'ajv-formats';
 import { get } from '@usebruno/query';
 
-import type { NormalizedStep, OutputSpec, RetryPolicy } from './document';
+import type { NormalizedStep, OutputSpec, PreSpec, RetryPolicy } from './document';
 import { evaluateAssertion, evaluationContext, type EvaluationContext } from './expression';
 import type { Scope } from './interpolate';
 import { requestSchema, responseSchema, type ResolvedOperation } from './openapi';
@@ -40,6 +40,57 @@ const explain = (error: ErrorObject): string => {
     : message;
 };
 
+/**
+ * Where in the schema a compile failure actually is.
+ *
+ * Ajv reports the *rule* that was broken — `"nullable" cannot be used without "type"` — and nothing
+ * about where, which for a bundled OpenAPI document is a message that sends the reader grepping
+ * through tens of thousands of lines for a keyword that is legal almost everywhere it appears.
+ *
+ * The location is recovered by compiling each subschema on its own and keeping the ones that fail
+ * the same way. It works because Ajv checks keyword *shape* before it resolves references: a node
+ * lifted out of the document still carries its fault, while its unresolvable `$ref`s fail
+ * differently and are told apart by the message not matching.
+ *
+ * Only the deepest offenders are reported. Every ancestor of a bad node fails identically — the root
+ * included, which is what makes the unhelpful message unhelpful — so a parent that has a reporting
+ * descendant is the same fault said less precisely.
+ */
+const MAX_SCHEMA_NODES = 5000;
+const MAX_REPORTED_PATHS = 5;
+
+const locateCompileFault = (schema: Record<string, any>, message: string): string[] => {
+  const failing: string[] = [];
+  let visited = 0;
+
+  const walk = (node: unknown, path: string): void => {
+    if (!node || typeof node !== 'object' || visited >= MAX_SCHEMA_NODES) return;
+
+    if (Array.isArray(node)) {
+      node.forEach((entry, index) => walk(entry, `${path}/${index}`));
+      return;
+    }
+
+    visited += 1;
+    if (path) {
+      try {
+        // A fresh instance each time: `ajv` above caches by schema identity, and a failed compile
+        // there would poison the validator every later step shares.
+        new Ajv({ allErrors: true, strict: false }).compile(node as Record<string, any>);
+      } catch (cause) {
+        if (cause instanceof Error && cause.message === message) failing.push(path);
+      }
+    }
+
+    for (const [key, value] of Object.entries(node)) walk(value, `${path}/${key}`);
+  };
+
+  walk(schema, '');
+
+  const deepest = failing.filter((candidate) => !failing.some((other) => other.startsWith(`${candidate}/`)));
+  return deepest.length ? deepest : failing;
+};
+
 const validateAgainst = (schema: Record<string, any> | undefined, value: unknown): SchemaResult => {
   if (!schema) return { valid: true, errors: [] };
 
@@ -53,15 +104,16 @@ const validateAgainst = (schema: Record<string, any> | undefined, value: unknown
      * propagate it takes the run with it (§13.2), which is how a spec the engine could not read
      * became a run that ended with nothing to say about any step.
      */
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    const at = locateCompileFault(schema, reason);
+    const where = at.length
+      ? ` — at ${at.slice(0, MAX_REPORTED_PATHS).join(', ')}${
+        at.length > MAX_REPORTED_PATHS ? `, and ${at.length - MAX_REPORTED_PATHS} more` : ''}`
+      : '';
+
     return {
       valid: false,
-      errors: [
-        {
-          path: '/',
-          message: `the schema could not be compiled: ${cause instanceof Error ? cause.message : String(cause)}`,
-          keyword: 'schema'
-        }
-      ]
+      errors: [{ path: '/', message: `the schema could not be compiled: ${reason}${where}`, keyword: 'schema' }]
     };
   }
 
@@ -93,7 +145,8 @@ const extractOutputs = async (
   outputs: OutputSpec[],
   response: ExecutedResponse,
   context: EvaluationContext,
-  runScript: ScriptRunner
+  runScript: ScriptRunner,
+  pre: Record<string, unknown> = {}
 ): Promise<{ values: Record<string, unknown>; error?: ScriptError }> => {
   const values: Record<string, unknown> = {};
   let error: ScriptError | undefined;
@@ -104,7 +157,14 @@ const extractOutputs = async (
         ? await runScript(output.script, [context.res, context])
         : output.from === 'status'
           ? response.status
-          : get((output.from === 'headers' ? response.headers : response.body) as Record<string, unknown>, output.path || '');
+          : output.from === 'pre'
+            // §8.7: promoting a value the step computed. Extracted here rather than earlier so
+            // there is one rule for when a step has outputs — after a response, or not at all.
+            ? pre[output.path as string]
+            : get(
+                (output.from === 'headers' ? response.headers : response.body) as Record<string, unknown>,
+                output.path || ''
+              );
       if (value !== undefined) values[output.name] = value;
     } catch (cause) {
       // The remaining outputs are still extracted: diagnosing a script that threw needs the
@@ -114,6 +174,36 @@ const extractOutputs = async (
   }
 
   return { values, error };
+};
+
+/**
+ * §8.7. The values a step computes before its request, in declaration order.
+ *
+ * **A throw stops the rest**, which is where this differs from `extractOutputs`. An output that
+ * throws still lets its siblings extract, because diagnosing it needs the response the step actually
+ * got; a `pre:` script that throws means no request is built at all, so the siblings' values have
+ * nothing to be for.
+ *
+ * `undefined` is §8.1's answer here too: the value is simply not produced, and a `{{pre.x}}`
+ * naming it interpolates as an ordinary miss rather than failing the step.
+ */
+export const runPreScripts = async (
+  pre: PreSpec[],
+  context: EvaluationContext,
+  runScript: ScriptRunner
+): Promise<{ values: Record<string, unknown>; error?: ScriptError }> => {
+  const values: Record<string, unknown> = {};
+
+  for (const entry of pre) {
+    try {
+      const value = await runScript(entry.script, [context]);
+      if (value !== undefined) values[entry.name] = value;
+    } catch (cause) {
+      return { values, error: new ScriptError(`pre.${entry.name}`, cause) };
+    }
+  }
+
+  return { values };
 };
 
 /** §11.1: `delay` is the wait *before* each retry, so `maxAttempts: n` waits `n - 1` times. */
@@ -134,6 +224,8 @@ export type AttemptOutcome = {
 
 export type AttemptInput = {
   step: NormalizedStep;
+  /** §8.7's computed values, for the `from: pre` outputs that promote them. */
+  pre: Record<string, unknown>;
   resolved: ResolvedOperation;
   materialized: Materialized;
   scope: Scope;
@@ -188,7 +280,7 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
 
   // Outputs are extracted whenever a response arrived, even when a check below then fails — which
   // is precisely what makes cleanup work (§11.2).
-  const extracted = await extractOutputs(step.outputs, response, context, runScript);
+  const extracted = await extractOutputs(step.outputs, response, context, runScript, input.pre);
   const outputs = extracted.values;
 
   const selfScope: Scope = {

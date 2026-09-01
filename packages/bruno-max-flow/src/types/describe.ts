@@ -20,6 +20,11 @@ export type FlowNode = {
   rank: number;
   /** Declared output names (§8.1, §8.5). */
   outputs: string[];
+  /**
+   * §8.7's computed names. Their own list rather than part of `outputs`: those are what other steps
+   * can read, and these are readable by nobody. A value promoted with `from: pre` is in both.
+   */
+  pre: string[];
   markers: {
     /** when: (§9.3) */
     conditional: boolean;
@@ -29,6 +34,8 @@ export type FlowNode = {
     allowsErrorStatus: boolean;
     /** (§9.1) */
     usesSharedSlot: boolean;
+    /** pre: (§8.7) */
+    computesValues: boolean;
   };
   position: { line: number; column: number };
 };

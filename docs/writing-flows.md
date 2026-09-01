@@ -28,6 +28,7 @@ implementers rather than authors.
 - [The document](#the-document)
 - [A step](#a-step)
 - [Values and interpolation](#values-and-interpolation)
+- [Values computed before the request](#values-computed-before-the-request)
 - [Request bodies](#request-bodies)
 - [Outputs: moving data between steps](#outputs-moving-data-between-steps)
 - [Order, conditions and branching](#order-conditions-and-branching)
@@ -36,6 +37,7 @@ implementers rather than authors.
 - [Scripts](#scripts)
 - [Datasets: running a flow per row](#datasets-running-a-flow-per-row)
 - [Sub-flows and library flows](#sub-flows-and-library-flows)
+- [Editing a flow in the app](#editing-a-flow-in-the-app)
 - [Running a flow](#running-a-flow)
 - [Validating a flow](#validating-a-flow)
 - [Reference tables](#reference-tables)
@@ -117,8 +119,8 @@ Where prose goes, and what each field is actually used for today:
 | Where | Field | Purpose | Used by |
 |---|---|---|---|
 | Flow | `meta.name` | Human title | The graph title and `FlowDescription.name`; falls back to the filename |
-| Flow | `meta.description` | What the flow does and why | **Recorded, not yet surfaced** — for the reader of the file |
-| Flow | `meta.tags` | Labels for grouping | **Recorded, not yet surfaced** — `--tags` filtering is specified (001 §14.1) but not implemented |
+| Flow | `meta.description` | What the flow does and why | The app's [flow properties dialog](#flow-properties), and the reader of the file |
+| Flow | `meta.tags` | Labels for grouping | The properties dialog edits them; **nothing selects on them yet** — `--tags` filtering is specified (001 §14.1) but not implemented |
 | Step | `name` | Human label for one step | Shown on the graph node beside the id |
 | Anywhere | `# comment` | Everything else | Nothing reads them; they survive in the file |
 
@@ -201,6 +203,11 @@ authProfiles:                  # named auth configs, referenced by steps and api
     mode: bearer
     token: "{{steps.sign_in.token}}"
 
+functions:                     # helpers every script: position can call — see Scripts
+  use: [./scripts/text.js]
+  lastFour: |
+    (value) => String(value).slice(-4)
+
 vars:                          # flow-scoped values, referenced bare: {{currency}}
   currency: USD
   testEmail: "qa+{{$randomUUID}}@example.com"
@@ -219,8 +226,6 @@ exports:                       # library flows only
 steps:
   - id: ...
 ```
-
-`config.capturePreviewBytes` appears in the spec but is not read by anything yet.
 
 ### `apis:` — binding OpenAPI documents
 
@@ -301,6 +306,10 @@ steps:
     depends: [sign_in]                       # optional; default is "the step above"
     when: steps.sign_in.status eq 200        # optional; skip this step unless true
 
+    pre:                                     # values computed before the request is built
+      requestedAt: |
+        () => new Date().toISOString()
+
     body:                                    # inline overrides — or `bodyFile:`, never both
       amount: 9900
       currency: "{{currency}}"
@@ -364,6 +373,7 @@ these names is shadowed by the namespace:
 | Namespace | Holds |
 |---|---|
 | `steps.<id>.*` | Another step's declared outputs and built-in metadata |
+| `pre.<name>` | A value **this** step computed before its request (see [below](#values-computed-before-the-request)) |
 | `shared.<slot>` | A slot's value (see [Slots](#slots-when-branches-must-share-a-value)) |
 | `params.<name>` | A library flow's parameters |
 | `row.<column>` | The current dataset row |
@@ -432,6 +442,108 @@ present. `!...` removes one:
 
 ---
 
+## Values computed before the request
+
+Some values a request needs cannot be written down — a signature over the payload, a timestamp, a
+nonce. `pre:` is a step-level mapping of name to script, evaluated **before the request is built**,
+so the step can carry such a value without a throwaway step that sends a request nobody wanted just
+to run three lines of JavaScript:
+
+```yaml
+functions:
+  use:
+    - ./scripts/signing.js                   # declares sign()
+
+vars:
+  webhookSecret: "{{PARTNER_SECRET}}"
+
+steps:
+  - id: create_order
+    operation: payments-api#createOrder
+    outputs:
+      orderId: data.id
+
+  - id: charge
+    operation: payments-api#createPayment
+    pre:
+      requestedAt: |
+        () => new Date().toISOString()
+      signature: |
+        (ctx) => sign(ctx.webhookSecret, ctx.steps.create_order.orderId)
+    headers:
+      X-Timestamp: "{{pre.requestedAt}}"
+      X-Signature: "{{pre.signature}}"
+    body:
+      amount: 9900
+```
+
+**It is `outputs:` one stage earlier.** The same mapping shape, the same one-value-per-name rule, and
+the same rule that a script returning `undefined` simply did not produce its value. What it does not
+have is `path:` — there is no response to select from, which is the whole reason the position exists.
+
+The script signature is `(ctx)` and there is **no `res`**, exactly as in a `when:` script and for the
+same reason: nothing has been sent. `functions:` helpers are in scope unchanged.
+
+**A `pre:` script cannot read a sibling `pre` value**, whatever the order they are written in. The
+`ctx` all of them are handed is built once, before the first one runs, and its `pre` is empty — so
+`ctx.pre.nonce` in the second entry is `undefined` even though the first entry produced a nonce. It
+fails silently at run time: the signature is computed over nothing and the request goes out wrong
+with no error anywhere. `bru flow validate` is what catches it, warning on any `pre:` script that
+mentions `ctx.pre` — `pre-reads-sibling-value`.
+
+Compute both halves in one entry — returning an object is fine, `{{pre.name.field}}` reads into it —
+or lift the shared part into a `functions:` helper both entries call:
+
+```yaml
+    pre:
+      signed: |
+        (ctx) => {
+          const nonce = crypto.randomUUID();
+          return { nonce, signature: sign(ctx.webhookSecret, nonce) };
+        }
+    headers:
+      X-Nonce: "{{pre.signed.nonce}}"
+      X-Signature: "{{pre.signed.signature}}"
+```
+
+Declaration order still matters, but only for which entries have run when one of them throws — see
+below. It never makes an earlier value visible to a later script.
+
+**`pre.*` is step-local, and that is the point.** No other step can address it. Publishing these
+values into `steps.<id>.*` beside the outputs was the obvious alternative and was rejected:
+`{{steps.charge.x}}` would then mean either a pre-request computation or a post-response extraction,
+with nothing at the call site to say which.
+
+Where it sits in the step's pipeline:
+
+> depends gate → `when:` → `pre:` → materialize the request → validate it → dispatch → `outputs:` →
+> `assert:`
+
+Two consequences follow from that order, and both are worth holding.
+
+**`when:` runs first, so a skipped step computes nothing** — and therefore a `when:` condition cannot
+read a `pre` value. The condition is the cheaper question and the one that can make the rest
+unnecessary.
+
+**`pre:` runs once per step, not once per attempt.** A retried step re-sends the values its first
+attempt computed, which for a timestamp or a nonce is wrong. There is no field to change that today;
+the honest workaround is `maxAttempts: 1` on a step whose value must be fresh. A dataset run is
+unaffected — each iteration executes the step, so each computes its own values.
+
+**A throw stops the remaining `pre:` scripts.** This is the one place it differs from `outputs:`,
+where a script that throws still lets its siblings extract: there the response they extract from
+exists and is what you need to diagnose the throw, whereas here no request is built at all, so the
+siblings' values have nothing to be for. The step fails with `script-error` and the message names the
+position — `pre.signature threw: …`.
+
+Nothing is captured. `pre` values are not written to run artifacts, the same as `outputs:`.
+
+A `uses:` sub-flow step may declare `pre:` too, and its values are in scope while the `with:`
+arguments resolve. Inside the sub-flow, `pre.*` means that sub-flow's own steps' values and never the
+caller's.
+
+---
+
 ## Request bodies
 
 **You do not write the whole body.** The engine builds it from the operation's request schema and
@@ -475,7 +587,7 @@ request media type, set `contentType:` to choose; otherwise the single declared 
     outputs:
       paymentId: data.id                    # short form: a path into the response body
       state:
-        from: body                          # body (default) | headers | status
+        from: body                          # body (default) | headers | status | pre
         path: data.state
       location:
         from: headers
@@ -498,6 +610,40 @@ Another step then reads it by name:
 ```yaml
       paymentId: "{{steps.create_payment.paymentId}}"
 ```
+
+### `from: pre` — letting a computed value leave the step
+
+A value from [`pre:`](#values-computed-before-the-request) is step-local, so a later step that needs
+it — the correlation id you generated and now want to look up by — takes the same route out of the
+step as everything else, an output:
+
+```yaml
+    pre:
+      correlationId: |
+        () => crypto.randomUUID()
+    outputs:
+      correlationId: { from: pre }                       # same name
+      traceId:       { from: pre, path: correlationId }  # under another
+    shared: [correlationId]                              # unchanged
+```
+
+`path:` names which `pre` value to take and **defaults to the output's own name**, so promoting one
+under the name it already has is `{ from: pre }` and nothing else. Naming a value the step does not
+compute is a validation error, `unknown-pre-value` — at run time it would extract `undefined` and the
+output would simply be missing.
+
+`shared:` does not change at all: it publishes an *output* into a slot, as always. One route out of a
+step, one place to read what leaves it.
+
+**A `from: pre` output is extracted where every other output is — after the response.** So a step
+whose request never dispatched produces no outputs at all, `from: pre` included, even though the
+value itself was computed before the attempt. One rule for when a step has outputs beats a single
+value that survives a transport error.
+
+> **The string form is a path, not an interpolation.** `outputs: { x: "{{pre.x}}" }` looks like it
+> should work and does not: it is read as a path into the response body, selects nothing, and leaves
+> the output unset with no error at run time. This is the mistake the shape invites, so `bru flow
+> validate` warns about it — `interpolation-in-output-path`. Write `x: { from: pre }`.
 
 **Alongside declared outputs, every step publishes built-in metadata** under the same id:
 
@@ -630,6 +776,30 @@ steps:
 `shared: [chargeId]` on a step is shorthand for `chargeId: chargeId`. Reading a slot no `shared:`
 block declares is a validation error; reading a declared slot nobody wrote resolves empty.
 
+#### `writers:` — how many writers a reader must sit below
+
+**The default is that a reader descends from *every* writer**, which is the shape above: `receipt`
+sits at the join below both branches, so both writers are its ancestors whichever one actually ran.
+`shared: [chargeId]` is the list form of that rule, spelled out as `writers: all`.
+
+The other shape is branches that **exclude** each other, where the steps that read a value sit on
+the same branch that wrote it. No reader can descend from every writer there, because only one
+writer ever runs — so say so:
+
+```yaml
+shared:
+  sessionToken: { writers: any }    # descend from one writer, not all
+  chargeId: { writers: all }        # the default, written out
+```
+
+Under `any` a reader must still descend from *a* writer; what it drops is the requirement to
+descend from all of them. Reading a slot none of whose writers is upstream is `slot-not-downstream`
+either way.
+
+Use `any` only where the writers genuinely exclude each other. It is a promise you are making about
+the shape of the flow, not something the validator can check for you — declaring it on writers that
+can both run buys a slot whose value depends on which finished last.
+
 ---
 
 ## Assertions
@@ -658,11 +828,23 @@ spaces. The long form is available when a value would be ambiguous:
 ```
 
 Operands starting with a reserved namespace (`res`, `steps`, `shared`, `params`, `row`, `flow`,
-`process`, `req`) are read directly; anything else is treated as a literal, and `{{...}}` works in
-any operand position.
+`pre`, `process`, `req`) are read directly; anything else is treated as a literal, and `{{...}}`
+works in any operand position.
 
 A failing assertion fails the step with reason `assertion-failed`. Every assertion is evaluated —
 you get all the failures, not just the first.
+
+**A step that opts out of the status check should assert a status.** `failOnStatusCode: false` says
+the status is yours to judge, and on its own it accepts *any* status at all — including the 500 the
+step did not mean to accept. Pair it with the assertion that says what you actually expect:
+
+```yaml
+    failOnStatusCode: false
+    assert:
+      - res.status in [200, 404]      # 404 is a legitimate answer here; 500 is not
+```
+
+The validator warns when the opt-out stands alone — `status-opt-out-without-assertion`.
 
 **Full operator list:**
 
@@ -711,14 +893,15 @@ And `config.maxRunDuration` bounds the whole run, iterations included.
 
 ## Scripts
 
-Three fields take JavaScript, and all three take a **function expression** — the engine calls what
-you write, so a bare expression throws:
+Four fields take JavaScript, and every one of them takes a **function expression** — the engine calls
+what you write, so a bare expression throws:
 
 | Field | Signature | Returns |
 |---|---|---|
 | `outputs.<name>.script` | `(res, ctx) => …` | The output's value |
 | `when.script` | `(ctx) => …` | Truthy to run the step |
 | `retry.shouldRetry` | `(res, attempt, ctx) => …` | Truthy to retry |
+| [`pre.<name>`](#values-computed-before-the-request) | `(ctx) => …` | A value the request can carry |
 
 `res` is the response, as:
 
@@ -730,12 +913,76 @@ In `shouldRetry` it is `undefined` when the attempt got no response at all (a tr
 guard it: `(res) => !res || res.status >= 500`.
 
 `ctx` is everything an expression can see, flattened — variables plus the namespaces (`steps`,
-`shared`, `params`, `row`, `flow`, `process`) and `res`. In `shouldRetry` it also carries
+`shared`, `params`, `row`, `flow`, `pre`, `process`) and `res`. In `shouldRetry` it also carries
 `ctx.failures`, the assertions that failed on this attempt.
+
+`pre:` is handed no `res` for the same reason `when:` is not: it runs before anything is sent.
 
 Scripts run in Bruno's sandbox, the same one request scripts use. A script that throws fails the step
 with reason `script-error`; the remaining outputs are still extracted, because diagnosing the throw
 needs the response it threw on.
+
+### `functions:` — a shared library
+
+**Anything two scripts need is a function, and `functions:` is where it goes.** It is a top-level
+block: `use:` lists library files, and every other key defines a helper — a name, and a function
+expression producing it.
+
+```yaml
+functions:
+  use:
+    - ../shared/functions.yml     # a library document: a functions: block of its own
+    - ./scripts/text.js           # raw JavaScript: whatever it declares is in scope
+
+  lastFour: |
+    (value) => String(value).slice(-4)
+
+steps:
+  - id: charge
+    operation: payments-api#createPayment
+    outputs:
+      tail:
+        script: |
+          (res) => lastFour(res.body.data.card)
+    assert:
+      - res.status eq 201
+```
+
+**It is a prelude, not a module system.** The library's source is composed into the same program the
+call site is evaluated in, so a helper is in scope **by its name** and nothing is imported, injected
+as an argument, or reached through an object. That is what makes one library usable from every script
+position — `outputs.script`, `when.script`, `shouldRetry`, `pre:` — without any of them changing
+shape, and it is why a library works identically in the app and under `bru`.
+
+**`use:` is explicit; nothing is picked up by convention.** What a flow's scripts can call is readable
+from the flow itself, which is the property that would be lost if a directory could contribute
+functions on its own. The app lists raw helpers under
+[`flows/scripts/`](#flowsscripts--where-raw-helpers-live), and that convention still changes nothing
+about resolution — a script is reached by `use:` and by nothing else.
+
+**The extension decides what an entry is.** `.yml` or `.yaml` is a library document, read for a
+`functions:` block of its own — so libraries nest. Any other extension is raw JavaScript, composed as
+written, which is how a dozen helpers live in one `.js` file rather than being named one by one in
+YAML.
+
+**Order is `use:` first, depth-first, then the flow's own definitions, and the last word on a name
+wins** — so a flow overrides a helper the library it uses declares, rather than colliding with it.
+Paths resolve **against the file that named them**, not against the flow that included it: a library
+including another library is written from where it sits. A file already included is skipped rather
+than read again, so two libraries that include each other are a diamond and not a cycle error.
+
+Two things `bru flow validate` reports, both because they would otherwise fail obscurely:
+
+- **A name must be a JavaScript identifier** (`invalid-function-name`). It becomes a declaration, so
+  `last-four` composes into a program that does not parse — and a syntax error in the prelude fails
+  every script in the flow at once, naming none of them.
+- **A helper called `res` or `ctx` shadows what every script is handed**
+  (`function-shadows-script-argument`). A warning rather than an error: shadowing is legal and an
+  author who means it is not wrong, but nobody means it by accident twice.
+
+**A library does not cross a `uses:` boundary.** A sub-flow declares its own `functions:`, so what
+its scripts can call is readable from the sub-flow rather than from whichever flow happened to call
+it.
 
 ## Datasets: running a flow per row
 
@@ -835,6 +1082,111 @@ supplying its parameters.
 
 ---
 
+## Editing a flow in the app
+
+A `.flow.yml` is a file you can edit in anything, and the app never pretends otherwise — but three of
+its surfaces exist for the edits you would otherwise make by hand and get subtly wrong. All of them
+hang off the flow's row in the **API Flows** sidebar section, on a menu revealed when the pointer is
+on the row.
+
+### Flow properties
+
+**Two different things carry a flow's name, and this is where both are changed.** The sidebar lists a
+flow by `meta.name`, which is prose; the file it lives in is what a directory listing shows and what
+another flow's `uses:` points at. `Properties`, the second item on the row menu, edits the `meta:`
+block and the filename together:
+
+| Field | Writes |
+|---|---|
+| Flow Name | `meta.name` — required, because the sidebar lists the flow by it |
+| File Name | the file, renamed in place; the `.flow.yml` extension is the form's, not yours |
+| Description | `meta.description` |
+| Tags | `meta.tags`, as one comma-separated line |
+| Library | `meta.library` |
+
+**A cleared field is written as an absence.** `description: ''`, `tags: []` and `library: false` all
+mean to the engine exactly what the missing key means, so clearing one deletes it rather than
+writing an empty value — which is what keeps edit-and-undo leaving the file it started as.
+
+**Everything outside `meta:` survives the write**, so a property edit stays a diff a reviewer can
+read: your steps, comments and formatting are not reserialized around it. One cosmetic exception is
+unavoidable — padding that lined up a column of trailing comments collapses to a single space.
+
+**The file does not move.** A flow's directory decides its scope — which environment tier it resolves
+against, and whose auth it can inherit — so relocating it would change what the flow *does* from a
+box labelled with what it is called. Moving a flow stays a filesystem operation; the sidebar re-reads
+it either way.
+
+**A rename does not rewrite `uses:` references.** A flow's identity is its path, so every other flow
+naming the old one stops resolving, and `bru flow validate` is what tells you. Rewriting files you
+did not open, on a guess about which paths meant this one, is the alternative — and it is worse.
+
+The dialog refuses to open over a raw YAML editor with unsaved changes. It edits the text on disk,
+which a dirty editor is already ahead of; save or discard first.
+
+### The raw YAML editor
+
+`Edit Yaml` on the same menu opens the file as text, with the graph above it redrawing from the draft
+as you type. It is deliberately not what you get by opening a flow — it is for the edit the other
+surfaces do not cover, and for reading what a generated flow actually says. Saving follows the app's
+own auto-save preference, and auto-save writes only a draft that parses: a half-typed line would
+otherwise reach a file the watcher is reporting and a run may be about to execute.
+
+**A clean editor follows the file when it changes on disk** — a branch switch, another tool, a save
+from elsewhere. **A dirty one keeps what you typed** and says the two diverged: *"Unsaved changes —
+the file also changed on disk"*. Saving from there overwrites the file, which may be exactly what you
+mean; choosing for you is what an editor must not do, and saying nothing is what would make the
+overwrite silent.
+
+### `flows/scripts/` — where raw helpers live
+
+`functions: use:` takes a raw `.js` file from anywhere, which in practice means helpers end up
+wherever the author put them. `flows/scripts/` is the conventional home for them, and the sidebar
+lists what is in it:
+
+```
+workspace/
+  flows/
+    checkout.flow.yml
+    scripts/
+      text.js               # listed under Scripts
+      money/format.js       # nested, also listed
+```
+
+**The convention changes nothing about resolution.** A script is reached by `use:` and by nothing
+else — putting a file in the folder does not make any flow see it:
+
+```yaml
+# checkout.flow.yml — the folder saves nobody from writing this
+functions:
+  use:
+    - ./scripts/text.js
+```
+
+Only `.js`, and only under that directory, is listed; subdirectories are listed too. Clicking one
+opens it in a JavaScript editor tab that behaves like the YAML editor above, except that its
+auto-save is gated on the file *parsing*. The stakes are higher there than for a flow: a script is
+composed into every script position of every flow that names it, so a half-typed line saved to disk
+fails all of them at once.
+
+A script row's menu holds one item, `Rename`. It stays inside `flows/scripts/`, and like a flow's
+rename it does not follow the `use:` entries that named it — `bru flow validate` reports the break as
+`unresolved-function-library`.
+
+**One trap the folder makes tempting:** `require` resolves against the collection or workspace root,
+not against the requiring file. Two scripts sitting side by side in `flows/scripts/` therefore cannot
+require each other by a relative path:
+
+```js
+require('./money/format')          // ✗ resolved from the scope root, not from scripts/
+require('lodash')                  // ✓ bare names are unaffected
+```
+
+Composition between scripts is `use:`'s job, and `use:` *does* resolve relative to the file that named
+it — a `.yml` library document listing several `.js` files is the shape that works.
+
+---
+
 ## Running a flow
 
 In the app, open it from the **API Flows** sidebar section and use the run control; the graph shows
@@ -851,6 +1203,7 @@ The options you are most likely to want:
 
 | Option | Does |
 |---|---|
+| `--global-env name` | Run against a workspace environment — `<workspace>/environments/<name>.yml` |
 | `--env-var name=value` | Override one variable (repeatable) |
 | `--param name=value` | Supply a library flow's declared param (repeatable) |
 | `--concurrency n` | Override `config.concurrency` |
@@ -862,6 +1215,16 @@ The options you are most likely to want:
 
 Each run writes a directory under `.bruno-runs/` holding the flow as it was, every request and
 response, and the outcome — which is what the app's run selector reads back later.
+
+What the command exits with, for a CI job that has to tell these apart:
+
+| Code | Means |
+|---|---|
+| `0` | Every flow passed |
+| `1` | A flow failed |
+| `2` | A flow did not validate, so it was not run |
+| `3` | The command itself was wrong — a bad path, or a `--global-env` that does not exist |
+| `4` | The run was cancelled, including by `--max-run-duration` elapsing |
 
 ## Validating a flow
 
@@ -890,9 +1253,18 @@ What it reports:
 | `non-ancestor-reference` | `{{steps.x…}}` names a step this one does not depend on — use a slot |
 | `invalid-var-reference` | A `vars:` entry references a step; nothing has run when `vars:` are evaluated |
 | `undeclared-slot` | `{{shared.x}}` reads a slot no `shared:` block declares |
+| `slot-not-downstream` | Reads a slot written off this step's branch — declare it `writers: any` if the writers are alternatives |
 | `unknown-auth-profile` | `auth:` names a profile that is not declared |
 | `unknown-param` / `missing-param` | `with:` passes a param the sub-flow does not declare, or omits a required one |
+| `unknown-pre-value` | An output takes `from: pre` naming a value the step does not compute |
+| `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
+| `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
 | `undeclared-dependency` *(warning)* | A step reads `steps.x.body…` rather than a declared output — see [the note above](#declared-outputs-not-raw-response-access) |
+| `interpolation-in-output-path` *(warning)* | An output path contains `{{...}}` — it is a path into the response, not an interpolation, and selects nothing |
+| `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion, so the step accepts any status |
+| `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
+| `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them — the sibling's value is not visible |
+| `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
 
 ---
 
@@ -938,7 +1310,7 @@ A step that does not run reports why. These are the ones you will see on a graph
 | `max-duration-exceeded` | `timeout:`, `maxDuration:` or `config.maxRunDuration` elapsed | Yes |
 | `retries-exhausted` | The last attempt still failed | Yes |
 | `file-read-failed` | A `!file` / `bodyFile:` path could not be read, or resolves outside the scope | Yes |
-| `script-error` | An `outputs: script:`, `when: script:` or `shouldRetry:` threw | Yes |
+| `script-error` | A `pre:`, `outputs: script:`, `when: script:` or `shouldRetry:` threw | Yes |
 | `subflow-failed` | A `uses:` sub-flow failed | Yes |
 
 ### What is specified but not built yet
@@ -948,9 +1320,8 @@ So you do not write a flow that depends on it:
 - **Raw `steps.<id>.body` / `.headers` access** — validated and drawn, but does not resolve at run
   time. Declare an output.
 - **The document schema** — unknown and misspelled keys are silently ignored.
-- **`--tags` filtering** — `meta.tags` is parsed and stored, and nothing reads it.
-- **`meta.description`** — recorded, not yet displayed anywhere.
-- **`config.capturePreviewBytes`** — parsed, unread.
+- **`--tags` filtering** — the properties dialog edits `meta.tags`, and nothing *selects* on them:
+  neither `bru flow run` nor the sidebar takes a tag.
 - **The implicit `collection` auth profile** (001 §6.4) — no host supplies it; declare your own.
 - **Cookie-jar scoping** (001 §7.6) and the provenance half of secret redaction (§14.4). Header-name
   redaction *is* in place, including `config.redactHeaders`.

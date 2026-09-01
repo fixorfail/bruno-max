@@ -145,4 +145,83 @@ describe('FlowsWatcher', () => {
     expect(flow.collectionRoot).toBe(collectionRoot);
     expect(flow.workspaceRoot).toBe(workspaceRoot);
   });
+
+  /**
+   * 002 §4.5 — `.js` helpers under `flows/scripts/`, listed so the files `use:` names are visible
+   * without opening a flow. Only under that directory: a `.js` beside a flow is an ordinary `use:`
+   * target and always was, and listing every one would make the section a file browser.
+   */
+  describe('scripts (§4.5)', () => {
+    const scriptsDir = () => path.join(flowsDir, 'scripts');
+
+    beforeEach(() => {
+      fs.mkdirSync(path.join(flowsDir, 'scripts'), { recursive: true });
+    });
+
+    it('lists a script, flagged, with no name read from it', async () => {
+      fs.writeFileSync(path.join(scriptsDir(), 'text.js'), 'const lastFour = () => 4;\n');
+
+      const [entry] = await watcher.listFlows({ workspaceRoot });
+
+      expect(entry).toEqual({
+        pathname: path.join(scriptsDir(), 'text.js'),
+        filename: 'text.js',
+        workspaceRoot,
+        script: true
+      });
+    });
+
+    it('lists one nested inside the scripts directory', async () => {
+      fs.mkdirSync(path.join(scriptsDir(), 'money'));
+      fs.writeFileSync(path.join(scriptsDir(), 'money', 'format.js'), '\n');
+
+      const flows = await watcher.listFlows({ workspaceRoot });
+
+      expect(flows.map((flow) => flow.filename)).toEqual(['format.js']);
+    });
+
+    /** The convention is what gives the section a meaning to state. */
+    it('ignores a .js anywhere else under flows/', async () => {
+      fs.mkdirSync(path.join(flowsDir, 'lib'));
+      fs.writeFileSync(path.join(flowsDir, 'lib', 'text.js'), '\n');
+      fs.writeFileSync(path.join(flowsDir, 'helper.js'), '\n');
+
+      expect(await watcher.listFlows({ workspaceRoot })).toEqual([]);
+    });
+
+    it('ignores a non-.js file inside the scripts directory', async () => {
+      fs.writeFileSync(path.join(scriptsDir(), 'notes.md'), '\n');
+      fs.writeFileSync(path.join(scriptsDir(), 'shared.yml'), 'functions:\n');
+
+      expect(await watcher.listFlows({ workspaceRoot })).toEqual([]);
+    });
+
+    it('reports a script added, changed and deleted', async () => {
+      watcher.addWatcher(win, { workspaceRoot });
+      const target = path.join(scriptsDir(), 'text.js');
+
+      fs.writeFileSync(target, 'const a = 1;\n');
+      await until(() => sent('addFile').some(([, , entry]) => entry.filename === 'text.js'));
+      expect(sent('addFile').at(-1)[2]).toMatchObject({ filename: 'text.js', script: true });
+
+      fs.writeFileSync(target, 'const a = 2;\n');
+      await until(() => sent('changeFile').length > 0);
+
+      fs.rmSync(target);
+      await until(() => sent('unlinkFile').length > 0);
+      expect(sent('unlinkFile').at(-1)[2]).toMatchObject({ filename: 'text.js', script: true });
+    });
+
+    it('lists flows and scripts together, and flags only the scripts', async () => {
+      fs.writeFileSync(path.join(flowsDir, 'checkout.flow.yml'), 'version: 1\n');
+      fs.writeFileSync(path.join(scriptsDir(), 'text.js'), '\n');
+
+      const flows = await watcher.listFlows({ workspaceRoot });
+
+      expect(flows.map((flow) => [flow.filename, Boolean(flow.script)])).toEqual([
+        ['checkout.flow.yml', false],
+        ['text.js', true]
+      ]);
+    });
+  });
 });

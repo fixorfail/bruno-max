@@ -3,6 +3,10 @@
 Design specifications for substantial features in this fork. A spec is written **before**
 implementation and is the reference the implementation is reviewed against.
 
+These are implementer-facing: they describe engine behavior and contracts, not how to write a
+flow. An author writing a `.flow.yml` file wants [`docs/writing-flows.md`](../writing-flows.md)
+instead.
+
 ## Convention
 
 - One file per feature: `NNN-short-slug.md`, numbered in the order they were started.

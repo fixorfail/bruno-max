@@ -16,7 +16,7 @@ version: 1                     # required
 meta:
   name: Checkout happy path
   description: What this proves, and anything it needs.
-  tags: [checkout, smoke]      # parsed; nothing reads them yet
+  tags: [checkout, smoke]      # edited in the properties dialog; nothing selects on them yet
   library: false               # true = reusable sub-flow, excluded from glob runs
 
 apis:                          # alias -> OpenAPI document; required to send anything
@@ -88,6 +88,10 @@ steps:
     depends: [sign_in]                       # default: the step above
     when: steps.sign_in.status eq 200        # skip unless true
 
+    pre:                                     # computed before the request; read as {{pre.*}}
+      nonce: |
+        () => crypto.randomUUID()
+
     body: { amount: 9900 }                   # or bodyFile:, never both
     query: { expand: customer }
     headers: { Idempotency-Key: "{{flow.runId}}" }
@@ -121,6 +125,7 @@ steps:
 | Namespace | Holds |
 |---|---|
 | `steps.<id>.*` | Another step's declared outputs, plus `status`, `ok`, `skipped`, `duration` |
+| `pre.<name>` | What *this* step computed before its request — step-local, no other step can read it |
 | `shared.<slot>` | A slot's value |
 | `params.<name>` | A library flow's parameters |
 | `row.<column>` | The current dataset row |
@@ -174,6 +179,55 @@ by key. Arrays replace wholesale. You usually write only what you change.
 
 `bodyFile:` reads and merges a fixture from disk, then interpolates it.
 
+## Values computed before the request
+
+**`pre:` is `outputs:` one stage earlier.** A step-level mapping of name → script, evaluated before
+the request is built, so a request can carry a value it needs — a signature, a timestamp, a nonce —
+without a throwaway step that sends a request nobody wanted just to run three lines of JavaScript.
+
+```yaml
+    pre:
+      nonce: |
+        () => crypto.randomUUID()
+      issuedAt: |
+        () => new Date().toISOString()
+    headers:
+      Idempotency-Key: "{{pre.nonce}}"
+      X-Issued-At: "{{pre.issuedAt}}"
+```
+
+Same mapping shape as `outputs:`, same one-value-per-name rule, same `undefined`-means-not-produced
+rule. What it does not have is `path:` — there is no response to select from, which is the whole
+reason the position exists.
+
+- Signature is `(ctx) => …` and there is **no `res`**, exactly like a `when:` script and for the same
+  reason. `functions:` helpers are in scope, unchanged.
+- **`pre.*` is step-local, and that is the point.** Read it as `{{pre.<name>}}` inside the step that
+  computed it; no other step can address it. To let a value leave the step, promote it with
+  `from: pre`. `pre` is a reserved namespace, so a variable of that name is shadowed.
+- Pipeline position: `depends` gate → `when:` → `pre:` → materialize → validate request → dispatch →
+  `outputs:` → `assert:`.
+- **`when:` runs first, so a step about to be skipped computes nothing** — and the consequence is
+  that a `when:` condition cannot read a `pre` value.
+- **Once per step, not once per attempt.** A retried step re-sends the values its first attempt
+  computed. For a timestamp or a nonce that is wrong, and the honest workaround today is
+  `maxAttempts: 1` on a step whose value must be fresh. A dataset run is unaffected: each iteration
+  executes the step, so each computes its own.
+- **A `pre:` script cannot see a sibling's value.** The scripts share one context, built before
+  the first of them runs, so `ctx.pre` is empty in every one of them — computing a nonce on one
+  line and signing `ctx.pre.nonce` on the next signs `undefined`, and nothing at run time says so —
+  `bru flow validate` warns on a script mentioning `ctx.pre` (`pre-reads-sibling-value`), which is
+  the only thing that catches it. Do both halves in a single `pre:` entry, or lift the shared part
+  into a `functions:` helper both call.
+  Declaration order decides which entries have already run when one throws, not what any of them
+  can read.
+- **A throw stops the remaining `pre:` scripts** — unlike `outputs:`, where siblings still extract.
+  No request is built at all, so the siblings' values have nothing to be for. The step fails with
+  `script-error` and the message names the position: `pre.signature threw: …`.
+- Nothing is captured. `pre` values are not written to run artifacts, same as `outputs:`.
+- A `uses:` step may declare `pre:`, and its values are in scope while `with:` arguments resolve.
+  Inside the sub-flow, `pre.*` means that sub-flow's own steps' values, never the caller's.
+
 ## Outputs
 
 ```yaml
@@ -182,12 +236,28 @@ by key. Arrays replace wholesale. You usually write only what you change.
       state:    { from: body, path: data.state }
       location: { from: headers, path: location }
       code:     { from: status }
+      nonce:    { from: pre }               # a pre: value, under its own name
+      traceId:  { from: pre, path: nonce }  # …or under another
       total:
         script: |
           (res, ctx) => res.body.data.items.reduce((sum, item) => sum + item.amount, 0)
 ```
 
-`from` is `body` (default), `headers` or `status`. A leading `$.` is stripped.
+`from` is `body` (default), `headers`, `status` or `pre`. A leading `$.` is stripped.
+
+For `from: pre`, `path:` names which computed value to take and **defaults to the output's own
+name**, so the ordinary case is one line; naming a value the step does not compute is
+`unknown-pre-value`. `shared:` does not change — it publishes an output into a slot whatever the
+output's source, so there stays one route out of a step and one place to read what leaves it.
+
+**A `from: pre` output is extracted where every other output is: after the response.** A step whose
+request never dispatched produces no outputs at all, `from: pre` included, even though the value was
+computed before the attempt — one rule for when outputs exist beats a value that survives a
+transport error.
+
+> **The string form is a path, not an interpolation.** `outputs: { x: "{{pre.x}}" }` is read as a
+> JSONPath into the response body, selects nothing, and leaves the output unset *silently*. Write
+> `{ from: pre, path: x }`. The validator warns with `interpolation-in-output-path`.
 
 Always available on any step without declaring: `steps.<id>.status`, `.ok`, `.skipped`,
 `.duration`.
@@ -482,10 +552,14 @@ bru flow run flows/checkout.flow.yml
 | `slot-not-downstream` | Reads a slot written off this step's branch — declare it `writers: any` if the writers are alternatives |
 | `unknown-auth-profile` | `auth:` names an undeclared profile |
 | `unknown-param` / `missing-param` | `with:` passes an undeclared param, or omits a required one |
+| `unknown-pre-value` | An output takes `from: pre` naming a value the step does not compute |
 | `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
 | `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
+| `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them |
+| `interpolation-in-output-path` *(warning)* | An output path contains `{{…}}` — it is a path into the response, not an interpolation, and selects nothing |
+| `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion — the step accepts any status, including the 500 it did not mean |
 | `undeclared-dependency` *(warning)* | Reads `steps.x.body…` rather than a declared output |
 
 ## Step outcomes
@@ -507,5 +581,4 @@ Do not write a flow that depends on these:
 - **The document schema** — unknown and misspelled keys are silently ignored.
 - **Connector files (`connectors.yml`)** — declare `outputs:` on the step. For shared *code*,
   `functions:` is built and works.
-- **`--tags` filtering** and **`meta.description` display** — both recorded, neither surfaced.
-- **`config.capturePreviewBytes`** — parsed, unread.
+- **`--tags` filtering** — the properties dialog edits `meta.tags`, but nothing selects on them yet.

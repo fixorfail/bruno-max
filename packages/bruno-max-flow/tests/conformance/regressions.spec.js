@@ -1212,7 +1212,7 @@ describe('R4j — an auth profile arrives as Bruno Auth', () => {
  * there, so a run that rejects without a `run:end` leaves it with a run that is running forever and
  * a cancel with nothing to cancel — which is what the app showed for any error escaping a step.
  */
-describe('R4g2 — a run that fails on its own always ends', () => {
+describe('R4x — a run that fails on its own always ends', () => {
   // A binding whose document is not there: the specs load inside the run, after `run:start`, and
   // `bru flow validate` reports this before a run (§14.3) — so arriving here means nobody validated.
   // It stands in for any engine failure that is not a step's own.
@@ -1272,7 +1272,7 @@ describe('R4g2 — a run that fails on its own always ends', () => {
  * afterwards. Swallowed *silently*, though, the step is left with no request and no response to show
  * and nothing saying why, which reads as a step that never sent anything.
  */
-describe('R4g2 — a capture that could not be written says so', () => {
+describe('R4y — a capture that could not be written says so', () => {
   const refusingAttempts = { failWrites: (target) => target.includes('attempt-') && 'EACCES: permission denied' };
 
   it('reports it against the run rather than failing the run', async () => {
@@ -1416,6 +1416,55 @@ describe('R4r — a spec whose schemas are refs', () => {
     expect(run.outcome('await_task')).toBe('failed:schema-validation-failed');
     expect(run.step('await_task').message).toMatch(/could not be compiled/);
     expect(run.events.at(-1).type).toBe('run:end');
+  });
+
+  /**
+   * Ajv reports the rule that was broken and nothing about where, which over a bundled OpenAPI
+   * document is a message that sends the reader grepping for a keyword legal almost everywhere it
+   * appears. `nullable` beside `anyOf` rather than beside a `type` is the shape that produces it:
+   * every ancestor of the offending node fails identically, the root included, so the unlocated
+   * message describes the whole document.
+   */
+  it('names where in the schema a compile failure is, and only the deepest node', async () => {
+    const { entry, files } = variant(flow('r4r-schema-refs.flow.yml'), (document) => {
+      document.steps = [document.steps[1]];
+    });
+    const run = await runFlow(entry, {
+      files: {
+        ...files,
+        [path.join(FLOWS, '..', 'specs', 'regressions-refs-v1.yml')]: [
+          'openapi: 3.0.3',
+          'info: { title: Broken, version: 1.0.0 }',
+          'servers: [{ url: https://regress.example.com }]',
+          'paths:',
+          '  /tasks/{task_id}:',
+          '    get:',
+          '      operationId: getTask',
+          '      responses:',
+          '        \'200\':',
+          '          description: The task',
+          '          content:',
+          '            application/json:',
+          '              schema:',
+          '                type: object',
+          '                properties:',
+          '                  fine: { type: string, nullable: true }',
+          '                  broken:',
+          '                    anyOf: [{ type: string }]',
+          '                    nullable: true'
+        ].join('\n')
+      },
+      responses: { getTask: { status: 200, body: { task: {} } } }
+    });
+
+    const { message } = run.step('await_task');
+
+    expect(message).toContain('"nullable" cannot be used without "type"');
+    expect(message).toContain('/properties/broken');
+    // The node that is actually wrong, not every ancestor that fails because of it — and not the
+    // sibling that is spelled correctly.
+    expect(message).not.toContain('/properties/fine');
+    expect(message).not.toMatch(/at \/properties,/);
   });
 });
 
@@ -1612,5 +1661,189 @@ describe('R4t — a script library', () => {
     });
 
     expect(run.outcome('create')).toBe('success');
+  });
+});
+
+/**
+ * R4w — 001 §8.7's values computed before the request.
+ *
+ * What has to be proven is that the position runs where the spec puts it and that its namespace is
+ * step-local: the first is only visible in a request that was actually built from it, and the second
+ * only in a step that computes nothing and reads `{{pre.*}}` anyway.
+ */
+describe('R4w — values computed before the request', () => {
+  const created = { status: 201, body: { data: { id: 'thing-1' } } };
+  const fetched = { status: 200, body: { data: { id: 'thing-1', name: 'widget' } } };
+  const responses = { createThing: created, getThing: fetched };
+
+  it('puts a computed value on the wire, through the step\'s own {{pre.*}}', async () => {
+    const run = await runFlow(flow('r4w-pre.flow.yml'), { responses });
+
+    expect(run.outcome('sign')).toBe('success');
+    // `tag` is a §8.6 library function and `ctx.steps` is the run's state, so the value proves both
+    // reach a position that runs before the request.
+    expect(run.call('getThing', 1).headers['X-Signature']).toBe('sig:thing-1');
+    expect(run.call('getThing', 1).headers['X-Correlation-Id']).toBe('corr-1');
+  });
+
+  it('promotes one with from: pre, under its own name and under another', async () => {
+    const run = await runFlow(flow('r4w-pre.flow.yml'), { responses });
+
+    expect(run.step('sign').outputs).toMatchObject({ correlationId: 'corr-1', traceId: 'sig:thing-1' });
+  });
+
+  /**
+   * The whole reason the namespace is step-local rather than published into `steps.<id>.*`: a
+   * reference in another step names that step's own values, and there are none.
+   */
+  it('is step-local — another step\'s {{pre.*}} names nothing', async () => {
+    const run = await runFlow(flow('r4w-pre.flow.yml'), { responses });
+
+    expect(run.outcome('verify')).toBe('success');
+    // What crossed the boundary did so as an output.
+    expect(run.call('getThing', 2).headers['X-Promoted']).toBe('corr-1');
+    // An ordinary miss, left in place — §7.3's rule for a reference nothing defined.
+    expect(run.call('getThing', 2).headers['X-Leaked']).toBe('{{pre.signature}}');
+  });
+
+  /** §8.2's rule, one position along — and no request is sent. */
+  it('fails the step when a pre script throws, and stops the ones after it', async () => {
+    const run = await runFlow(flow('r4w-pre-throws.flow.yml'), { responses });
+
+    expect(run.outcome('create')).toBe('failed:script-error');
+    expect(run.step('create').message).toContain('pre.first');
+    expect(run.step('create').message).toContain('nope');
+    expect(run.calls).toHaveLength(0);
+    expect(run.step('create').outputs.second).toBeUndefined();
+  });
+
+  /** `when:` is the cheaper question and runs first, so there is nothing to compute for. */
+  it('computes nothing for a step its condition skipped', async () => {
+    const run = await runFlow(flow('r4w-pre-skipped.flow.yml'), { responses });
+
+    expect(run.outcome('never')).toBe('skipped:condition-false');
+    expect(run.scripts).toHaveLength(0);
+  });
+
+  /**
+   * §8.1's string form is a path into the response, not an interpolation — it selects nothing and
+   * leaves the output unset, which is the mistake the shape invites and therefore the one reported.
+   */
+  it('warns on an interpolation written where a path belongs', async () => {
+    const { entry, files } = variant(flow('r4w-pre.flow.yml'), (document) => {
+      document.steps[1].outputs.correlationId = '{{pre.correlationId}}';
+    });
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'interpolation-in-output-path', severity: 'warning' })
+    );
+  });
+
+  it('reports a from: pre naming a value the step does not compute', async () => {
+    const { entry, files } = variant(flow('r4w-pre.flow.yml'), (document) => {
+      document.steps[1].outputs.traceId = { from: 'pre', path: 'notComputed' };
+    });
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'unknown-pre-value', severity: 'error' })
+    );
+  });
+});
+
+/**
+ * R4f — §7.6's jar scoping.
+ *
+ * The engine decides *which* jar a request uses and nothing else: parsing `Set-Cookie`, domain
+ * matching and expiry stay in each host's implementation (§13.2). So what is asserted here is the
+ * jar identity handed to the dispatch port, made observable by the harness playing the host — a
+ * `Cookie` echoed from whatever jar the engine named.
+ *
+ * That split is the reason this is an engine test at all. If jar scoping were left to the hosts, the
+ * CLI and the app could disagree about whether iteration two is a fresh session, which is the
+ * divergence goal 4 exists to prevent.
+ */
+describe('R4f — cookie jar scoping', () => {
+  const created = { status: 201, body: { data: { id: 'thing-1' } }, setCookie: 'sid=a' };
+  const fetched = { status: 200, body: { data: { id: 'thing-1', name: 'widget' } } };
+
+  it('shares one jar across every step of a run', async () => {
+    const run = await runFlow(flow('r4f-cookies.flow.yml'), {
+      responses: { createThing: created, getThing: fetched }
+    });
+
+    expect(run.outcome('read')).toBe('success');
+    // Neither step declares anything: §8's named-output model cannot carry a cookie the flow never
+    // asked for, which is why §7.6 exists.
+    expect(run.call('getThing', 1).cookie).toBe('sid=a');
+    expect(run.call('getThing', 2).cookie).toBe('sid=a');
+    expect(new Set(run.calls.map((entry) => entry.jar)).size).toBe(1);
+  });
+
+  /**
+   * The load-bearing rule. A role matrix logging in as three users across three rows shares one
+   * session under a run-wide jar: row two sends row one's cookie, the server answers as the wrong
+   * user, and the flow passes having tested one identity three times.
+   */
+  it('gives each dataset iteration its own jar', async () => {
+    const run = await runFlow(flow('r4f-cookies-dataset.flow.yml'), {
+      responses: {
+        createThing: (request) => ({
+          status: 201,
+          body: { data: { id: 'thing-1' } },
+          setCookie: `sid=${request.body.value.name}`
+        }),
+        getThing: fetched
+      }
+    });
+
+    const reads = run.calls.filter((entry) => entry.operationId === 'getThing');
+    expect(reads).toHaveLength(3);
+    // Each read carries the session its own row established, and no other.
+    expect(reads.map((entry) => entry.cookie).sort()).toEqual(['sid=alpha', 'sid=beta', 'sid=gamma']);
+    expect(new Set(run.calls.map((entry) => entry.jar)).size).toBe(3);
+  });
+
+  /**
+   * Run repeatedly, because this is the failure a sequential test cannot see: a run-wide jar passes
+   * the ordered case and fails intermittently under concurrency, where the jar is shared mutable
+   * state between iterations in flight together.
+   */
+  it('keeps them isolated under parallel, on every run', async () => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const run = await runFlow(flow('r4f-cookies-dataset.flow.yml'), {
+        responses: {
+          createThing: (request) => ({
+            status: 201,
+            body: { data: { id: 'thing-1' } },
+            setCookie: `sid=${request.body.value.name}`
+          }),
+          getThing: fetched
+        }
+      });
+
+      const byIteration = new Map();
+      for (const entry of run.calls.filter((call) => call.operationId === 'getThing')) {
+        byIteration.set(entry.iteration, entry.cookie);
+      }
+
+      // Row n's read carries row n's session — the assertion a run-wide jar fails on timing alone.
+      expect([...byIteration.values()].sort()).toEqual(['sid=alpha', 'sid=beta', 'sid=gamma']);
+    }
+  });
+
+  /** §12.3 is not violated: a jar is ambient transport configuration, not anything the flow names. */
+  it('hands a sub-flow the caller\'s jar, in both directions', async () => {
+    const run = await runFlow(flow('r4f-cookies-subflow.flow.yml'), {
+      responses: { createThing: created, getThing: fetched }
+    });
+
+    expect(run.outcome('read')).toBe('success');
+    // The sub-flow received the Set-Cookie; the caller's later step sees it.
+    expect(run.call('getThing', 1).cookie).toBe('sid=a');
+    expect(new Set(run.calls.map((entry) => entry.jar)).size).toBe(1);
   });
 });

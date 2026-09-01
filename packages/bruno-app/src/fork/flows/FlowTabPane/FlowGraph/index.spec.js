@@ -14,7 +14,12 @@ import FlowGraph from './index';
 
 const theme = themes.dark || Object.values(themes)[0];
 
-const markers = () => ({ conditional: false, allowsErrorStatus: false, usesSharedSlot: false });
+const markers = () => ({
+  conditional: false,
+  allowsErrorStatus: false,
+  usesSharedSlot: false,
+  computesValues: false
+});
 
 const node = (id, rank) => ({
   id,
@@ -776,6 +781,44 @@ describe('FlowGraph node footer', () => {
         />
       </ThemeProvider>
     );
+
+  /**
+   * §5.1: 001 §8.7's `pre:` is the one thing on a box that changes what the step *sends*, and the
+   * footer is already the busiest part of it. A strip reads across a whole graph at once, which is
+   * what someone scanning for where a signature is built is actually doing.
+   */
+  describe('the pre: strip', () => {
+    const computing = (value) => ({
+      ...twoApis,
+      nodes: [{ ...stepOn('probe', 'glados', 0), markers: { ...markers(), computesValues: value } }]
+    });
+
+    it('runs down the left edge, the full height of the box', () => {
+      renderWith(computing(true));
+
+      const step = screen.getByTestId('flow-node-probe');
+      const strip = screen.getByTestId('flow-node-pre-probe');
+      const height = Number(step.querySelector('.node-box').getAttribute('height'));
+
+      // Starts at the box's left edge and ends at its bottom — the two coordinates a reader scans.
+      expect(strip.getAttribute('d')).toContain(`V ${height}`);
+      expect(strip.getAttribute('d')).toMatch(/^M 4,0/);
+    });
+
+    it('says what it means, for a strip that is otherwise only a colour', () => {
+      renderWith(computing(true));
+
+      expect(screen.getByTestId('flow-node-pre-probe').querySelector('title')).toHaveTextContent(
+        'Computes values before its request (pre:)'
+      );
+    });
+
+    it('is absent from a step that computes nothing', () => {
+      renderWith(computing(false));
+
+      expect(screen.queryByTestId('flow-node-pre-probe')).not.toBeInTheDocument();
+    });
+  });
 
   it('draws the markers on the footer rather than over the step\'s name', () => {
     renderWith({

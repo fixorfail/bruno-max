@@ -470,6 +470,40 @@ const slice = createSlice({
       }
     },
 
+    /**
+     * 002 §4.4: the flow moved, and everything this slice holds about it is keyed by where it was.
+     *
+     * A rename is the one change a watcher event cannot carry through. `unlinkFile` and `addFile`
+     * arrive as two unrelated facts — a flow gone, a flow appeared — and folding them that way drops
+     * the run being watched, the params typed into the run panel and the raw editor's session, all
+     * of which belong to a file that never stopped existing. The dialog knows both paths, so it says
+     * so once and every keyed map moves together.
+     *
+     * `flows` itself is left to the watcher. It is the tree, the tree is what is on disk, and two
+     * writers of it would disagree the first time a rename failed halfway.
+     */
+    flowPathRenamed: (state, action) => {
+      const { from, to } = action.payload;
+      if (from === to) {
+        return;
+      }
+
+      for (const keyed of [state.descriptions, state.runs, state.selectedStep, state.configurations, state.sources]) {
+        if (keyed[from] !== undefined) {
+          keyed[to] = keyed[from];
+          delete keyed[from];
+        }
+      }
+
+      // §8's events address a run by id and are resolved to a flow through this map, so a run still
+      // in flight during the rename keeps reaching the flow it belongs to.
+      for (const [runId, pathname] of Object.entries(state.flowByRunId)) {
+        if (pathname === from) {
+          state.flowByRunId[runId] = to;
+        }
+      }
+    },
+
     /** A batch from `main:flow-request-log-batch` — §8.5. */
     requestLogsReceived: (state, action) => {
       state.requestLogs.push(...action.payload.requests);
@@ -483,6 +517,7 @@ const slice = createSlice({
 export const {
   flowsLoaded,
   flowTreeUpdated,
+  flowPathRenamed,
   describeStarted,
   describeSucceeded,
   describeFailed,

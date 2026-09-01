@@ -27,7 +27,7 @@ import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
 import { MASK } from './redact';
-import { runAttempt, retryDelay, sleepFor, wantsRetry, type ScriptRunner } from './step';
+import { runAttempt, retryDelay, runPreScripts, sleepFor, wantsRetry, type ScriptRunner } from './step';
 import type { FlowSnapshot } from './types/capture';
 import type { RunOptions } from './types/options';
 import type { Clock, FlowContext, Vars } from './types/ports';
@@ -373,7 +373,12 @@ const executeFlow = async (
   );
   const indexed = Object.fromEntries(specs);
 
-  const scopeFor = (): Scope => ({
+  /**
+   * §8.7's `pre` is the one namespace that is not run-scoped: it holds what *this* step computed, so
+   * it is a parameter rather than run state. A scope built without one carries an empty `pre`, which
+   * is what every position outside a step's own materialization sees.
+   */
+  const scopeFor = (pre: Record<string, unknown> = {}): Scope => ({
     vars: { ...state.environment, ...resolvedVars },
     namespaces: {
       steps: stepState,
@@ -381,6 +386,7 @@ const executeFlow = async (
       params: resolvedParams,
       shared: slots,
       flow: { runId: state.runId, name: flow.meta.name, iteration: run.iteration },
+      pre,
       process: { env: state.options.variables.processEnv || {} }
     }
   });
@@ -454,7 +460,10 @@ const executeFlow = async (
     }
   };
 
-  const executeOperation = async (step: NormalizedStep): Promise<{ result: StepResult; httpStatus?: number }> => {
+  const executeOperation = async (
+    step: NormalizedStep,
+    pre: Record<string, unknown>
+  ): Promise<{ result: StepResult; httpStatus?: number }> => {
     const startedAt = state.clock.now();
     const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
     const spec = step.operation ? indexed[step.operation.alias] : undefined;
@@ -472,7 +481,7 @@ const executeFlow = async (
         );
       }
 
-      materialized = await materialize(step, binding, resolved, profiles, flow.config, scopeFor(), readFile);
+      materialized = await materialize(step, binding, resolved, profiles, flow.config, scopeFor(pre), readFile);
     } catch (cause) {
       // A fixture that could not be read fails the step with a reason rather than crashing the run
       // (§14.6). Everything else materialization refuses is a shape `bru flow validate` reports
@@ -535,10 +544,12 @@ const executeFlow = async (
       state.emit({ type: 'step:attempt', id: stepId, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
 
       const outcome = await runAttempt({
+        pre,
         step,
         resolved,
         materialized,
-        scope: scopeFor(),
+        // §8.7: step-local, so an assertion and an output script inside this step see it too.
+        scope: scopeFor(pre),
         runScript,
         dispatch: () =>
           state.options.ports.executeRequest(materialized.request, {
@@ -584,7 +595,7 @@ const executeFlow = async (
     const asksToRetry = async () => {
       if (predicateError) return false;
       try {
-        return await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scopeFor()), runScript);
+        return await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scopeFor(pre)), runScript);
       } catch (cause) {
         predicateError = `shouldRetry threw: ${cause instanceof Error ? cause.message : String(cause)}`;
         return false;
@@ -667,18 +678,20 @@ const executeFlow = async (
     };
   };
 
-  const executeSubflow = async (step: NormalizedStep): Promise<StepResult[]> => {
+  const executeSubflow = async (step: NormalizedStep, pre: Record<string, unknown>): Promise<StepResult[]> => {
     const startedAt = state.clock.now();
     const target = path.resolve(path.dirname(flow.file), step.uses as string);
     const child = await loadFlow(state, target);
 
-    const args = interpolateValue(step.args, scopeFor()).value as Vars;
+    // §8.7: the caller's computed values are in scope while `with:` is resolved, and go no further —
+    // §12.2's isolation is what stops them, since the sub-flow builds its own scopes.
+    const args = interpolateValue(step.args, scopeFor(pre)).value as Vars;
     const params = paramsFor(child.params, args);
 
     const inner = await executeFlow(state, {
       flow: child,
       prefix: `${prefix}${step.id}/`,
-      params: interpolateValue(params, scopeFor()).value as Vars,
+      params: interpolateValue(params, scopeFor(pre)).value as Vars,
       iteration: run.iteration,
       profiles
     });
@@ -755,14 +768,39 @@ const executeFlow = async (
       }
     }
 
+    /**
+     * §8.7, after `when:` and before anything is built: a condition is the cheaper question and the
+     * one that can make the rest unnecessary, so a step about to be skipped computes nothing.
+     */
+    let pre: Record<string, unknown> = {};
+    if (step.pre.length) {
+      const computed = await runPreScripts(step.pre, evaluationContext(scopeFor()), runScript);
+      if (computed.error) {
+        // §8.2's rule, one position along: a throw fails the step, and no request is sent.
+        record(step, {
+          id: `${prefix}${step.id}`,
+          kind: step.kind,
+          status: 'failed',
+          reason: 'script-error',
+          message: computed.error.message,
+          attempts: 0,
+          durationMs: 0,
+          assertions: [],
+          outputs: {}
+        });
+        return;
+      }
+      pre = computed.values;
+    }
+
     // A `uses:` step does not draw from the budget while its internals run: its internals draw
     // from the same run-wide pool (§9.2), and a container holding a slot too would deadlock a
     // sub-flow at `concurrency: 1` — the setting §9.2 recommends for debugging.
     const produced
       = step.kind === 'subflow'
-        ? { steps: await executeSubflow(step), httpStatus: undefined }
+        ? { steps: await executeSubflow(step, pre), httpStatus: undefined }
         : await state.budget.run(async () => {
-            const { result, httpStatus } = await executeOperation(step);
+            const { result, httpStatus } = await executeOperation(step, pre);
             return { steps: [result], httpStatus };
           });
 

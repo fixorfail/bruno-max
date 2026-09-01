@@ -23,5 +23,9 @@ export { validateFlow, resolveFunctions } from './validate';
 // 002 §4.1's sidebar name, read from a flow's text without describing it — so a host listing flows
 // never parses `.flow.yml` itself and never has to know §5.4's local tags.
 export { readFlowMeta } from './document';
+// 002 §4.4's properties dialog. The format's only writer, for §5.1's reason: a host editing `meta:`
+// with a YAML library of its own would be the second serializer flows being YAML-only bought away.
+export { readFlowProperties, writeFlowProperties } from './meta';
+export type { FlowProperties } from './meta';
 export { describeFlow } from './describe';
 export { listRuns, readRun, readCapture } from './history';

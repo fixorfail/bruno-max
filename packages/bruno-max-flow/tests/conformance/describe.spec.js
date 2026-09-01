@@ -182,6 +182,7 @@ describe('R4q — nodes', () => {
       conditional: true,
       retryMaxAttempts: undefined,
       allowsErrorStatus: false,
+      computesValues: false,
       usesSharedSlot: false
     });
     expect(node(description, 'fallback').markers).toMatchObject({

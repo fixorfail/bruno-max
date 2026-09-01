@@ -1,0 +1,31 @@
+# R4f — §7.6's per-iteration isolation, which is the load-bearing rule.
+#
+# Each row logs in as a different identity. Under a run-wide jar, row two sends row one's session and
+# the server answers as the wrong user — the flow passes having tested one identity three times.
+# `parallel:` makes it worse: the jar becomes shared mutable state between concurrent iterations, so
+# which session a request carries depends on timing.
+version: 1
+
+meta:
+  name: R4f — a jar per iteration
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+dataset:
+  source: ../../datasets/things.csv
+  parallel: 3
+
+steps:
+  - id: login
+    operation: regress-api#createThing
+    body:
+      name: "{{row.name}}"
+
+  - id: read
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1

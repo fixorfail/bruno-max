@@ -1,0 +1,52 @@
+# R4w — 001 §8.7's values computed before the request.
+#
+# The step signs a value it derives from an earlier step, reads it back as `{{pre.*}}` while its own
+# request is built, and promotes one of the two with `from: pre` so a later step can read it. A
+# passing run proves the position runs, that its namespace is step-local, and that promotion is the
+# only route out.
+version: 1
+
+meta:
+  name: R4w — values computed before the request
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+functions:
+  tag: |
+    (value) => `sig:${value}`
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: sign
+    operation: regress-api#getThing
+    pathParams: { id: "{{steps.create.thingId}}" }
+    pre:
+      signature: |
+        (ctx) => tag(ctx.steps.create.thingId)
+      correlationId: |
+        () => 'corr-1'
+    headers:
+      X-Signature: "{{pre.signature}}"
+      X-Correlation-Id: "{{pre.correlationId}}"
+    outputs:
+      correlationId: { from: pre }
+      traceId: { from: pre, path: signature }
+
+  # `pre.*` is step-local: this step computes none, so `{{pre.signature}}` names nothing here. What
+  # crossed the boundary did so as an output.
+  - id: verify
+    operation: regress-api#getThing
+    pathParams: { id: "{{steps.create.thingId}}" }
+    headers:
+      X-Promoted: "{{steps.sign.correlationId}}"
+      X-Leaked: "{{pre.signature}}"

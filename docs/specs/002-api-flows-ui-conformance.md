@@ -230,6 +230,17 @@ bar the key is the only thing that says which colour is which. The one-API case 
 version of the same thing: nothing on that drawing names the service at all, which is why the key
 outlives the colours that first justified it.
 
+### U1.9d A step that computes values before its request is marked down its left edge
+
+A step declaring 001 §8.7's `pre:` draws a coloured strip on the left edge of its box, the full
+height of it, with a title naming what it means. A step declaring none draws no strip, and the strip
+is not a footer marker.
+
+*Pins 002 §5.1.* A footer marker answers "what does this step have" once you are already reading the
+step; the question `pre:` gets asked with is "where in this flow is a value built", which is scanned
+across the whole graph. The colour is the graph's one non-status hue — every other one already means
+an outcome, and a strip in any of those would read as a verdict the step does not have.
+
 ### U1.9c A declared API colour is the one drawn
 
 A fixture whose `apis:` binding declares `color: "#8ab4f8"` draws that colour on the bars of every
@@ -848,6 +859,103 @@ cases. A path that is not a `.flow.yml` is refused too.
 has no allowlist — so the containment test has to be a resolved-path comparison rather than a string
 prefix, which is what the second case catches.
 
+### U4.15 Flow properties edit the `meta:` block and the file's own name
+
+The row menu's second item opens a dialog holding the flow's `meta.name`, description, tags and
+library flag **as the file declares them**, plus the filename with its `.flow.yml` extension not
+offered for editing. Saving writes the block; clearing a field removes the key rather than writing
+its default; everything outside `meta:` is left as it was.
+
+Changing the file name renames the file **in place** — the directory does not change — and refuses if
+a flow of that name is already there. A name that is not a valid filename, and an empty flow name,
+are both refused before anything is sent.
+
+*Pins 002 §4.4, and 001 §5.2 for what the block holds.* A flow's directory decides its scope (001
+§5.1), so a rename that moved the file would change which environment tier it resolves against from a
+control labelled with what it is called. 001 §5.2 makes a flow's identity its path and a rename just
+a rename — nothing rewrites another flow's `uses:`, and the dialog says so where the rename is typed.
+
+### U4.15a A rename takes the flow's open tabs and its run state with it
+
+With the flow open in both its run view and its raw editor, rename it. Both tabs address the new
+path, the run tab still reads by the flow's name and the editor by its file, and no tab is left
+pointing at the old one. A run being watched, the params typed into the run panel and the selected
+step all follow the flow rather than being dropped.
+
+Saving properties **without** changing the name disturbs no tab at all.
+
+*Pins 002 §4.4, §4.2.* A tab is keyed on pathname and type (§4.3), and the watcher reports a rename as
+an `unlinkFile` and an `addFile` — two unrelated facts. Folding them that way drops state belonging
+to a file that never stopped existing, and leaves every tab of that flow reading "no longer on disk"
+with the flow reopening beside them as a second tab.
+
+### U4.15b The dialog refuses to open over unsaved YAML
+
+With the flow's raw editor holding an unsaved edit, the properties item does not open the dialog and
+says why. With the editor open and its text matching the file, it opens normally.
+
+*Pins 002 §4.4.* The dialog edits the text **on disk**. A dirty editor means the disk is already
+behind what the author is looking at, so §4.3's auto-save would write the draft back over the
+properties they had just set — with nothing on either surface saying it had happened.
+
+### U4.15c Closing a dirty flow editor asks first
+
+Closing the tab of a raw editor with unsaved changes prompts rather than closing: `Don't Save` closes
+and writes nothing, `Save` writes then closes, and a save that **fails** leaves the tab open. The tab
+carries the same unsaved marker every other Bruno tab does. A clean editor, and §4.2's run view
+whatever the editor holds, close without asking.
+
+*Pins 002 §4.3, §4.4.* A flow editor's draft is the only unsaved state upstream's tab strip cannot
+see — every other draft hangs off a collection item. Closing does not lose it within a session, but
+nothing persists the flows slice, so a quit after the close loses the edit silently.
+
+### U4.16 Scripts are listed, and open into their own editor
+
+A `.js` file under `flows/scripts/` appears in the sidebar under a `Scripts` label, **below** the
+libraries, named by its filename and carrying no row menu. Clicking it opens a third tab type showing
+the file in JavaScript mode — with no graph. A scope with no scripts shows no label.
+
+Editing it behaves as §4.3's editor does: the draft survives a tab switch, ⌘/Ctrl+S and the Save
+button write it, `autoSave` writes it on the interval, and the file changing underneath a clean
+editor refreshes it while a dirty one is told the two diverged.
+
+*Pins 002 §4.5.* `use:` still decides what a flow can call — 001 §8.6 picks up nothing implicitly, and
+putting a file in the folder does not make a flow see it. The section makes helpers findable, which is
+all it claims to do.
+
+### U4.16a A script is renamed from its own row menu
+
+The script row carries a three-dot menu holding **`Rename` and nothing else** — neither `Edit Yaml`
+nor the flow properties, which act on a `meta:` block a `.js` does not have. Opening the menu does
+not open the script behind it.
+
+The dialog opens on the file's stem with `.js` shown but not editable, renames **in place** — a
+script in `flows/scripts/money/` stays there — and refuses to land on a file already present, or on a
+name that is not a valid filename. The script's open tab follows to the new path and is renamed with
+it, and an unsaved edit in its editor crosses with the file.
+
+*Pins 002 §4.5, §4.4.* A script's only name is its filename, so the rename is the whole of what a
+script's menu can offer. It stays in the directory because the directory is what makes a `.js` a
+listed script — moving it out would delete it from the sidebar as a side effect of naming it — and
+nothing rewrites the `use:` entries that named the old path, which `bru flow validate` reports as
+`unresolved-function-library`.
+
+### U4.17 A script that does not parse is never auto-saved
+
+With `autoSave` on, break the JavaScript mid-file: **nothing is written**, however long it is left,
+and the view says the file does not parse. Repair it and it saves. An explicit Save writes it either
+way.
+
+`renderer:flow-write-source` is refused for a `.js` **outside** `flows/scripts/` — including one
+elsewhere inside the same scope — and for a path climbing out of the scope, and for a sibling
+directory sharing the scope's name prefix.
+
+*Pins 002 §4.5, §11.3.* This is U4.13's rule with higher stakes: a flow's broken YAML breaks that
+flow, but a script is composed into the prelude of *every* script position in *every* flow that names
+it (001 §8.6), so one half-typed line fails all of them at once with `script-error` naming whichever
+step happened to run first. The guard is a directory and not an extension because "a `.js` inside the
+scope" would make every npm package the user has installed writable from the renderer.
+
 ---
 
 ## 7. U5 — The host boundary
@@ -908,7 +1016,7 @@ A flow using a `!file` fixture (001 §5.4) reports its declared name like any ot
 of the format, and a parser without them calls the file unreadable and falls back to its filename.
 
 *Pins 002 §4.1, §11.3.* The name is what the sidebar labels an unopened flow with, and it is the only
-field read from the file: the rest is `describeFlow`'s, which resolves OpenAPI documents over the
+field read from a **flow**: the rest is `describeFlow`'s, which resolves OpenAPI documents over the
 network. A watcher that failed on a file it could not parse would drop the flow that most needs
 opening — the broken one.
 
@@ -922,6 +1030,20 @@ identically.
 without one, and a workspace flow has no collection to supply it — so every script position failed at
 once, as a `script-error` naming the author's script. Scripts are the half of a flow that a
 collection-scoped fixture exercises and a workspace-scoped one silently does not.
+
+### U5.6b The watcher reports scripts, and reads nothing out of them
+
+A `.js` file under `flows/scripts/` is listed by `renderer:flow-watch-scope` and emits
+`main:flow-tree-updated` on add, change and delete, carrying a `script` flag and its filename — and
+**no name**, because nothing opens the file. One nested inside `flows/scripts/` is listed too.
+
+A `.js` anywhere else under `flows/` is not listed, and neither is a non-`.js` file inside
+`flows/scripts/`. Flows and scripts list together, with only the scripts flagged.
+
+*Pins 002 §4.5.* The directory is the whole rule: "any `.js` under `flows/`" would list every helper
+sitting beside a flow — legal `use:` targets since 001 §8.6 and never meant to be a listing — and the
+section would be a file browser rather than a place helpers are kept. Reading the file would be a
+read per script on every tree change, for a field a script does not have.
 
 ### U5.7 A flow tab is a tab the app can actually hold
 
@@ -1072,6 +1194,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U1.8a | §5.2, §5.3 | A layout failure taking the whole tab down |
 | U1.9, U1.10 | §5.2 | A graph laid out down the short axis; one that reorders between runs |
 | U1.9a | §5.1 | A step id drawn across the graph instead of inside its own box |
+| U1.9d | §5.1 | A step that changes what it sends saying so nowhere on its box, or saying it in a colour that reads as a verdict |
 | U1.13 | §5.5 | A stage rule clipped off the edge of the drawing, or a name read through a running step's halo |
 | U2.1–U2.3 | §8.2, §9 | A poll that looks like a hang, or like a series of steps that each finished |
 | U2.4 | §8.2 | One grey "skipped" state |
@@ -1102,9 +1225,17 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U4.8, U4.9 | §10, §11.2 | A run with no `summary.json` shown as failed, or hidden entirely |
 | U4.9a | §10 | The flow as it stands unreachable after a run; a run's outcomes discarded when it ends |
 | U4.10 | §9 | Blank panels instead of an explanation; the next run's setting erasing the last run's captures |
+| U4.15 | §4.4, 001 §5.2 | A property edit that reformats the whole file, or a rename that quietly moves the flow to another scope |
+| U4.15a | §4.4, §4.2 | A rename folded as an unlink and an add — every tab of the flow left on a path that is gone |
+| U4.15b | §4.4 | A properties write that the next auto-save of a stale draft silently reverts |
+| U4.15c | §4.3, §4.4 | The one draft upstream's tab strip cannot see, closed without a word and lost on quit |
+| U4.16 | §4.5 | A scripts folder that resolves implicitly, or a section that lists every `.js` in the tree |
+| U4.16a | §4.5, §4.4 | A script's menu copied from a flow's; a rename that moves the file out of the folder that lists it |
+| U4.17 | §4.5, §11.3 | A timer writing a half-typed prelude into every flow that names it; a guard on the extension rather than the directory |
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher a broken flow defeats |
 | U5.6a | §7.3, 001 §8.2 | Every script position failing for a flow that has no collection |
+| U5.6b | §4.5 | A watcher reading `meta:` out of a `.js`, or listing helpers it was never meant to |
 | U5.7 | §4.2 | A tab the app's collection-scoped tab model cannot hold |
 | U5.7a | §4.1, §4.2 | The borrowed scratch collection showing through as workspace chrome |
 | U5.8 | §4.2 | A cancelled quit that kills the run anyway; a confirmed one that skips cleanup |

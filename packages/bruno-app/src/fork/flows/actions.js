@@ -204,6 +204,49 @@ export const createFlow = ({ fileName, directory, content }) => async () =>
   ipc().invoke('renderer:flow-create', { directory, filename: `${fileName}.flow.yml`, content });
 
 /**
+ * 002 §4.4 — the `meta:` block and the filename the properties dialog opens with.
+ *
+ * Read from the file rather than taken from the sidebar row: the watcher's tree entry carries only
+ * the name and the library flag (002 §11.3), because those are what a row is drawn from and reading
+ * more of every flow in a scope on every tree change would be paying for a dialog nobody opened.
+ */
+export const readFlowProperties = (flow) => async () =>
+  ipc().invoke('renderer:flow-read-properties', {
+    entry: flow.pathname,
+    scope: { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot }
+  });
+
+/**
+ * §4.4 — the edit, applied. Resolves the flow's pathname, which is a new one when it was renamed.
+ *
+ * Nothing is dispatched on success, for `createFlow`'s reason: the watcher reports the write and the
+ * rename, so the sidebar and the descriptions follow from the disk rather than from here. What the
+ * caller does with the returned path is retarget the tabs the rename left behind, which is the one
+ * thing no watcher event can do.
+ */
+export const updateFlowProperties = ({ flow, filename, properties }) => async () =>
+  ipc().invoke('renderer:flow-update-properties', {
+    entry: flow.pathname,
+    scope: { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot },
+    filename,
+    properties
+  });
+
+/**
+ * §4.5 — renaming a script, in place. Resolves its new pathname.
+ *
+ * Nothing is dispatched on success, for `updateFlowProperties`' reason: the watcher reports the
+ * rename, so the sidebar follows from disk. What the caller does is retarget the tab the rename left
+ * behind, which no watcher event can do.
+ */
+export const renameFlowScript = ({ script, filename }) => async () =>
+  ipc().invoke('renderer:flow-rename-script', {
+    entry: script.pathname,
+    scope: { workspaceRoot: script.workspaceRoot, collectionRoot: script.collectionRoot },
+    filename
+  });
+
+/**
  * §7.2's param inputs, as the engine has to see them.
  *
  * A box that was typed into and then cleared holds `''`, and a box never touched has no key at all —

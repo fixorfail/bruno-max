@@ -198,6 +198,20 @@ const createPorts = (options) => {
   const readRuns = (overrides = {}) =>
     engine.listRuns({ scopeRoot: FIXTURES, ports: { readFile, listDirectory }, ...overrides });
 
+  /**
+   * R4f's stub cookie implementation, standing in for the host's.
+   *
+   * §7.6 splits this deliberately: the **engine** decides which jar a request uses, the **host** does
+   * everything else — parsing `Set-Cookie`, domain and path matching, expiry. So the engine can only
+   * be tested through the jar identity it hands the port, and the way to make that observable is to
+   * be the host: a `Cookie` header echoed back from whatever jar the engine named, and a `setCookie`
+   * on a stubbed response written into that same jar.
+   *
+   * It is deliberately not a cookie implementation. There is no domain matching and no expiry,
+   * because a scenario that depended on either would be asserting the host's job.
+   */
+  const jars = new Map();
+
   const executeRequest = async (request, ctx) => {
     const operationId = identify(request);
     const call = (callCounts.get(operationId) || 0) + 1;
@@ -226,6 +240,9 @@ const createPorts = (options) => {
       // §11.1's per-attempt bound, which a step's own `maxDuration` narrows as it runs out.
       timeoutMs: ctx.timeoutMs,
       redactHeaders: ctx.redactHeaders,
+      // R4f: which jar the engine named, and what that jar held when the request went out.
+      jar: ctx.cookieJar && ctx.cookieJar.id,
+      cookie: (ctx.cookieJar && jars.get(ctx.cookieJar.id)) || undefined,
       request,
       startedAt: ++tick,
       settledAt: undefined
@@ -242,6 +259,9 @@ const createPorts = (options) => {
       const spec = await selectResponse(stub, request, ctx, info);
       if (spec && spec.delayMs) {
         await new Promise((resolve) => setTimeout(resolve, spec.delayMs));
+      }
+      if (spec && spec.setCookie && ctx.cookieJar) {
+        jars.set(ctx.cookieJar.id, spec.setCookie);
       }
       return materializeResponse(spec || {});
     } finally {

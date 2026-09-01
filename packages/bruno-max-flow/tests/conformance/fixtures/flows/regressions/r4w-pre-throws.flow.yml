@@ -1,0 +1,22 @@
+# R4w — a `pre:` script that throws fails the step, and the ones after it do not run (001 §8.7).
+version: 1
+
+meta:
+  name: R4w — a pre script that throws
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    pre:
+      first: |
+        () => { throw new Error('nope'); }
+      second: |
+        () => 'reached'

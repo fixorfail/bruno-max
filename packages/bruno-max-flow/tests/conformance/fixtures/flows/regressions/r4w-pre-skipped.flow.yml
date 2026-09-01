@@ -1,0 +1,27 @@
+# R4w — `when:` runs before `pre:`, so a skipped step computes nothing (001 §8.7).
+version: 1
+
+meta:
+  name: R4w — a skipped step computes nothing
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      state: data.state
+
+  - id: never
+    operation: regress-api#getThing
+    pathParams: { id: "thing-1" }
+    when: steps.create.state eq nothing
+    pre:
+      computed: |
+        () => 'ran'

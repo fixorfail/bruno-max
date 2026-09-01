@@ -87,6 +87,25 @@ should show up as a parse failure at a path, not a diff inside a template litera
 
 ---
 
+### Which requirements live outside this suite, and which have no test yet
+
+Every `R`/`F` heading in this file is a `describe(...)` of the same name under
+`packages/bruno-max-flow/tests/conformance/`, and `registry.spec.js` fails the build when the two
+drift apart. That guard exists because they *did* drift: three requirements were written as tests and
+never registered here, and two later requirements were then written against ids already in use.
+
+The exceptions are listed rather than allowed to accumulate silently:
+
+| Requirement | Where it is | Why not here |
+|---|---|---|
+| R4i | `bruno-cli/tests/fork/flow/selection.spec.js` | How `bru flow run` orders a multi-flow selection is the CLI's, not the engine's |
+| R4l | `bruno-cli/tests/fork/flow/output.spec.js` | §14.7's console rules are the CLI's own |
+| R4k | Asserted throughout, by every scenario that names an outcome | §14.6's vocabulary is a property of every reason string in the suite; a dedicated scenario would restate what forty assertions already pin |
+| R4m | **No test — §5.4's `flow.schema.json` is not implemented** | The requirement is written and the artifact it validates against does not exist yet |
+
+R4d2 and R4m are the remaining gaps. R4m's is the wider one: §5.4's `flow.schema.json` does not
+exist, so the requirement is written against an artifact nobody has built.
+
 ## 3. F1 — Role matrix
 
 **Pins:** §9.4 dataset iteration · §10.2 assertion context · §10.3 negative tests · §6.4 profiles
@@ -1280,6 +1299,37 @@ The built-in-metadata row is the one that keeps the feature honest. If `{{steps.
 data edge, every step in a flow with a status check would appear to consume data from its
 predecessor, and "data paths are named and drawable" would stop meaning anything.
 
+### R4r — A spec whose schemas are `$ref`s
+
+**Pins:** §10.1.
+
+| Case | Expected |
+|---|---|
+| a response schema that is `$ref: '#/components/schemas/X'` | validates against the referenced definition, rather than failing to compile |
+| a schema referencing another that references a third | resolves through the chain |
+| a `$ref` naming a definition the document does not have | the **step** fails `schema-validation-failed`, and the run ends normally with every other step reported |
+
+A schema lifted out of an OpenAPI document is a fragment of it, and `#/components/schemas/X` resolves
+against the root of whatever is handed to the validator. Given the fragment alone it cannot resolve
+the first `$ref` it meets, refuses to compile, and — before this was pinned — took the whole run with
+it. Every other fixture in this file inlines its schemas, which is exactly why nothing caught it: the
+gap was in the fixtures, not in the assertions.
+
+### R4s — A slot written by alternatives
+
+**Pins:** §9.1.
+
+| Case | Expected |
+|---|---|
+| `shared: { x: { writers: any } }` written by one of two mutually exclusive branches | the reader below the branch that ran reads it, with no undeclared-dependency warning |
+| the same declared `writers: all` | `validate` warns — no reader can descend from every writer, because only one ever runs |
+| a reader that descends from neither branch | the ordinary unresolved-slot answer, unchanged by the declaration |
+
+`all` is the join shape: several branches may run, so a reader must descend from every writer or the
+read races a branch still in flight. `any` is the *alternative* shape, and it is not a weaker `all` —
+it is the case where descending from every writer is impossible by construction. The auth token of a
+flow that reaches its API two ways is that case, which is to say nearly every flow anyone writes.
+
 ### R4t — A script library reaches every script
 
 **Pins:** §8.6.
@@ -1304,6 +1354,125 @@ The two error rows are why this is validated rather than left to run time. A lib
 *every* script the flow runs, so one unreadable file or one unquoted name is every script position
 failing at once, reported as `script-error` against whichever step happened to run first — a message
 that names neither the file nor the name.
+
+### R4u — A required param a host never supplied stops the run
+
+**Pins:** §12.5, and §11.2's rule about what a miss is.
+
+| Case | Expected |
+|---|---|
+| a library flow run directly, with a required param unsupplied | the run is **refused**, naming the param |
+| the event stream | nothing — refused before `run:start`, and nothing dispatched |
+| several params missing | every one named, not just the first |
+
+`validate` already refuses the same omission at a `uses:` call site, where the `with:` keys are in the
+file. This is the other way in, and it can only be checked at the moment a host supplies values. Left
+unchecked, `{{params.email}}` reached the wire verbatim: an unsupplied param resolves to `undefined`,
+which is a `params` miss rather than a `steps.*` miss, so §11.2 skips nothing and reports nothing —
+leaving the API's rejection of a literal `{{...}}` as the only evidence the run was never viable.
+
+### R4v — A run records what it was started with
+
+**Pins:** §14.5, §14.4, and §12.5's declared params. [002](./002-api-flows-ui.md) §5.6 is the reader.
+
+| Case | Expected |
+|---|---|
+| a host supplying some params and not others | the record carries the supplied values and the declared defaults for the rest |
+| a param declared `secret: true` | masked in the record, at the same width whatever its length |
+| the same param on the wire | the **real** value — masking is a property of what is written down, not of what is sent |
+| each iteration's resolved `vars:` | recorded as the run used them, not re-derived afterwards |
+| a sub-flow's `vars:` | not recorded — the entry flow's are what a reader opened |
+| `run:start` | reports the params too, so a host that never reads the capture still has them |
+| capture disabled | the params still reach `run:start` |
+
+The secret rule is why this is declared rather than inferred. §14.4's header denylist cannot decide
+it: a header name is not the author's to choose and a param name is, so the flow says which of its
+inputs are secret instead of the engine guessing from the spelling.
+
+### R4w — A value computed before the request reaches it
+
+**Pins:** §8.7, and §8.2's throw rule.
+
+| Case | Expected |
+|---|---|
+| a step declaring `pre:` and interpolating `{{pre.<name>}}` into a header | the computed value on the wire |
+| another step interpolating `{{pre.<name>}}` | its **own** `pre:` values, or nothing — `pre.*` is step-local and names no other step's |
+| `outputs: { x: { from: pre } }`, and `{ from: pre, path: y }` | the pre value under its own name, and under another; `path` defaults to the output's name |
+| `outputs: { x: "{{pre.y}}" }` | the output is **unset** — a string output is a JSONPath, selects nothing, and §8.1 makes that an ordinary answer; `validate` warns on a `{{...}}` in an output path |
+| a `from: pre` output on a step whose request never dispatched | no outputs at all, `from: pre` included — outputs exist after a response or not at all |
+| a `pre:` script calling a §8.6 library function | resolves, with no change to how the library is composed |
+| a `pre:` script that returns `undefined` | the value is **not set** (§8.1), and a reference to it is an unresolved dependency — §11.2's skip, not an empty string |
+| a `pre:` script that throws | the step fails `script-error`, the message names `pre.<name>`, the **remaining `pre:` scripts do not run**, and no request is sent |
+| a step whose `when:` is false | no `pre:` script runs at all |
+| a `when:` condition referencing a `pre` value of its own step | unresolved — `when:` runs first, and the spec says so rather than the order being discovered |
+| a name declared in both `pre:` and `outputs:` | both stand — they are separate namespaces, and neither shadows the other |
+| a step that retries | the **same** computed values on every attempt — materialization is once per step (§8.7), and this is asserted so the limitation cannot regress into a surprise |
+| a dataset run | each iteration computes its own values |
+| a `uses:` step declaring `pre:` | the values publish before `with:` is resolved, and can be passed in |
+| a `pre` value promoted with `from: pre` and listed in `shared:` | the slot is fed exactly as any output-fed slot is — `shared:` publishes outputs and is unchanged by this section |
+| a `pre:` name listed in `shared:` **without** being promoted | nothing is published; `shared:` names outputs, and `validate` reports the unknown output |
+| a flow declaring no `pre:` anywhere | interpolation and the request reaching the port are byte-for-byte what they were |
+
+The retry row is the one that reads like a bug and is the specification. The motivating case is a
+signature over a nonce, which is exactly the value a retry must recompute — §8.7 records why it does
+not, and a test asserting the current answer is what makes changing it a deliberate act rather than
+an accident.
+
+The last row is R4t's argument one position along: a position that changed what a flow without it
+sends would make "no new execution environment" (§8.2) unverifiable.
+
+### R4x — A run that fails on its own always ends
+
+**Pins:** §13.2's event stream, §14.6.
+
+| Case | Expected |
+|---|---|
+| an engine failure that is not a step's — a binding whose OpenAPI document is not there | `run:end` is emitted **before** the failure reaches the caller |
+| the same run's result | the cause said as a diagnostic on the result, not only as a rejection |
+| an operation a loaded spec does not declare | the **step** fails, and the run reports every other step normally |
+
+A host resolves its promise at `run:start` and watches the stream from there, so a run that rejects
+without a `run:end` leaves it with a run that is running forever and a Cancel with nothing to cancel
+— which is what the app showed for any error escaping a step.
+
+### R4y — A capture that could not be written says so
+
+**Pins:** §14.5.
+
+| Case | Expected |
+|---|---|
+| an attempt file the filesystem refuses | reported against the **run**, and the run's own outcome is unchanged |
+| the step it happened under | judged on its own outcome, with no capture path to point at |
+| a run whose captures were all written | says nothing — silence is reserved for the ordinary case |
+
+An artifact write must never fail a run: a flow that passed did pass, whatever the disk did
+afterwards. Swallowed *silently*, though, the step is left with no request and no response to show
+and nothing saying why, which reads as a step that never sent anything.
+
+### R4z — `meta:` is read and rewritten without disturbing the file
+
+**Pins:** §5.2, §5.1's round-trip rules; [002](./002-api-flows-ui.md) §4.4 is the reader.
+
+| Case | Expected |
+|---|---|
+| a flow declaring `name`, `description`, `tags` and `library` | all four, read back as written and trimmed |
+| a flow declaring none, and one declaring `library: false` / `tags: []` | the same answer for both — `Boolean(meta.library)` is what the engine runs on, so `false` and absent are one state |
+| a flow carrying a `!file` fixture (§5.4) | its `meta:` reads normally, the way `readFlowMeta` already handles the tags |
+| text that does not parse | no properties, and **no write** — a document that could not be read is not one to rewrite |
+| writing a name into a flow with comments, anchors, a merge key and both `!file` spellings | only the `meta:` line changes; every other byte survives, tags included |
+| clearing `description`, `tags` or `library` | the key is **deleted**, not written as its default — the same rule the create form writes a new flow by |
+| writing into a flow with no `meta:` block | the block is created **directly after `version:`**, not appended below `steps:` |
+| a flow with no `meta:` given nothing to say | the text, unchanged — no empty block appears |
+
+The round-trip row is the one that keeps this honest, and it fails in a way nothing else would catch:
+§5.4's tags resolve to values with identity (R4p), and re-emitting a document parsed that way writes
+`!file "[object Object]"` — so an edit to a flow's *name* silently destroys its fixtures. Reading and
+writing need different tag sets for that reason, and only a byte comparison over a file carrying both
+`!file` spellings says so.
+
+One documented exception, asserted rather than left to surface in a diff: the serializer re-emits a
+trailing comment one space after its value, so padding used to align a column of them collapses.
+Nothing the format carries meaning in is affected.
 
 ### R5 — Unresolved variables never reach the wire
 

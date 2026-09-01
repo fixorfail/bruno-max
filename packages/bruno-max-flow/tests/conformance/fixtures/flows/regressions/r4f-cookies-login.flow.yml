@@ -1,0 +1,19 @@
+# R4f — the sub-flow half of `r4f-cookies-subflow.flow.yml`: it establishes the session, and the
+# caller's later steps must see it.
+version: 1
+
+meta:
+  name: R4f — login
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: login
+    operation: regress-api#createThing
+    body:
+      name: session

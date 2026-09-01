@@ -276,6 +276,10 @@ steps:
     contentType: application/json             # only when the operation declares more
                                               #   than one request media type — see §7.5
 
+    pre:                                      # computed before the request — see §8.7
+      signature: |
+        (ctx) => hmac(ctx.vars.nonce, ctx.env.key)
+
     outputs:                                  # declared connectors — see §8
       paymentId: data.id
       state: data.state
@@ -960,13 +964,20 @@ variable, and because a bare name could be shadowed by a user's:
 | `params.*` | This flow's declared inputs, when invoked as a sub-flow (§12) |
 | `shared.*` | Cross-branch value slots declared in `shared:` (§9.1) |
 | `flow.*` | `flow.runId`, `flow.name`, `flow.iteration` |
+| `pre.*` | Values this step computed before its request (§8.7) — **step-local** |
 
 `row.*` and `params.*` stay namespaced even though a human named their contents, because both are
 **inputs crossing a boundary** — a dataset column entering an iteration, an argument entering a
 sub-flow. Keeping them explicit means a call site shows what it passes rather than relying on
 ambient resolution.
 
-`steps`, `row`, `params`, `shared`, `flow` and `process` are reserved at the top level. A variable in
+**`pre.*` is the one namespace that is not run-scoped.** Every other row above addresses state any
+step can read; `pre.*` addresses the values *this* step computed, and it means nothing in another
+step — which is why §8.7's values leave a step through `outputs:` rather than by being readable from
+outside it. A namespace that resolved to a different step's values depending on where it was read
+would be the one thing this table exists to prevent.
+
+`steps`, `row`, `params`, `shared`, `flow`, `pre` and `process` are reserved at the top level. A variable in
 any scope with one of those names is shadowed, and `bru flow validate` reports it as a warning.
 `process` is reserved by the same mechanism but not by this table — it is Bruno's existing
 `process.env` namespace (above), shadowing a bare variable in flows exactly as it already does in
@@ -1410,8 +1421,9 @@ a runtime, so it cannot choose a weaker one than the host would have.
 
 #### When a script throws
 
-Three positions run user JS — an output (above), a `when:` condition (§9.3), and `shouldRetry`
-(§11.1) — and one rule covers all three: **a throw fails the step with reason `script-error`**
+Four positions run user JS — an output (above), a `when:` condition (§9.3), `shouldRetry` (§11.1) and
+a `pre:` value (§8.7) — and one rule covers all four: **a throw fails the step with reason
+`script-error`**
 (§14.6). The message names the position and carries the thrown message, so
 `outputs.partnershipId threw: Cannot read properties of undefined (reading 'find')` is the failure
 rather than something two steps downstream.
@@ -1598,6 +1610,124 @@ function; the engine composes the library into that expression rather than addin
 an injected global. A mechanism a host had to cooperate with would be one that behaved differently in
 `bru` than in the app, and §8.2's "no new execution environment" would stop being true — the sandbox,
 its mode and the collection's `securityConfig` are exactly as they were.
+
+### 8.7 Values computed before the request
+
+§8.2's positions all run **after** a response, or decide whether to send at all. Nothing computes a
+value the request itself needs — a signature over the body, a timestamp, a nonce derived from an
+earlier step — and the workaround is a step that exists only to produce one, which sends a request
+nobody wanted in order to run three lines of JavaScript.
+
+A step may declare **`pre:`**, a mapping of name to script, evaluated before its request is built:
+
+```yaml
+steps:
+  - id: charge
+    operation: payments-api#createPayment
+    pre:
+      timestamp: |
+        () => String(Date.now())
+      signature: |
+        (ctx) => hmac(`${ctx.steps.auth.token}:${ctx.vars.nonce}`, ctx.env.signingSecret)
+    headers:
+      X-Timestamp: "{{pre.timestamp}}"
+      X-Signature: "{{pre.signature}}"
+```
+
+**It is `outputs:` one stage earlier, deliberately.** The same mapping shape, the same one-value-per-
+name rule, the same `undefined`-means-not-set rule (§8.1) — so there is one thing to learn rather
+than two. What it does not have is `path:`: there is no response to select from, which is the whole
+reason the position exists.
+
+**The script is handed `(ctx)` and no `res`**, exactly as a `when:` script is (§9.3) and for the same
+reason — it runs before the request, so there is no response for it to address. §8.6's library is in
+scope by name, with no change to how it is composed.
+
+**`pre.*` is step-local, and that is the point.** A step reads what it computed as `{{pre.signature}}`
+while its request is being built, and no other step can address it at all. The alternative —
+publishing into `steps.<id>.*` beside the outputs — was rejected: it makes one reference mean two
+things, since `{{steps.charge.x}}` would name a value computed before the request or extracted after
+it with nothing at the call site to say which, and it forces `pre:` and `outputs:` to share a
+namespace they would then have to be forbidden from colliding in.
+
+Being step-local is also what keeps this position honest about what it is. A value computed to build
+*this* request is a detail of building it. A value other steps depend on is a declared output, and
+§8.1 already has a word for that.
+
+#### Leaving the step
+
+A `pre` value becomes an output by saying so, through a fourth **`from:`** source alongside `body`,
+`headers` and `status` (§8.1):
+
+```yaml
+    pre:
+      correlationId: |
+        () => crypto.randomUUID()
+
+    outputs:
+      correlationId: { from: pre }                  # same name
+      traceId:       { from: pre, path: correlationId }   # under another
+
+    shared: [correlationId]                         # §9.1, unchanged
+```
+
+`path:` names which `pre` value to take and defaults to the output's own name, so the ordinary case
+is one line. Nothing else about `outputs:` changes, and **`shared:` does not change at all** — it
+publishes an output to a slot, as it always did, so there is exactly one route out of a step and one
+place to read what leaves it.
+
+**The string form is a path, not an interpolation**, which is why this needs a `from:` at all.
+`outputs: { correlationId: "{{pre.correlationId}}" }` would be read as a JSONPath into the response
+body, select nothing, and leave the output unset by §8.1's rule — silently, because selecting nothing
+is an ordinary answer. `bru flow validate` reports a `{{...}}` in an output path as a warning for that
+reason.
+
+**A `from: pre` output is extracted where every other output is** — after the response, alongside the
+rest. So a step whose request never dispatched produces no outputs at all, `from: pre` included, even
+though the value itself was computed before the attempt. One rule for when outputs exist is worth
+more than a value that survives a transport error, and §11.3's cleanup steps have `shared:` and their
+own `pre:` for what they need.
+
+**No script position writes anything.** §8.7's scripts return a value and that is all they do; there
+is no `bru.setVar` equivalent, in this position or any of §8.2's. What a step publishes is named in
+the file and routed by it, so the graph's data edges (§5.3) stay a claim the file supports — a script
+that could write a slot would make them one it could not.
+
+#### Where it sits in the step
+
+```
+depends gate  ->  when:  ->  pre:  ->  materialize  ->  validate request  ->  dispatch
+                                                                            ->  outputs:  ->  assert:
+```
+
+**`when:` runs first, so a skipped step computes nothing.** A condition is the cheaper question and
+the one that can make the rest unnecessary; running a signature for a step that is about to be
+skipped `condition-false` is work with nowhere to go. The consequence is stated rather than hidden: a
+`when:` condition **cannot** read a `pre` value, because it ran before them.
+
+**It runs once per step, not once per attempt** (§11.1's retries), because materialization is once
+per step. A retried step therefore re-sends the values its first attempt computed. For a timestamp or
+a nonce that is the wrong answer, and the honest workaround today is `maxAttempts: 1` on a step whose
+signature must be fresh — moving materialization inside the attempt loop is the change that would fix
+it, and it changes request-building for every step rather than for these.
+
+A dataset run (§9.4) is unaffected by that: each iteration executes the step, so each iteration
+computes its own values.
+
+**A throw fails the step with `script-error`**, §8.2's rule for every script position, and the message
+names the position — `pre.signature threw: ...`. The remaining `pre:` scripts do **not** run, which
+is where this differs from `outputs:`. An output that throws still lets its siblings extract, because
+diagnosing it needs the response the step actually got; a `pre:` script that throws means no request
+is built at all, so there is nothing the siblings' values could be for.
+
+**Nothing is captured.** §14.5 records the request and the response; `outputs:` are not written to a
+capture and neither are these, so the feature adds no new place for a computed secret to be stored.
+A value that reaches the wire does so as a request header, where §14.4's denylist already masks it.
+
+**A `uses:` step may declare `pre:` too.** Its values are in scope as `{{pre.*}}` while the sub-flow's
+`with:` arguments are resolved, so a computed value can be passed in. §12.2's isolation is untouched
+and is in fact sharper for it: the sub-flow sees the arguments it was given, and `pre.*` inside it
+means its own steps' computed values, never the caller's.
 
 ---
 

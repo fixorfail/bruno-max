@@ -120,6 +120,36 @@ Import Options:
 | --client-cert-config         | Client certificate configuration by passing a JSON file                       |
 | --delay [number]             | Add delay to each request                                                     |
 
+## API Flows
+
+Flows are multi-step, spec-driven API test sequences defined in `.flow.yml` files. Run or validate them with `bru flow`:
+
+```bash
+bru flow run flows/checkout.flow.yml       # run one flow
+bru flow run flows/                        # run every flow in a directory
+bru flow validate flows/                   # validate without sending requests
+```
+
+Flow Options:
+
+| Option                        | Details                                                            |
+| ------------------------------ | ------------------------------------------------------------------ |
+| --global-env [string]          | Workspace environment to run with, by name                        |
+| --env-var [string]             | Override a single variable, multiple usages possible               |
+| --param [string]               | Supply a declared params value, multiple usages possible           |
+| --concurrency [number]         | Override `config.concurrency`                                      |
+| --max-run-duration [number]    | Bound the whole run in ms                                          |
+| --bail                         | Stop after the first failing flow                                  |
+| --no-capture                   | Do not write `.bruno-runs/` artifacts                              |
+| --capture-dir [string]         | Write captures somewhere other than `<scope>/.bruno-runs`          |
+| --verbose, --quiet, --silent   | Control how much the reporter prints                                |
+| --no-color                     | Disable colourized output                                          |
+| --no-unicode                   | Use ASCII rather than box-drawing status markers                   |
+
+`bru flow run` exits `0` on success, `1` if a flow failed, `2` if a flow failed validation, `3` on a usage error, and `4` if the run was cancelled (for example, `--max-run-duration` elapsing). `bru flow validate` never exits `1`, since it sends no requests.
+
+For the full `.flow.yml` authoring guide — steps, scripts, `functions:`, `pre:`, and diagnostics — see [Writing Flows](../../docs/writing-flows.md).
+
 ## Scripting
 
 Bruno cli returns the following exit status codes:
