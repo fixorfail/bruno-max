@@ -112,6 +112,28 @@ const openCollection = async (page: Page, collectionName: string) => {
 };
 
 /**
+ * Open a collection living at an arbitrary filesystem path via the native "Open Collection"
+ * flow — mocks `dialog.showOpenDialog` to return `collectionPath` directly (no real file
+ * picker), then drives the "+" menu's "Open collection" item. Useful for loading a committed
+ * fixture collection copied to a tmp dir (e.g. via the `collectionFixturePath` fixture).
+ * @param page - The page object
+ * @param electronApp - The Electron application object
+ * @param collectionPath - Absolute path to the collection folder to open
+ * @returns void
+ */
+const openCollectionFromDialog = async (page: Page, electronApp: ElectronApplication, collectionPath: string) => {
+  await test.step(`Open collection from dialog at "${collectionPath}"`, async () => {
+    await electronApp.evaluate(({ dialog }, dir) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [dir] });
+    }, collectionPath);
+
+    const locators = buildCommonLocators(page);
+    await locators.plusMenu.button().click();
+    await locators.plusMenu.openCollection().click();
+  });
+};
+
+/**
  * Create a collection
  * @param page - The page object
  * @param collectionName - The name of the collection to create
@@ -542,8 +564,8 @@ const importCollection = async (
   await test.step(`Import collection from "${filePath}"`, async () => {
     const locators = buildCommonLocators(page);
 
-    await page.getByTestId('collections-header-add-menu').click();
-    await page.locator('.tippy-box .dropdown-item').filter({ hasText: 'Import collection' }).click();
+    await locators.plusMenu.button().click();
+    await locators.plusMenu.importCollection().click();
 
     // Wait for import modal
     const importModal = page.getByRole('dialog');
@@ -2219,6 +2241,100 @@ const openExampleFromSidebar = async (page: Page, requestName: string, exampleNa
   await exampleRow.click();
 };
 
+// --- CodeMirror link-aware assertions (open-as-transient-request feature) -------------------
+
+type LinkAwareRequestType = 'http' | 'graphql' | 'grpc' | 'ws';
+
+// Name of the committed fixture collection under tests/codeeditor-state/codemirror/fixtures.
+const LINK_AWARE_COLLECTION_NAME = 'codemirror-linkaware';
+
+// Cmd on macOS, Ctrl elsewhere — matches isCmdOrCtrlPressed() in linkAware.js.
+const LINK_CLICK_MODIFIER: 'Meta' | 'Control' = process.platform === 'darwin' ? 'Meta' : 'Control';
+
+const LINK_AWARE_METHOD_LABEL: Record<LinkAwareRequestType, string | null> = {
+  http: null, // HTTP shows the verb (GET/POST/...), not a fixed label
+  graphql: 'GQL',
+  grpc: 'gRPC',
+  ws: 'WS'
+};
+
+const setCodeMirrorValue = async (cm: Locator, value: string) => {
+  await cm.evaluate((el: any, v: string) => el.CodeMirror?.setValue(v), value);
+};
+
+const linkAwareUrlBarCm = (page: Page, type: LinkAwareRequestType): Locator =>
+  type === 'grpc'
+    ? buildGrpcCommonLocators(page).request.queryUrlContainer().locator('.CodeMirror')
+    : buildCommonLocators(page).request.urlInput();
+
+/** Asserts the currently active tab is a freshly-created transient request of the given type. */
+const expectTransientRequestOpened = async (page: Page, opts: { type: LinkAwareRequestType; url?: string }) => {
+  const tab = page.locator('.request-tab.active');
+  await expect(tab).toContainText('Untitled', { timeout: 10000 });
+
+  const expectedLabel = LINK_AWARE_METHOD_LABEL[opts.type];
+  if (expectedLabel) {
+    await expect(tab.locator('.tab-method')).toHaveText(expectedLabel, { timeout: 5000 });
+  } else {
+    await expect(tab.locator('.tab-method')).not.toHaveText('', { timeout: 5000 });
+  }
+
+  if (opts.url && opts.type !== 'ws') {
+    await expect.poll(
+      () => linkAwareUrlBarCm(page, opts.type).evaluate((el: any) => el.CodeMirror?.getValue() ?? ''),
+      { timeout: 5000 }
+    ).toBe(opts.url);
+  }
+};
+
+/** Plain click on the marked link — asserts a new transient request of `type` opens with `url`. */
+const expectLinkOpensRequest = async (page: Page, cm: Locator, opts: { type: LinkAwareRequestType; url: string }) => {
+  const link = cm.locator('.CodeMirror-link').first();
+  await expect(link).toBeVisible({ timeout: 10000 });
+  await link.click();
+  await expectTransientRequestOpened(page, opts);
+};
+
+/** Modifier+click on the marked link — must fall back to "open externally", no new tab. */
+const expectLinkOpensExternally = async (page: Page, cm: Locator) => {
+  const link = cm.locator('.CodeMirror-link').first();
+  await expect(link).toBeVisible({ timeout: 10000 });
+  const tabCountBefore = await page.locator('.request-tab').count();
+  await link.click({ modifiers: [LINK_CLICK_MODIFIER] });
+  await page.waitForTimeout(300); // no new-tab locator to await — asserting absence of change
+  await expect(page.locator('.request-tab')).toHaveCount(tabCountBefore);
+};
+
+/** Plain click on a Rich Text docs link opens a transient request. */
+const expectRichTextLinkOpensRequest = async (page: Page, link: Locator, opts: { type: LinkAwareRequestType; url: string }) => {
+  await expect(link).toBeVisible({ timeout: 10000 });
+  await link.click();
+  await expectTransientRequestOpened(page, opts);
+};
+
+/** Modifier+click on a Rich Text mode link — must fall back to "open externally", no new tab. */
+const expectRichTextLinkOpensExternally = async (page: Page, link: Locator, modifiers: Array<'Meta' | 'Control'> = []) => {
+  await expect(link).toBeVisible({ timeout: 10000 });
+  const tabCountBefore = await page.locator('.request-tab').count();
+  await link.click({ modifiers });
+  await page.waitForTimeout(300); // no new-tab locator to await — asserting absence of change
+  await expect(page.locator('.request-tab')).toHaveCount(tabCountBefore);
+};
+
+/**
+ * A URL-looking value must behave as plain text (e.g. `{{var}}`-interpolated, `ws://`, or a
+ * field with link-awareness disabled): clicking it — with or without the open-externally
+ * modifier — must be handled as a normal text click (CodeMirror focuses and places the
+ * cursor), never intercepted to open a transient request.
+ */
+const expectNoLink = async (cm: Locator) => {
+  await cm.click();
+  await expect(cm).toContainClass('CodeMirror-focused');
+
+  await cm.click({ modifiers: [LINK_CLICK_MODIFIER] });
+  await expect(cm).toContainClass('CodeMirror-focused');
+};
+
 /**
  * Open a request inside a folder by exact request name.
  * @param page - The page object
@@ -2516,6 +2632,13 @@ const activeAppPreviewSlot = (page: Page) => page.locator('.app-preview-slot.act
 const activeAppView = (page: Page) => activeAppPreviewSlot(page).getByTestId('app-view');
 
 /**
+ * The shared "No app yet" empty state, rendered by both the request-level app
+ * view and the standalone collection app whenever the app has no code.
+ * @param page - The page object
+ */
+const appEmptyState = (page: Page) => activeAppPreviewSlot(page).getByTestId('empty-app-state');
+
+/**
  * Open the app view via the App tab's "Preview" button. Asserts the app view
  * takes over the request/response area.
  * @param page - The page object
@@ -2694,6 +2817,13 @@ const setRequestUrlAndSave = async (page: Page, url: string) => {
 };
 
 /**
+ * @param page - The page object
+ */
+const dismissVarTooltip = async (page: Page) => {
+  await page.locator('body').click();
+};
+
+/**
  * Hover a `{{var}}` token in the URL editor and return its (visible) info tooltip.
  * @param page - The page object
  * @param varName - The variable name inside the braces
@@ -2709,6 +2839,34 @@ const openUrlVarTooltip = async (
   // Dismiss any previously-open tooltip first.
   await page.mouse.move(0, 0);
   await request.urlVariableToken(varName, state).hover();
+
+  const tooltip = varInfoPopup.all().first();
+  await expect(tooltip).toBeVisible();
+  return tooltip;
+};
+
+/**
+ * Hover a `{{var}}` token inside another row's Value cell in the (collection or global)
+ * environment table itself, and return its (visible) info tooltip. Use this for the
+ * "go to definition from inside the environment table it would target" scenario, as opposed
+ * to `openUrlVarTooltip` which hovers a token in a request's URL bar.
+ * @param page - The page object
+ * @param rowName - The name of the environment row whose Value cell contains the token
+ * @param tokenName - The variable name inside the braces to hover
+ * @param state - Highlight class to match: 'valid' (known) or 'invalid' (unknown); omit to match either
+ * @returns The tooltip popup locator
+ */
+const openEnvValueVarTooltip = async (
+  page: Page,
+  rowName: string,
+  tokenName: string,
+  state?: 'valid' | 'invalid'
+): Promise<Locator> => {
+  const { environment, varInfoPopup } = buildCommonLocators(page);
+  const selector = state ? `.cm-variable-${state}` : '.cm-variable-valid, .cm-variable-invalid';
+  // Dismiss any previously-open tooltip first.
+  await page.mouse.move(0, 0);
+  await environment.varRowValueEditor(rowName).locator(selector).filter({ hasText: tokenName }).first().hover();
 
   const tooltip = varInfoPopup.all().first();
   await expect(tooltip).toBeVisible();
@@ -2948,15 +3106,48 @@ const saveTransientRequestAs = async (page: Page, name: string) => {
   });
 };
 
+/**
+ * Opens the environment import review modal and selects the given files.
+ * @param page - The Playwright Page object
+ * @param scope - The environment scope ('collection' | 'global')
+ * @param filePaths - The paths to the environment files to import
+ */
+const openImportReview = async (page: Page, scope: 'collection' | 'global', ...filePaths: string[]) => {
+  const { environment } = buildCommonLocators(page);
+  await openEnvironmentConfigTab(page, scope);
+  await environment.importSettingsButton().click();
+  await environment.importModal(scope).waitFor({ state: 'visible' });
+
+  const fileChooserPromise = page.waitForEvent('filechooser');
+  await environment.importFileTrigger(scope).click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles(filePaths);
+};
+
+/**
+ * Clicks outside the modal backdrop to test click-outside behavior.
+ * @param page - The Playwright Page object
+ */
+const clickOutsideModal = async (page: Page) => {
+  const { modal } = buildCommonLocators(page);
+
+  await modal.backdrop().click({
+    position: { x: 10, y: 10 }
+  });
+};
+
 export {
   waitForReadyPage,
   readClipboard,
   setRequestUrlAndSave,
   openUrlVarTooltip,
+  dismissVarTooltip,
+  openEnvValueVarTooltip,
   scrollVirtuosoRowIntoView,
   dismissImportIssuesToasts,
   closeAllCollections,
   openCollection,
+  openCollectionFromDialog,
   createCollection,
   createRequest,
   createUntitledRequest,
@@ -3036,11 +3227,21 @@ export {
   sendAndWaitForResponse,
   resetResponse,
   selectAuthMode,
+  fieldEditor,
   typeIntoField,
   readField,
   createExampleFromSidebar,
   openExampleFromSidebar,
   openWorkspaceFromDialog,
+  setCodeMirrorValue,
+  expectTransientRequestOpened,
+  expectLinkOpensRequest,
+  expectLinkOpensExternally,
+  expectRichTextLinkOpensRequest,
+  expectRichTextLinkOpensExternally,
+  expectNoLink,
+  LINK_AWARE_COLLECTION_NAME,
+  LINK_CLICK_MODIFIER,
   openRequestInFolder,
   generateCollectionDocs,
   openExportToPostmanModal,
@@ -3057,6 +3258,7 @@ export {
   requestPaneOverflowTabItem,
   activeAppPreviewSlot,
   activeAppView,
+  appEmptyState,
   previewApp,
   exitApp,
   selectViewMode,
@@ -3083,7 +3285,9 @@ export {
   openCloneCollectionModal,
   chooseCloneLocation,
   setTextBody,
-  saveTransientRequestAs
+  saveTransientRequestAs,
+  openImportReview,
+  clickOutsideModal
 };
 
-export type { SandboxMode, EnvironmentType, EnvironmentVariable, ImportCollectionOptions, CreateRequestOptions, CreateUntitledRequestOptions, CreateTransientRequestOptions, AssertionInput };
+export type { SandboxMode, EnvironmentType, EnvironmentVariable, ImportCollectionOptions, CreateRequestOptions, CreateUntitledRequestOptions, CreateTransientRequestOptions, AssertionInput, LinkAwareRequestType };
