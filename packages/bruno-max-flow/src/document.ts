@@ -174,6 +174,13 @@ export type StepFlags = {
 export type NormalizedStep = {
   id: string;
   name?: string;
+  /**
+   * §5.3's open metadata block, verbatim: no interpolation and no coercion, because the engine
+   * reads no key of it — a reporter does (`meta.testId` is the case id JUnit carries). `{}` both
+   * when absent and when the file wrote a non-mapping; `NormalizedFlow.malformedMeta` is what
+   * separates those two, for the one caller that has to.
+   */
+  meta: Record<string, unknown>;
   kind: 'operation' | 'subflow';
   operation?: { alias: string; operationId: string };
   uses?: string;
@@ -233,9 +240,8 @@ export type FlowConfig = StepFlags & {
   maxRunDuration?: number;
   cleanupGrace: number;
   retry?: Partial<RetryPolicy>;
-  /** §14.4's denylist additions and §14.5's retention bound. */
+  /** §14.4's denylist additions. */
   redactHeaders: string[];
-  captureRetainRuns: number;
 };
 
 /**
@@ -249,7 +255,7 @@ export type NormalizedFlow = {
   /** Absolute path; a flow's identity is its path (§5.2). */
   file: string;
   version: number;
-  meta: { name?: string; description?: string; tags: string[]; library: boolean };
+  meta: { name?: string; description?: string; testId?: string; tags: string[]; library: boolean };
   apis: Record<string, ApiBinding>;
   functions: FunctionLibrary;
   config: FlowConfig;
@@ -264,6 +270,12 @@ export type NormalizedFlow = {
   positions: Positions;
   /** Non-empty means nothing else here is trustworthy; §14.3 reports these and stops. */
   errors: ParseError[];
+  /**
+   * Ids of steps whose `meta:` was something other than a mapping. Normalizing it to `{}` gives
+   * every reader one shape at the cost of the fact that the author wrote something else, and
+   * `validateFlow` is the only thing that needs that fact back (§14.6's `invalid-step-meta`).
+   */
+  malformedMeta: string[];
   steps: NormalizedStep[];
   /**
    * §5.5's stages, in the order the file declares them. Presentation only: nothing below reads
@@ -455,6 +467,19 @@ const normalizeFunctions = (raw: unknown): FunctionLibrary => {
   };
 };
 
+/**
+ * A value the format fixes as a string — §5.2's typed `meta:` keys, and §5.3's step `name:`.
+ *
+ * A bare `name:` is null in YAML — the author wrote the key and said nothing — and `String(null)`
+ * would turn that into the literal name "null": a flow that `describeFlow` can no longer fall back
+ * from to the filename, and a step that reports "null" as its human label to every reader of
+ * `StepResult.name`, a JUnit testcase property among them (§14.8.1). Blank is the same statement as
+ * absent, and trimming here is what keeps this agreeing with `readFlowMeta` and
+ * `readFlowProperties`, which have always trimmed.
+ */
+const declaredText = (value: unknown): string | undefined =>
+  value === undefined || value === null ? undefined : String(value).trim() || undefined;
+
 const normalizeConfig = (raw: unknown): FlowConfig => {
   const mapping = asRecord(raw);
   const bool = (key: string, fallback: boolean) => (mapping[key] === undefined ? fallback : Boolean(mapping[key]));
@@ -469,8 +494,7 @@ const normalizeConfig = (raw: unknown): FlowConfig => {
     maxRunDuration: mapping.maxRunDuration === undefined ? undefined : Number(mapping.maxRunDuration),
     cleanupGrace: mapping.cleanupGrace === undefined ? 30000 : Number(mapping.cleanupGrace),
     retry: mapping.retry === undefined ? undefined : (asRecord(mapping.retry) as Partial<RetryPolicy>),
-    redactHeaders: asArray<string>(mapping.redactHeaders).map(String),
-    captureRetainRuns: mapping.captureRetainRuns === undefined ? 10 : Number(mapping.captureRetainRuns)
+    redactHeaders: asArray<string>(mapping.redactHeaders).map(String)
   };
 };
 
@@ -571,15 +595,22 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
   const config = normalizeConfig(document.config);
   const meta = asRecord(document.meta);
   const rawSteps = asArray<Record<string, unknown>>(document.steps).map(asRecord);
+  const malformedMeta: string[] = [];
 
   const steps = rawSteps.map((raw, index): NormalizedStep => {
     const id = String(raw.id);
     const previous = index === 0 ? undefined : String(rawSteps[index - 1].id);
     const [alias, operationId] = raw.operation === undefined ? [] : String(raw.operation).split('#');
 
+    // A bare `meta:` is the author declaring nothing, which is what an absent one already means;
+    // anything else non-mapping is a mistake nobody would otherwise hear about.
+    const meta = asRecord(raw.meta);
+    if (raw.meta !== undefined && raw.meta !== null && meta !== raw.meta) malformedMeta.push(id);
+
     return {
       id,
-      name: raw.name === undefined ? undefined : String(raw.name),
+      name: declaredText(raw.name),
+      meta,
       kind: raw.uses === undefined ? 'operation' : 'subflow',
       operation: alias === undefined ? undefined : { alias, operationId },
       uses: raw.uses === undefined ? undefined : String(raw.uses),
@@ -615,8 +646,12 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
     file,
     version: Number(document.version),
     meta: {
-      name: meta.name === undefined ? undefined : String(meta.name),
-      description: meta.description === undefined ? undefined : String(meta.description),
+      // Coerced, unlike a step's `meta:`, which is carried verbatim: a flow's `meta:` is §5.2's
+      // closed typed block, so the shape of each key is the format's to fix. A case id like `1000`
+      // is a bare number in YAML, and a report writes it as text either way.
+      name: declaredText(meta.name),
+      description: declaredText(meta.description),
+      testId: declaredText(meta.testId),
       tags: asArray<string>(meta.tags),
       library: Boolean(meta.library)
     },
@@ -636,6 +671,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
     steps,
     stages: normalizeStages(document.stages),
     positions,
-    errors
+    errors,
+    malformedMeta
   };
 };

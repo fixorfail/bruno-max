@@ -5,6 +5,7 @@
  * definition; these unions are a restatement for the compiler.
  */
 import type { FlowDescription } from './describe';
+import type { RunOrigin } from './options';
 import type { Vars } from './ports';
 
 export type StepStatus = 'success' | 'failed' | 'skipped' | 'cancelled';
@@ -41,6 +42,16 @@ export type AssertionResult = {
 export type StepResult = {
   /** Sub-flow steps namespaced: "auth/login". */
   id: string;
+  /** The step's `name:` — what a human reads where the id is a handle. */
+  name?: string;
+  /**
+   * What the step's `meta:` declared, carried verbatim — a reporter reads `meta.testId`, and the
+   * engine interprets no key of it. Absent when the step declared none.
+   *
+   * Survives `structuredClone` by construction: the values are whatever YAML produced — scalars,
+   * plain objects and arrays — and `FlowEvent` requires every result on the stream to clone.
+   */
+  meta?: Record<string, unknown>;
   /** A `uses:` step is a container; internals sit alongside it in a flat array. */
   kind: 'operation' | 'subflow';
   status: StepStatus;
@@ -86,6 +97,14 @@ export type RunSummary = {
 /** Carries no exit code: mapping an outcome to 0–4 is §14.2's, and the app has no use for it. */
 export type RunResult = {
   runId: string;
+  /**
+   * §14.5's manifest reports the same object, so a reporter (§14.8) and the live view (002 §10)
+   * read who ran this from here rather than from the host that happens to be rendering — the app
+   * and the CLI cannot then disagree with what the run's own file says.
+   *
+   * Present when the host supplied one. Plain strings throughout, so it clones.
+   */
+  origin?: RunOrigin;
   status: RunStatus;
   iterations: IterationResult[];
   /**
@@ -126,6 +145,8 @@ export type FlowEvent
   = | {
     type: 'run:start';
     runId: string;
+    /** As on `RunResult`, and for the same reason: one statement of who ran this, read from the run. */
+    origin?: RunOrigin;
     flow: string;
     iterationCount: number;
     captureDir?: string;

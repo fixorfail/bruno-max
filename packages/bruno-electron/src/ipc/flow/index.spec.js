@@ -193,6 +193,38 @@ describe('the flow IPC host', () => {
     expect(cleanupFinished).toBe(true);
   });
 
+  /**
+   * 001 §14.5 — what a reader of the run sees as its provenance. The renderer sends each tier by
+   * name and value (002 §7.2); the names are what the run records, and the app is the host.
+   */
+  it('tells the engine which host started the run and against which environments', async () => {
+    runFlow.mockImplementation(scriptedRun('run-a'));
+
+    await startRun(makeWindow(), {
+      entry: 'a.flow.yml',
+      scope: { workspaceRoot: '/workspace' },
+      tiers: {
+        environment: { name: 'staging', variables: [] },
+        globalEnvironment: { name: 'shared', variables: [] }
+      }
+    });
+
+    expect(runFlow.mock.calls[0][0].origin).toEqual({
+      host: 'app',
+      environment: 'staging',
+      globalEnvironment: 'shared'
+    });
+  });
+
+  /** A tier nobody selected has no key: the manifest is JSON, and an absent environment is not one named nothing. */
+  it('names only the environments the run actually had', async () => {
+    runFlow.mockImplementation(scriptedRun('run-a'));
+
+    await startRun(makeWindow(), runRequest('a.flow.yml'));
+
+    expect(runFlow.mock.calls[0][0].origin).toEqual({ host: 'app' });
+  });
+
   it('rejects a flow that fails before it has a run identity', async () => {
     runFlow.mockRejectedValue(new Error('flows/broken.flow.yml: could not be parsed'));
 
@@ -243,7 +275,7 @@ describe('the raw YAML editor host', () => {
   });
 
   it('reads and writes the flow as text', async () => {
-    jest.spyOn(fs.promises, 'readFile').mockResolvedValue('steps: []');
+    jest.spyOn(fs.promises, 'readFile').mockResolvedValue(Buffer.from('steps: []', 'utf8'));
     jest.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined);
 
     await expect(readFlowSourceHandler({ entry, scope })).resolves.toBe('steps: []');
@@ -446,6 +478,114 @@ describe('a flow\'s properties', () => {
  * inside the scope" would make every helper the user has ever npm-installed writable from the
  * renderer; the rule is `.js` **and** under `flows/scripts/`.
  */
+/**
+ * 002 §4.7 — duplicating a flow: the source's own document, under a new name and a new `meta:`.
+ */
+describe('duplicating a flow', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { duplicateFlowHandler } = require('./index');
+
+  let scopeRoot;
+  let scope;
+  let entry;
+
+  const SOURCE = `version: 1
+
+meta:
+  name: Checkout
+  tags:
+    - smoke
+
+apis:
+  payments: ./specs/payments.yml
+
+# the step the duplicate exists to keep
+steps:
+  - id: create_order
+    operation: payments#createOrder
+    body:
+      catalog: !file ./fixtures/catalog.json
+`;
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-duplicate-')));
+    scope = { workspaceRoot: scopeRoot };
+    entry = path.join(scopeRoot, 'flows', 'checkout.flow.yml');
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, SOURCE, 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  const duplicate = (properties, filename = 'checkout-copy.flow.yml') =>
+    duplicateFlowHandler({ entry, scope, directory: path.dirname(entry), filename, properties });
+
+  const meta = { name: 'Checkout copy', description: '', tags: ['smoke'], library: false };
+
+  it('writes the copy beside the original and reports where it went', async () => {
+    const written = await duplicate(meta);
+
+    expect(written).toBe(path.join(scopeRoot, 'flows', 'checkout-copy.flow.yml'));
+    expect(fs.readFileSync(written, 'utf8')).toContain('name: Checkout copy');
+  });
+
+  /** The whole point of copying the document rather than rebuilding it from the form. */
+  it('carries over everything outside meta, verbatim', async () => {
+    const written = await duplicate(meta);
+    const content = fs.readFileSync(written, 'utf8');
+
+    expect(content).toContain('apis:\n  payments: ./specs/payments.yml');
+    expect(content).toContain('# the step the duplicate exists to keep');
+    expect(content).toContain('operation: payments#createOrder');
+    // §5.4's local tags survive, which is what a serializer of the host's own would have destroyed.
+    expect(content).toContain('catalog: !file ./fixtures/catalog.json');
+  });
+
+  it('leaves the original untouched', async () => {
+    await duplicate(meta);
+
+    expect(fs.readFileSync(entry, 'utf8')).toBe(SOURCE);
+  });
+
+  it('takes every meta field from the form, and drops the ones it left empty', async () => {
+    const written = await duplicate({ name: 'Nightly', description: 'Runs nightly', tags: [], library: true });
+    const content = fs.readFileSync(written, 'utf8');
+
+    expect(content).toContain('name: Nightly');
+    expect(content).toContain('description: Runs nightly');
+    expect(content).toContain('library: true');
+    expect(content).not.toContain('tags:');
+  });
+
+  it('refuses to overwrite a flow already there', async () => {
+    await duplicate(meta);
+
+    await expect(duplicate(meta)).rejects.toThrow('a flow already exists at');
+  });
+
+  it('refuses a filename that is not a flow filename', async () => {
+    await expect(duplicate(meta, 'checkout-copy.yml')).rejects.toThrow('not a valid flow filename');
+  });
+
+  it('refuses a source outside the scope', async () => {
+    const outside = path.join(scopeRoot, '..', 'elsewhere.flow.yml');
+
+    await expect(
+      duplicateFlowHandler({ entry: outside, scope, directory: path.dirname(entry), filename: 'x.flow.yml', properties: meta })
+    ).rejects.toThrow();
+  });
+
+  it('refuses a source that is not a YAML document', async () => {
+    fs.writeFileSync(entry, 'steps: [\n  - id: broken\n', 'utf8');
+
+    await expect(duplicate(meta)).rejects.toThrow('is not a YAML document');
+  });
+});
+
 describe('a flow script', () => {
   const fs = require('fs');
   const os = require('os');
@@ -578,5 +718,93 @@ describe('a flow script', () => {
       expect(await renameFlowScriptHandler({ entry, scope, filename: 'text.js' })).toBe(entry);
       expect(fs.existsSync(entry)).toBe(true);
     });
+  });
+});
+
+/**
+ * 002 §4.6 — the fixture corpus under `flows/fixtures/`, editable as text through the same channel.
+ */
+describe('a flow fixture', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { readFlowSourceHandler, writeFlowSourceHandler } = require('./index');
+
+  let scopeRoot;
+  let scope;
+  let fixturesDir;
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-fixture-')));
+    scope = { workspaceRoot: scopeRoot };
+    fixturesDir = path.join(scopeRoot, 'flows', 'fixtures');
+    fs.mkdirSync(fixturesDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  const fixture = (name, content) => {
+    const target = path.join(fixturesDir, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, content);
+    return target;
+  };
+
+  it('reads and writes it as text', async () => {
+    const entry = fixture('catalog.json', '{ "items": [] }\n');
+
+    expect(await readFlowSourceHandler({ entry, scope })).toContain('items');
+
+    await writeFlowSourceHandler({ entry, scope, content: '{ "items": [1] }\n' });
+
+    expect(fs.readFileSync(entry, 'utf8')).toBe('{ "items": [1] }\n');
+  });
+
+  it('reads one nested inside the fixtures directory, whatever its extension', async () => {
+    expect(await readFlowSourceHandler({ entry: fixture('orders/large.csv', 'id,total\n'), scope })).toContain('total');
+    expect(await readFlowSourceHandler({ entry: fixture('notes', 'no extension\n'), scope })).toContain('extension');
+  });
+
+  /**
+   * A `.js` here is data a flow reads, not a `use:` helper — testing the extension first would send
+   * it to the script guard, which refuses it for sitting outside `flows/scripts/`.
+   */
+  it('reads a .js fixture rather than refusing it as a stray script', async () => {
+    expect(await readFlowSourceHandler({ entry: fixture('seed.js', 'module.exports = 1;\n'), scope })).toContain(
+      'module.exports'
+    );
+  });
+
+  /** The rule is the directory, exactly as it is for a script. */
+  it('refuses a data file outside flows/fixtures, inside the scope though it is', async () => {
+    const loose = path.join(scopeRoot, 'flows', 'catalog.json');
+    fs.writeFileSync(loose, '{}\n');
+
+    await expect(readFlowSourceHandler({ entry: loose, scope })).rejects.toThrow('not a flow file');
+  });
+
+  it('refuses one reached by climbing out of the fixtures directory', async () => {
+    const outside = path.join(fixturesDir, '..', '..', '..', 'secrets.json');
+
+    await expect(readFlowSourceHandler({ entry: outside, scope })).rejects.toThrow('not a flow file');
+  });
+
+  /**
+   * §4.6 lists a fixture whatever its type, and 001 §7.4's own example attaches a `.pdf`. Decoding
+   * one as UTF-8 would fill the editor with replacement characters and the next save would write
+   * them back over the file, with nothing on screen having said so.
+   */
+  it('refuses to read a file that is not text', async () => {
+    const entry = fixture('contract.pdf', Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0x01, 0x02]));
+
+    await expect(readFlowSourceHandler({ entry, scope })).rejects.toThrow('not text');
+  });
+
+  it('reads a text file holding bytes that are merely unusual', async () => {
+    const entry = fixture('unicode.json', '{ "name": "Ünïcødé — ✓" }\n');
+
+    expect(await readFlowSourceHandler({ entry, scope })).toContain('Ünïcødé');
   });
 });

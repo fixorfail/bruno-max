@@ -141,6 +141,7 @@ features, and a bare *Flows* reads as a folder someone happened to create.
 ```
 API FLOWS
   Workspace
+    > company                            (a flows/company/ directory — §4.1a)
     Checkout, end to end                 (meta.name)
     Libraries
       login.flow.yml                     (meta.library: true, and declares no name)
@@ -217,6 +218,70 @@ The read is tolerant, and its failure is ordinary rather than exceptional: a mal
 appear in the sidebar so it can be opened and its diagnostics read (§6), and it appears under its
 filename with no name of its own. That is the same answer as for a flow that simply declares none, so
 the watcher never has to decide what to show for a file that does not parse.
+
+### 4.1a Folders
+
+**A flow's directory under `flows/` is a collapsible row in the section**, so
+`flows/company/create_company.flow.yml` reads as `create_company` inside a `company` folder rather
+than as another entry in one flat list.
+
+Nothing about discovery changes. The watcher has always walked `flows/` recursively and watches it
+twenty deep, so a flow in a subdirectory has always reached the sidebar — it simply arrived as a
+sibling of the top-level ones, with the grouping its author had already expressed on disk saying
+nothing in the app. Past some tens of flows the flat list is the only thing between the reader and
+the flow they want, and the directory that would have answered it is right there in the path.
+
+**The renderer derives the folder; the watcher does not report one.** `FlowTreeEntry` (§11.3) already
+carries the pathname and the scope root the directories sit between, so a `directory` field would
+widen an IPC contract to carry what both ends can compute — and every entry already in the slice
+would keep its old shape until its scope was listed again.
+
+**Each of §4.1's three buckets is a tree of its own** — the flows, the libraries and the scripts
+alike — counted from its own base: `flows/` for the flows and the libraries, `flows/scripts/` for
+§4.5's scripts. A library in `flows/auth/` reads as an `auth` folder under the `Libraries` label, and
+a helper in `flows/scripts/auth/` as one under `Scripts`. Measuring a script from anywhere else
+would restate the `Scripts` label as a `scripts` folder row directly beneath it, and a helper is
+placed among the helpers rather than among the flows.
+
+**A folder starts collapsed and renders nothing inside it while it is.** That is what upstream's own
+collection folders do — `slices/collections` creates every folder item collapsed — so it is what a
+reader of this sidebar already expects a folder row to do, and it is what makes the folders worth
+having: a section that opened every directory by default would be the flat list again, one indent
+further in. Folders sort above the flows beside them, each set by the name it is listed under.
+
+**Collapse state lives in the flows slice, keyed by the folder's bucket and its absolute path.**
+Absolute, because two scopes routinely name a folder alike — a workspace's `company` and a
+collection's are different folders, and one opening the other is the kind of failure nobody reports
+as a bug. Per bucket, because a directory holding both an ordinary flow and a library is drawn as two
+rows either side of the `Libraries` label, and a row that opens because a *different* row was clicked
+is an unexplained jump whatever the two share on disk. In the slice rather than the section because `SidebarSection` unmounts its children when it is
+collapsed, and state owned by the component would forget every open folder on the one gesture most
+likely to precede reopening it. It is session state, not written to disk, exactly like the collapse
+state of a collection folder.
+
+**The section header carries `Expand All Folders` and `Collapse All Folders`**, in an overflow menu of
+its own beside the `+`. A tree the reader cannot open in one gesture makes folders a cost rather than
+a convenience whenever the question is "what is in this workspace at all". They sit apart from the
+`+` because that control adds a flow and these act on the tree already listed — the same split, and
+the same three-dot menu, the collections header uses; with the folder items gone the `+` has one
+thing to do and does it on the click rather than through a menu of one. The menu is not drawn at all
+when the section holds no folders, since these are the only items in it. Both are offered whenever
+there are folders at all, rather than one item that switches to the other once everything is open: an
+item that changes meaning between two openings of the same menu has to be read before it is clicked,
+and it would reflect a state — every folder in every scope — that the reader cannot see. Upstream's
+collection menu carries its own `Collapse` unconditionally for the same reason. They act on the
+folders the section is showing, not on every scope in the store (§4.1).
+
+**A row is identified by its path within its bucket** — `create_company.flow.yml` at the top,
+`company/create_company.flow.yml` below a folder — on the row itself and on the items of its menu.
+Two folders holding a `create.flow.yml` is the ordinary reason to have folders, and a duplicate
+`data-testid` does not fail where it is created but in whichever test reaches for it second. A flow
+at the top of its bucket has no folders, so this is its filename and the identifiers that predate
+folders are unchanged.
+
+Paths are compared as POSIX text on every platform. A pathname arrives with the separators of the
+platform that reported it, and `path` in the renderer is browserify's POSIX build — which would read
+a Windows `flows\company\create.flow.yml` as one long filename.
 
 ### 4.2 The flow tab
 
@@ -453,6 +518,7 @@ The dialog holds 001 §5.2's `meta:` block and the filename, and nothing else:
 | Flow Name | `meta.name` — required, because §4.1 lists the flow by it |
 | File Name | the file, renamed in place; the `.flow.yml` extension is the form's, not the author's |
 | Description | `meta.description` |
+| Test ID | `meta.testId` — optional; a report carries it as `test_id` (001 §14.8.1b) |
 | Tags | `meta.tags`, one comma-separated line — 001 §14.1's `--tags` selects on these |
 | Library | `meta.library` — 001 §12.5's flag, which decides whether a glob run includes it |
 
@@ -591,6 +657,98 @@ require('lodash')                  // ✓ bare names are unaffected
 Composition between scripts is `use:`'s job, and `use:` *does* resolve relative to the file that
 named it (001 §8.6) — a `.yml` library document listing several `.js` files is the shape that works.
 Stated here because the folder invites the assumption that the other one would.
+
+### 4.6 Fixtures
+
+**`flows/fixtures/` is the conventional home for 001 §7.4's file sources**, and the section lists
+what is in it under a `Fixtures` label, last — below the scripts, folded by §4.1a like every other
+bucket.
+
+Last for the reason the scripts are below the libraries: the list answers "what can I run here" from
+the top down, and a fixture is the furthest thing from an answer to it — `!file`, `bodyFile` and
+`dataset:` make one an *input* a flow reads, which neither runs nor is composed into anything that
+does. They are listed for the reason scripts are: the path is written out in every flow that reads
+one, and a corpus nobody can see is a corpus nobody reuses.
+
+**The directory is the whole of the rule, and any extension counts.** §7.4 resolves an ordinary
+relative path from the flow, so a fixture may live anywhere and it is the directory that makes one a
+*listed* fixture — exactly as `flows/scripts/` makes a `.js` a listed helper. There is no extension
+test to pair it with either: the corpus is JSON, YAML and CSV, plus bodies and attachments of
+whatever type the operation under test takes, and a list of extensions would decide what counts as
+data, which is the author's decision. A `.flow.yml` is the one exception, and it stays a flow
+wherever it is filed rather than turning into opaque data because of where it was put.
+
+**A fixture opens as editable text**, in `flow-fixture` — §4.5's pane, which serves both. The two
+differ in what they are called, how the text is coloured, and whether a draft is checked before
+auto-save; everything else is §4.3's editing session, and a second copy of the session, the save, the
+auto-save gate and the divergence report would be four things kept in step by hand.
+
+Highlighting comes from the extension the file was filed under, and is `text/plain` for anything not
+recognised. That is the honest answer for a CSV or an extensionless file rather than a guess:
+colouring one as a language it is not reads as a parse error on every line.
+
+**A fixture has no validity gate**, where §4.5's script has one. That gate exists because a script
+has one language and a half-typed line in it breaks every flow that names it at once; a corpus has no
+single language, so there is no one question to ask of a draft. Gating only the files that happen to
+be JSON would be a rule that applies by extension — surprising exactly when it fires, and no
+protection at all the rest of the time. A fixture that does not parse fails the flows reading it at
+start (§7.4), which names the file and is the report to act on.
+
+**A file that is not text is refused rather than decoded.** The host reads the bytes and calls it
+binary on a NUL in the first 8 KiB — `git`'s own heuristic — and the pane reports the refusal the way
+it reports any file it could not read. The corpus holds whatever the operations under test take, and
+§7.4's own example attaches a `.pdf`: opening one as UTF-8 would fill the editor with replacement
+characters, and the next auto-save would write them back over the file with nothing on screen having
+said so. Content decides it rather than an extension list, which would be wrong for exactly the
+unfamiliar types a fixture corpus collects.
+
+**The row carries no menu.** Neither of §4.3's items means anything for a data file — there is no
+`meta:` and no YAML to edit it as — and §4.5's rename does not either: a fixture is named by the path
+written into every flow that reads it, and nothing here rewrites those.
+
+**A `.js` under `flows/fixtures/` is a fixture, not a stray script.** The host tests the fixtures
+directory before the extension for that reason; the two directories are disjoint, so nothing else
+changes hands. It is data a flow reads, and `use:` picks up nothing implicitly (001 §8.6) — putting a
+file in either folder does not make a flow see it.
+
+### 4.7 Duplicating a flow
+
+**A flow's row menu carries `Duplicate`**, which opens §4.1's create form over the flow that was
+clicked and writes a copy of its document under a new name.
+
+**The copy is the source's own text with `meta:` replaced**, rather than a document rebuilt from the
+form. `writeFlowProperties` — §4.4's writer — preserves every node it does not touch, so the steps,
+the `apis:` bindings, the comments, the anchors, the blank lines and §5.4's `!file` tags all arrive
+exactly as they were written. That is the difference between a duplicate the author can diff against
+its original and one they have to re-read. It is also the whole reason to duplicate rather than
+create: the four fields `meta:` holds are the cheap part.
+
+**It is the create form, not a dialog of its own.** Duplicating asks for exactly what a duplicate
+needs decided — the four `meta:` fields, and where the copy goes — and every one is a field already
+on that form; a second dialog would be this one with a different title. It opens on the source's own
+`meta:`, read from disk with §4.4's read, with the name suffixed `copy` and the file name
+`<kebab>-copy`. `copy` on the end rather than `copy of` in front, so a duplicate sorts beside its
+original in a list §4.1 orders by name. The location offered is the source flow's own directory, and
+Browse still leads anywhere.
+
+**The API spec list is replaced by a line naming what is carried over.** A duplicate binds what its
+source binds, so there is nothing to choose. The list is not shown disabled either: it can only ever
+check the specs open in *this* workspace, so a source binding a URL or a document nobody has opened
+would be missing from a list the author would read as complete — and rebuilding `apis:` from that
+list would then delete the binding.
+
+**It refuses to open over unsaved YAML**, for §4.4's reason sharpened. The properties dialog would
+have written a draft back over the author's edits; this reads a document the author is looking at a
+different version of, and produces a duplicate silently missing the last ten minutes of work — in a
+file they would go on to edit as though it had them.
+
+**Only flows carry it.** §4.5's scripts and §4.6's fixtures have no `meta:` to rewrite, so a
+duplicate of one is a file copy with a new name and nothing this form asks about; the row menus there
+stay as they are.
+
+The source is scope-checked like every read, and the destination is not, like every create — the form
+offers the source's directory and lets the author browse anywhere, exactly as §4.1's does. The write
+uses the same `wx` flag, so a duplicate never overwrites a flow that is already there.
 
 
 ## 5. The graph
@@ -804,6 +962,13 @@ it: the path is short, shared and shrinks with the layout, so labels distributed
 the nodes at either end and collide again on the next flow. Each stays its own label, with its own
 mark and its own hover.
 
+**A label is centred on its edge and cut to the corridor between the two ranks.** Laid out from the
+midpoint and running rightward, a label spent only half the corridor and every character past that
+half was drawn inside the box the edge points at — at the label's size, from about the seventh, which
+`accountId` alone is past. Centring spends the corridor from both ends, and a name longer than the
+whole of it is elided rather than allowed to reach a box; the full name is on the edge's own hover,
+which is already where the value it carried is read.
+
 **Data edges are toggleable and on by default.** On a flow where most steps consume the previous
 one's output, control and data edges are largely parallel and the drawing is quieter with data
 hidden; on a flow with real fan-out they are the interesting half. Neither default is right for both,
@@ -934,6 +1099,36 @@ One consequence worth stating: **expanding a sub-flow can push its internals acr
 gives them their own block of ranks, which the boundary's own column was not measured against). The
 expansion is a temporary reading aid and the rule stays where the flow's ranks put it; nothing about
 the boundary changes because a container was opened.
+
+### 5.6 Inputs and exports
+
+**A flow's inputs are drawn as the graph's leftmost box, and a library's exports as its rightmost.**
+The `params:` and `vars:` a run starts from, and the `exports:` a library hands back (001 §12.1),
+are the two ends of a flow's interface; the drawing already runs left to right, so a value entering
+at rank 0 and leaving past the last rank meets the reader in the order the run meets it.
+
+**Each is a layer beside the graph, not a rank in it.** The engine owns ranks (§11.1) and this view
+never re-derives them, so a panel at rank -1 or one past the last would change what every other rank
+means. Each claims the gutter outside the drawing and moves no step; a flow that declares neither
+draws exactly as it did before either existed.
+
+**No edges are drawn to or from either panel.** `{{params.x}}` is read by most steps in a flow that
+declares any, and an export names its step in its own row — a line to nearly every box, or one that
+restates a row of text, draws a fact the reader already has. This is §5.3's reason for leaving the
+slot layer off by default, applied to a relationship that is already written down.
+
+**The inputs panel is editable while the tab shows the flow as it stands, and a record once it shows
+a run.** A run's inputs are a fact about that run, so a box you could type into would be saying
+something untrue; a secret param is masked as it is entered. A `vars:` row shows the expression the
+file declares until a run resolves it, because §7.3 resolves them per iteration — `{{$guid}}` is the
+interesting thing about a flow that has not run and the least interesting thing about one that has.
+
+**An export row shows its `steps.<id>.<output>` reference until the step behind it ends, then the
+value.** The same trade, at the other end, and the reference stays reachable on the row's hover. It
+claims nothing while that step is still running: the value it holds mid-retry is the previous
+attempt's, and a step that ends without producing its declared output leaves the row on the
+reference rather than blanking it. A stored run written before either panel existed carries neither
+list, and the panel is then simply absent — which is the truth about that run.
 
 ## 6. Diagnostics
 
@@ -1217,6 +1412,15 @@ and the flow's own status word. 001 §14.6 keeps flow status (`passed`/`failed`/
 distinct from step status (`success`/…) precisely so a summary is unambiguous about what it
 describes; the UI uses the same two vocabularies in the same two places.
 
+**An origin badge sits beside this line, at the top right of the run view — host and
+environment(s), e.g. `cli · staging`.** It reads 001 §13.2's `RunResult.origin`: the app stamps
+`host: 'app'`, and the environment name is whatever §7.2's run configuration selected, resolved
+through the same electron host a request already runs against; `bru flow run` stamps `host: 'cli'`
+and its own `--env`/`--global-env` names (001 §14.1), so this badge and the CLI's JUnit suite
+properties (001 §14.8.1) read the one recorded field rather than two that could disagree. The badge
+shows for a live run and a past one alike, and shows nothing — not a guess — for a run recorded
+before the field existed.
+
 **A verdict the counts do not account for names the step it fell on**, as a control that selects that
 step. The counts tally step statuses, and 001 §11.2's `failOnUnresolved` fails a run through a step
 that is *skipped* — so this line can read `failed` over `0 failed` with every node in the graph green
@@ -1450,7 +1654,8 @@ is hidden here too, and for the same reason.
 
 The run pane's run selector lists the run directories under `.bruno-runs/` for the scope that owns
 the flow (001 §14.5), newest first, each showing its timestamp, status and step counts from
-`summary.json`.
+`summary.json`, and the environment it ran against — one small extra read of `run.json` per entry,
+the same read `flowChanged` already costs (§11.2).
 
 **A past run opens into the same view as a live one.** The graph, node states, step detail and
 attempts are identical; only the source differs — `summary.json` and the capture files rather than a
@@ -1463,9 +1668,9 @@ Three properties this inherits from 001 §14.5 rather than inventing:
   `.bruno-runs/` directory downloaded from a build artifact opens in the app exactly as a local run
   does. This is the strongest argument for reading the directory format rather than an app-private
   store.
-- **Retention is the engine's.** The last `config.captureRetainRuns` runs are kept and older ones
-  pruned at the start of a run. The UI shows what is on disk and does not prune; a viewer that
-  deleted runs would be a second retention policy.
+- **Nothing is pruned.** 001 §14.5 keeps every run: the directory is gitignored, grows with each
+  run, and is the user's to clear. The UI shows what is on disk and does not delete; clearing runs
+  from the app is 001 §19's future work, not a policy a viewer applies on its own.
 - **Redaction already happened.** Captures are written redacted, so nothing here needs to filter.
 
 Runs from a *different* flow in the same scope are excluded — `run.json` names its flow, which is
@@ -1574,7 +1779,12 @@ type FlowDescription = {
   id: string;                          // path relative to the scope root (001 §5.2)
   name: string;                        // meta.name, or the filename
   isLibrary: boolean;                  // meta.library: true (001 §12.5)
-  params: { name: string; required: boolean; default?: unknown }[];
+  params: { name: string; required: boolean; default?: unknown; secret: boolean }[];
+  vars: { name: string; expression: string }[];        // §5.6; the expression, not the resolved
+                                                       // value — 001 §7.3 resolves per iteration
+  exports: { name: string; source: string }[];         // §5.6; the exports: a library hands back
+                                                       // (001 §12.1), as the reference the file
+                                                       // declares
   apis: { alias: string; color?: string }[];   // the apis: bindings in file order, each with 001
                                                // §6.2's colour where it declares one. What the file
                                                // declares, called or not — §5.1 decides which of
@@ -1825,21 +2035,38 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 
 ### 11.3 The IPC surface
 
+Every channel the feature uses. The invokes are listed in the order `registerFlowIpc` registers them;
+the three `main:` pushes follow.
+
 | Channel | Direction | Purpose |
 |---|---|---|
 | `renderer:flow-describe` | invoke | `describeFlow` for one flow, or for draft text (§4.3) |
-| `renderer:flow-read-source` | invoke | One flow's own text, for §4.3's editor |
-| `renderer:flow-write-source` | invoke | Write one flow's text back |
+| `renderer:flow-read-source` | invoke | One editable file's text — §4.3's flow, §4.5's script, §4.6's fixture. Refuses a file that is not text |
+| `renderer:flow-write-source` | invoke | Write one of those files back |
 | `renderer:flow-run` | invoke | Start a run; resolves with the `runId` |
 | `renderer:flow-cancel` | invoke | Abort a run by `runId` |
 | `renderer:flow-list-runs` | invoke | `listRuns` for a scope |
 | `renderer:flow-read-run` | invoke | One stored run's results |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
+| `renderer:flow-folder` | invoke | A scope's `flows/` path, joined main-side — the location §4.1's form opens on |
+| `renderer:flow-create` | invoke | Write a new flow, refusing a name already taken (§4.1) |
+| `renderer:flow-duplicate` | invoke | Copy one flow's document under a new `meta:` and name (§4.7) |
+| `renderer:flow-read-properties` | invoke | One flow's `meta:` and filename, for §4.4's dialog |
+| `renderer:flow-update-properties` | invoke | Write that `meta:` back, renaming the file if its name changed (§4.4) |
+| `renderer:flow-rename-script` | invoke | Rename a script within `flows/scripts/` (§4.5) |
 | `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
 | `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
 | `main:flow-request-log-batch` | send | A batch of requests the dispatch port sent (§8.5) |
-| `main:flow-tree-updated` | send | Watcher: a flow file added, changed or removed |
+| `main:flow-tree-updated` | send | Watcher: a flow, script or fixture added, changed or removed |
+
+**The five channels that write are separate calls rather than one `renderer:flow-write`.** Each
+carries a guard the others do not: `flow-write-source` a path that is a flow, a script under
+`flows/scripts/` or a fixture under `flows/fixtures/`; `flow-create` a filename `scanFlows` will match
+and a `wx` that refuses to overwrite; `flow-duplicate` both of those over a source read from scope;
+`flow-update-properties` a rename that refuses to land on a file already there; `flow-rename-script`
+that same rename confined to the directory that makes a `.js` listed at all. One channel taking a mode
+would put every one of those behind a branch on an argument the renderer chooses.
 
 **The renderer says which scopes to watch**, because it is the side that knows which workspaces and
 collections are open — main learns a workspace path as an IPC argument and holds no list of its own
@@ -2048,6 +2275,7 @@ packages/bruno-app/src/fork/
     ipcEvents.js                       # registers the listeners in the table above
     collectionScope.js                 # which collection a flow's tab and rows belong to
     networkRequests.js                 # §8.5's merged devtools list
+    flowTree.js                        # §4.1a's folder derivation, shared by every bucket
     FlowSidebarSection/index.js
     FlowTabHeader/index.js             # §4.2's "API Flows" header, replacing CollectionHeader
     FlowTabPane/
@@ -2058,6 +2286,7 @@ packages/bruno-app/src/fork/
       StepDetail/index.js
       RunControls/index.js
       RunSelector/index.js
+    FlowSourceTabPane/index.js         # §4.5's script and §4.6's fixture, one editing pane
 ```
 
 **`useVerticalSplit` is a deliberate near-duplicate of upstream's `hooks/useDragResize`**, which does

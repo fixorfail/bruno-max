@@ -184,6 +184,59 @@ describe('the run view diagnostics (§6)', () => {
     });
   });
 
+  /**
+   * 002 §10 — where the run on screen came from. A `.bruno-runs/` directory downloaded from a build
+   * artifact opens here exactly as a local run does, so the run's own record is the only thing that
+   * can say which host started it and against what.
+   */
+  describe('the run\'s origin (§10)', () => {
+    const run = {
+      runId: 'run-1',
+      state: 'complete',
+      status: 'passed',
+      summary: { total: 3, passed: 3, failed: 0, skipped: 0, cancelled: 0 },
+      selectedIteration: 0,
+      steps: {},
+      diagnostics: []
+    };
+
+    it('names the host and the environments the run had', async () => {
+      await renderPane([], { ...run, origin: { host: 'app', environment: 'staging' } });
+
+      expect(screen.getByTestId('flow-run-origin')).toHaveTextContent('app · staging');
+    });
+
+    it('names a global environment after the collection one', async () => {
+      await renderPane([], {
+        ...run,
+        origin: { host: 'cli', environment: 'staging', globalEnvironment: 'shared' }
+      });
+
+      expect(screen.getByTestId('flow-run-origin')).toHaveTextContent('cli · staging · shared');
+    });
+
+    /** A host that selected no environment ran against none; the badge is the host alone. */
+    it('names the host on its own where no environment was selected', async () => {
+      await renderPane([], { ...run, origin: { host: 'cli' } });
+
+      expect(screen.getByTestId('flow-run-origin')).toHaveTextContent('cli');
+    });
+
+    /** A run recorded before the field existed: nothing rather than a guess about where it came from. */
+    it('says nothing about a run that recorded none', async () => {
+      await renderPane([], run);
+
+      expect(screen.queryByTestId('flow-run-origin')).not.toBeInTheDocument();
+    });
+
+    /** §10's `current` is the flow as it stands, not a run — there is no provenance to state. */
+    it('says nothing with no run open', async () => {
+      await renderPane([]);
+
+      expect(screen.queryByTestId('flow-run-origin')).not.toBeInTheDocument();
+    });
+  });
+
   it('shows neither on a flow with nothing to report', async () => {
     await renderPane([]);
 

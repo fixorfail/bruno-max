@@ -400,6 +400,9 @@ const runFlow = async (file, options = {}) => {
     variables: { environment: DEFAULT_VARS },
     // §12.5's params, as a host running a library flow directly supplies them.
     params: options.params,
+    // §13.2's `origin`. Omitted unless a scenario supplies one, which is the shape of a host that
+    // does not report where a run came from — most of this suite.
+    origin: options.origin,
     overrides: options.overrides,
     signal: controller.signal,
     onEvent: (event) => {

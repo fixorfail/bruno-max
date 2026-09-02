@@ -36,6 +36,7 @@ const FlowProperties = ({ flow, properties, onClose }) => {
       fileName: fileNameStem(flow.filename),
       flowName: properties.name || '',
       description: properties.description || '',
+      testId: properties.testId || '',
       // Edited as the line an author would write in the file, rather than as a list widget: §5.2
       // spells `tags` as a flow sequence, and a row of chips would be a second way to read the one
       // value the YAML view shows on one line.
@@ -62,6 +63,10 @@ const FlowProperties = ({ flow, properties, onClose }) => {
             properties: {
               name: flowName,
               description: values.description,
+              // Cleared to `''`, which the writer treats as the key's absence — the same rule the
+              // other optional fields are written by, so an edit and an undo leave the file as it
+              // was rather than spelling out an empty case id.
+              testId: values.testId.trim(),
               tags: values.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
               library: values.library
             }
@@ -169,6 +174,26 @@ const FlowProperties = ({ flow, properties, onClose }) => {
             onChange={formik.handleChange}
             value={formik.values.description}
           />
+
+          <label htmlFor="flow-properties-test-id" className="block font-semibold mt-3">
+            Test ID
+          </label>
+          <input
+            id="flow-properties-test-id"
+            type="text"
+            name="testId"
+            className="block textbox mt-2 w-full"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck="false"
+            data-testid="flow-properties-test-id"
+            onChange={formik.handleChange}
+            value={formik.values.testId}
+          />
+          {/* The flow's own case id, which nothing in the run reads — it is carried so a report can
+              be matched back to the case the flow stands for. */}
+          <div className="flow-field-hint">Optional. A test-management case id; reports carry it as `test_id`.</div>
 
           <label htmlFor="flow-properties-tags" className="block font-semibold mt-3">
             Tags

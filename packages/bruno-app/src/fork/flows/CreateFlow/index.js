@@ -6,8 +6,8 @@ import toast from 'react-hot-toast';
 import Modal from 'components/Modal';
 import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
 import { matchLoadedApiSpecs } from 'components/Sidebar/ApiSpecs/matchLoadedApiSpecs';
-import { createFlow } from '../actions';
-import { kebabCase, flowFileNameError } from '../flowFileName';
+import { createFlow, duplicateFlow } from '../actions';
+import { kebabCase, fileNameStem, flowFileNameError } from '../flowFileName';
 import { aliasFor, buildFlowDocument } from './flowDocument';
 import StyledWrapper from './StyledWrapper';
 
@@ -17,6 +17,23 @@ import StyledWrapper from './StyledWrapper';
  * character `validateName` would reject — a name with a colon in it still yields a usable file.
  */
 const effectiveFileName = ({ fileName, flowName }) => (fileName || '').trim() || kebabCase(flowName || '');
+
+/**
+ * 002 §4.7: what a duplicate opens on — the source's own `meta:`, with a name that says it is a copy.
+ *
+ * `copy` on the end rather than `copy of` in front, so a duplicate sorts next to its original in a
+ * list §4.1 orders by name. The file name follows the same rule the create form's does, in the
+ * kebab-case the flows beside it are named by.
+ */
+const duplicateValues = ({ flow, properties, directory }) => ({
+  flowName: `${properties.name || fileNameStem(flow.filename)} copy`,
+  fileName: `${kebabCase(properties.name || fileNameStem(flow.filename))}-copy`,
+  flowLocation: directory,
+  description: properties.description || '',
+  tags: (properties.tags || []).join(', '),
+  library: Boolean(properties.library),
+  apiSpecUids: []
+});
 
 /**
  * 002 §4.1 — starting a flow from the sidebar rather than by hand-writing the file.
@@ -33,8 +50,13 @@ const effectiveFileName = ({ fileName, flowName }) => (fileName || '').trim() ||
  *
  * The spec list is the sidebar's own — `matchLoadedApiSpecs` pairs the workspace's entries with the
  * loaded specs in the store — so the two surfaces cannot disagree about what belongs to a workspace.
+ *
+ * **§4.7's duplicate is this same form over a `source`**, rather than a dialog of its own. It asks
+ * for exactly what a duplicate needs decided — the four fields `meta:` holds, and where the copy
+ * goes — and every one of them is a field already here; a second dialog would be this one with its
+ * spec list removed and a different title.
  */
-const CreateFlow = ({ defaultDirectory, onClose }) => {
+const CreateFlow = ({ defaultDirectory, source, onClose }) => {
   const dispatch = useDispatch();
   const allApiSpecs = useSelector((state) => state.apiSpec.apiSpecs);
   const workspaces = useSelector((state) => state.workspaces.workspaces);
@@ -47,15 +69,17 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
   );
 
   const formik = useFormik({
-    initialValues: {
-      flowName: '',
-      fileName: '',
-      flowLocation: defaultDirectory,
-      description: '',
-      tags: '',
-      library: false,
-      apiSpecUids: []
-    },
+    initialValues: source
+      ? duplicateValues({ ...source, directory: defaultDirectory })
+      : {
+          flowName: '',
+          fileName: '',
+          flowLocation: defaultDirectory,
+          description: '',
+          tags: '',
+          library: false,
+          apiSpecUids: []
+        },
     validationSchema: Yup.object({
       // `meta.name` is prose that `js-yaml` will quote for us, so the only thing asked of it is that
       // it is there — the filename rules below belong to the field that becomes a filename.
@@ -71,25 +95,36 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
         .map((uid) => apiSpecs.find((apiSpec) => apiSpec.uid === uid))
         .filter(Boolean);
 
+      const properties = {
+        name: values.flowName.trim(),
+        description: values.description,
+        tags: values.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
+        library: values.library
+      };
+
       try {
         await dispatch(
-          createFlow({
-            fileName: effectiveFileName(values),
-            directory: values.flowLocation,
-            content: buildFlowDocument({
-              name: values.flowName.trim(),
-              description: values.description,
-              tags: values.tags.split(',').map((tag) => tag.trim()).filter(Boolean),
-              library: values.library,
-              directory: values.flowLocation,
-              apiSpecs: selected
-            })
-          })
+          source
+            ? duplicateFlow({
+                flow: source.flow,
+                fileName: effectiveFileName(values),
+                directory: values.flowLocation,
+                properties
+              })
+            : createFlow({
+                fileName: effectiveFileName(values),
+                directory: values.flowLocation,
+                content: buildFlowDocument({
+                  ...properties,
+                  directory: values.flowLocation,
+                  apiSpecs: selected
+                })
+              })
         );
-        toast.success('Flow created');
+        toast.success(source ? 'Flow duplicated' : 'Flow created');
         onClose();
       } catch (error) {
-        toast.error(error?.message || 'An error occurred while creating the flow');
+        toast.error(error?.message || `An error occurred while ${source ? 'duplicating' : 'creating'} the flow`);
       }
     }
   });
@@ -129,8 +164,8 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
     <StyledWrapper>
       <Modal
         size="md"
-        title="Create API Flow"
-        confirmText="Create"
+        title={source ? 'Duplicate API Flow' : 'Create API Flow'}
+        confirmText={source ? 'Duplicate' : 'Create'}
         handleConfirm={formik.handleSubmit}
         handleCancel={onClose}
         dataTestId="create-flow"
@@ -265,28 +300,43 @@ const CreateFlow = ({ defaultDirectory, onClose }) => {
             Excluded from a run of the whole folder — meant to be invoked by other flows.
           </div>
 
-          <div className="block font-semibold mt-3">APIs</div>
-          <div className="flow-spec-list mt-2" data-testid="create-flow-api-list">
-            {apiSpecs.length === 0 ? (
-              <div className="flow-spec-empty">No API specs are open in this workspace.</div>
-            ) : (
-              apiSpecs.map((apiSpec) => (
-                <label className="flow-spec-option" key={apiSpec.uid}>
-                  <input
-                    type="checkbox"
-                    className="cursor-pointer"
-                    data-testid={`create-flow-api-${apiSpec.filename}`}
-                    checked={formik.values.apiSpecUids.includes(apiSpec.uid)}
-                    onChange={() => toggleApiSpec(apiSpec.uid)}
-                  />
-                  <span className="select-none">{apiSpec.name || apiSpec.filename}</span>
-                  {/* The alias every step will type, shown where it is chosen rather than
-                      discovered after the file is written. */}
-                  <span className="flow-spec-alias">{aliasFor(apiSpec)}</span>
-                </label>
-              ))
-            )}
-          </div>
+          {/*
+            * §4.7: a duplicate binds what its source binds, so there is nothing to choose here.
+            *
+            * The list is not shown disabled either: it could only ever check the bindings that
+            * resolve to a spec open in this workspace, and a source binding a URL or a file nobody
+            * has opened would be missing from a list the author would read as complete.
+            */}
+          {source ? (
+            <div className="flow-library-hint mt-3" data-testid="create-flow-duplicate-note">
+              {`Everything else — the steps, the API bindings and the comments — is copied from ${source.flow.filename}.`}
+            </div>
+          ) : (
+            <>
+              <div className="block font-semibold mt-3">APIs</div>
+              <div className="flow-spec-list mt-2" data-testid="create-flow-api-list">
+                {apiSpecs.length === 0 ? (
+                  <div className="flow-spec-empty">No API specs are open in this workspace.</div>
+                ) : (
+                  apiSpecs.map((apiSpec) => (
+                    <label className="flow-spec-option" key={apiSpec.uid}>
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer"
+                        data-testid={`create-flow-api-${apiSpec.filename}`}
+                        checked={formik.values.apiSpecUids.includes(apiSpec.uid)}
+                        onChange={() => toggleApiSpec(apiSpec.uid)}
+                      />
+                      <span className="select-none">{apiSpec.name || apiSpec.filename}</span>
+                      {/* The alias every step will type, shown where it is chosen rather than
+                          discovered after the file is written. */}
+                      <span className="flow-spec-alias">{aliasFor(apiSpec)}</span>
+                    </label>
+                  ))
+                )}
+              </div>
+            </>
+          )}
         </form>
       </Modal>
     </StyledWrapper>

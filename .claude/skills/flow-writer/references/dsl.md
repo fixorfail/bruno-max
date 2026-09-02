@@ -40,7 +40,6 @@ config:
   cleanupGrace: 30000          # ms allowed for cleanup steps after a cancel
   retry: { maxAttempts: 3, delay: 1000 }    # flow-wide defaults; a step's retry: overrides
   redactHeaders: [X-Legacy-Key]             # masked in logs and captures
-  captureRetainRuns: 10                     # run directories kept before pruning
 
 authProfiles:
   user-token:
@@ -556,6 +555,7 @@ bru flow run flows/checkout.flow.yml
 | `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
 | `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
+| `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them |
 | `interpolation-in-output-path` *(warning)* | An output path contains `{{…}}` — it is a path into the response, not an interpolation, and selects nothing |

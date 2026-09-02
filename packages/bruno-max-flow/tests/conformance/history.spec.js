@@ -33,6 +33,8 @@ describe('R4o — listRuns', () => {
     expect(entry).toEqual({
       runId: run.result.runId,
       dir: run.captureDir,
+      // A run of its own opens a suite of one (§14.5), so every run has a suite to name.
+      suite: path.basename(path.dirname(run.captureDir)),
       flow: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml'),
       startedAt: '1970-01-01T00:00:00.000Z',
       state: 'complete',
@@ -119,6 +121,80 @@ describe('R4o — listRuns', () => {
     const mine = await run.listRuns({ flow: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml') });
     expect(mine.map((entry) => entry.runId)).toEqual([run.result.runId]);
     expect((await run.listRuns({ flow: other })).map((entry) => entry.runId)).toEqual(['other-unfinished']);
+  });
+
+  /**
+   * §14.8.5: the CLI nests one invocation's runs beside that invocation's reports, and the app
+   * writes its own at the top level. 002 §10 shows one history, so both have to be found.
+   */
+  it('finds a run nested in a suite directory, and says which one', async () => {
+    const suite = 'suite-2020-01-01T00-00-00Z-cc00';
+    const nested = path.join(CAPTURE_ROOT, suite, '2020-01-01T00-00-01Z-aa01');
+    const run = await simple({
+      captured: {
+        [path.join(nested, 'run.json')]: JSON.stringify({
+          runId: 'nested',
+          flow: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml'),
+          startedAt: '2020-01-01T00:00:00.000Z'
+        }),
+        // Not a run, and the only other thing in there: the reports the suite exists to hold.
+        [path.join(CAPTURE_ROOT, suite, 'report-junit.xml')]: '<testsuites/>',
+        [path.join(CAPTURE_ROOT, suite, 'report.json')]: '{}'
+      }
+    });
+    const listed = await run.listRuns();
+
+    // Newest first across both levels — the nesting does not give a run its own ordering.
+    expect(listed.map((entry) => entry.runId)).toEqual(['nested', run.result.runId]);
+    expect(listed.find((entry) => entry.runId === 'nested')).toMatchObject({ suite, dir: nested });
+  });
+
+  // Runs written before §14.5 made the suite the unit still sit at the top level; a reader grouping
+  // by invocation must not invent a suite for one that never had one.
+  it('leaves a legacy top-level run with no suite', async () => {
+    const run = await simple({
+      captured: {
+        [path.join(CAPTURE_ROOT, '2020-01-01T00-00-01Z-aa01', 'run.json')]: JSON.stringify({
+          runId: 'legacy',
+          flow: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml'),
+          startedAt: '2020-01-01T00:00:00.000Z'
+        })
+      }
+    });
+    const legacy = (await run.listRuns()).find((entry) => entry.runId === 'legacy');
+
+    expect(legacy).not.toHaveProperty('suite');
+    expect(legacy.dir).toBe(path.join(CAPTURE_ROOT, '2020-01-01T00-00-01Z-aa01'));
+  });
+
+  /**
+   * §14.5 puts `origin` in the manifest for `flowHash`'s reason, and this is what that buys: a
+   * history that says which host ran each entry without opening a single run.
+   */
+  it('reports the origin the manifest recorded, from both readers', async () => {
+    const origin = { host: 'cli', environment: 'staging' };
+    const run = await simple({ origin });
+
+    expect((await run.listRuns())[0].origin).toEqual(origin);
+    expect((await run.readRun()).origin).toEqual(origin);
+  });
+
+  // Runs written before the field existed, and hosts that name nothing: neither gets an invented one.
+  it('leaves a run whose manifest recorded none without an origin', async () => {
+    const run = await simple({
+      captured: {
+        [path.join(CAPTURE_ROOT, '2020-01-01T00-00-01Z-aa01', 'run.json')]: JSON.stringify({
+          runId: 'older',
+          flow: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml'),
+          startedAt: '2020-01-01T00:00:00.000Z'
+        })
+      }
+    });
+    const listed = await run.listRuns();
+
+    expect(listed).toHaveLength(2);
+    for (const entry of listed) expect(entry).not.toHaveProperty('origin');
+    expect(listed.find((entry) => entry.runId === 'older').state).toBe('interrupted');
   });
 
   it('returns an empty list when no run has happened yet', async () => {

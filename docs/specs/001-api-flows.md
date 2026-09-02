@@ -4,7 +4,7 @@
 each local to one execution path and none changes a signature; the ports, the engine boundary, the
 expression dialect and the document schema are decided.
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-14
+**Last revised:** 2026-09-02
 
 Sequenced, spec-driven API request execution: a flow references OpenAPI operations instead of
 copying them, declares the data that moves between steps, and runs identically in the app and the
@@ -41,7 +41,7 @@ Nobody reads this front to back. Pick an entry:
 | **§11** | Retry, failure propagation, cancellation, run budget |
 | **§12** | Sub-flows — interface, isolation, library flows |
 | **§13** | Engine package, the host boundary, app integration, **fork isolation manifest (§13.4)** |
-| **§14** | CLI — flags, exit codes, validate, redaction, capture, vocabulary, console output |
+| **§14** | CLI — flags, exit codes, validate, redaction, capture, vocabulary, console output, reporters |
 | **§15–§16** | Compatibility and persistence; a worked example end to end |
 | **§17–§19** | Rejected alternatives, open questions, future work |
 
@@ -57,6 +57,7 @@ changing one breaks something outside this feature:
 | Exit codes | §14.2 | CI pipelines |
 | Status, reason and diagnostic strings | §14.6 | Reporters, CI, anything parsing a run |
 | Capture directory layout | §14.5 | CI artifacts, the future UI |
+| Reporter contract (`FlowReporter`, `SuiteResult`) and the JUnit/JSON mapping | §14.8 | Custom reporters, CI tooling, TestRail-style importers |
 | Upstream files touched | §13.4 | Re-checked after every merge from upstream |
 
 §15 governs how the first of these may change; §14.6 and §5.4 govern themselves. The rest of the
@@ -186,6 +187,7 @@ version: 1                     # flow format version; required
 meta:
   name: Checkout happy path
   description: Creates a payment, settles it, and verifies the ledger entry.
+  testId: C1000                # optional; a test-management case id carried into reports — see §14.8.1b
   tags: [checkout, smoke]
   library: false               # default false; true excludes it from glob runs — see §12.5
 
@@ -208,7 +210,6 @@ config:
     delay: 1000
   redactHeaders: [X-Legacy-Key]   # added to the built-in denylist; see §14.4
   capturePreviewBytes: 8192       # inline preview cap; see §14.5
-  captureRetainRuns: 10           # run directories kept before pruning
 
 authProfiles:                  # named, reusable auth configs — see §6.4
   user-token:
@@ -255,6 +256,8 @@ just a rename.
 steps:
   - id: create_payment                        # required, unique within the flow
     name: Create a pending payment            # optional human label
+    meta:                                     # optional; open mapping carried into reports — see §14.8.4
+      testId: C1234
     operation: payments-api#createPayment      # required — see §6
                                               #   (or `uses:` + `with:` instead — §12, never both)
     auth: user-token                          # optional; an authProfiles name — see §6.4
@@ -3140,11 +3143,15 @@ type RunOptions = {
   };
 
   params?: Vars;                       // --param, for a library flow (§12.5)
+  origin?: RunOrigin;                  // who started this run and against what — recorded, never consulted
   overrides?: {
     concurrency?: number;
     maxRunDuration?: number;
     dataset?: string;
-    capture?: { enabled?: boolean; dir?: string };   // --no-capture / --capture-dir (§14.5)
+    capture?: {
+      enabled?: boolean;                 // --no-capture (§14.5)
+      dir?: string;                      // write runs directly here, no suite of their own (§14.5, §14.8.5)
+    };
   };
   signal?: AbortSignal;
   onEvent?: (event: FlowEvent) => void;
@@ -3181,12 +3188,24 @@ the signal to take the identical path.
 ```ts
 type RunResult = {
   runId: string;
+  origin?: RunOrigin;                  // as the host supplied it, when it did
   status: 'passed' | 'failed' | 'cancelled';
   iterations: IterationResult[];
   decidedBy?: string[];                // §14.6 — the steps the verdict fell on, deduped
   summary: { total: number; passed: number; failed: number; skipped: number; cancelled: number };
   diagnostics: Diagnostic[];           // validation warnings that did not stop the run
   captureDir?: string;
+};
+
+/**
+ * Recorded for readers and read by no rule: the engine neither validates a name nor resolves
+ * anything through it. The environments' *values* arrive in `variables` — these are the labels a
+ * history, a report or a live view shows beside a run.
+ */
+type RunOrigin = {
+  host: 'app' | 'cli';
+  environment?: string;                // the collection environment's name, when one was selected
+  globalEnvironment?: string;          // the workspace (global) environment's name
 };
 
 type IterationResult = {
@@ -3199,6 +3218,8 @@ type IterationResult = {
 
 type StepResult = {
   id: string;                          // sub-flow steps namespaced: "auth/login"
+  name?: string;                       // §5.3's `name:` — the human label, where the id is a handle
+  meta?: Record<string, unknown>;      // §5.3's `meta:`, verbatim — what a report keys the step by
   kind: 'operation' | 'subflow';       // a `uses:` step is a container — see below
   status: 'success' | 'failed' | 'skipped' | 'cancelled';
   reason?: StepReason;                 // §14.6 — the rule that fired
@@ -3351,7 +3372,7 @@ running graph.
 ```ts
 type FlowEvent =
   | { type: 'run:start';       runId: string; flow: string; iterationCount: number; captureDir?: string;
-                               description?: FlowDescription }
+                               description?: FlowDescription; origin?: RunOrigin }
   | { type: 'iteration:start'; index: number; row?: Vars }
   | { type: 'step:start';      id: string; index: number; operation?: string }
   | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
@@ -3384,6 +3405,13 @@ Deriving it instead from a step's `capturePath` is what this avoids. That path i
 directory, so recovering the run's would mean stripping a step id off the end — and a sub-flow's id
 is namespaced (`auth/login`), so the strip is two segments for some steps and one for others. That is
 a path computation, and §14.5 gives every one of those to the engine.
+
+**`run:start`, `RunResult` and §14.5's manifest all report the same `origin`.** A reader therefore
+learns who started a run and against which environments from the run itself, whichever of the three
+it happens to be holding — a live view (002 §10) has it before the run ends, a reporter (§14.8) has
+it at the end, and a history has it without opening the run at all. Reporting it once per run from
+one source is what stops the app and the CLI from disagreeing with the file on disk. Absent when the
+host supplied none; the engine records it and consults it for nothing.
 
 **`run:start` also carries the run's `description`** — §14.5's snapshot, reported as well as written,
 and absent for the same reason the file is: a run under `--no-capture` records nothing. A consumer
@@ -3507,7 +3535,10 @@ The lesson worth keeping is that an upstream list is only worth extending when t
 genuinely match its, and the awkward edit inside a reducer body is a hint that they may not.
 
 Everything else — the engine, the renderer components, the Redux slice, the IPC handler, the CLI
-command — lives in files upstream does not have.
+command — lives in files upstream does not have. **Reporters (§14.8) add no row either:**
+`packages/bruno-cli/src/fork/flow/reporters/` and `@bruno-max/flow`'s `types/reporter.ts` are both
+new files, and `--reporter` is a flag on the same `commands/flow.js` builder the table above already
+covers, so the feature costs this manifest nothing further.
 
 **The hooks amortize.** Establishing these delegation points is a one-time cost paid by the first
 fork feature. A second feature registers into the same registry and adds **zero** new upstream
@@ -3543,7 +3574,7 @@ bru flow validate <path...>   Static validation; sends no requests
 | Flag | Purpose |
 |---|---|
 | `--env <name>` | Bruno environment to run against |
-| `--global-env <name>` | Workspace environment to run against — `<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses |
+| `--global-env <name>` | Workspace environment to run against — `<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses; the name is recorded as the run's origin (§14.8.1) |
 | `--env-var k=v` | Override a single variable (repeatable) |
 | `--param k=v` | Supply a declared `params` value (repeatable); for running a library flow directly |
 | `--dataset <path>` | Override the flow's dataset |
@@ -3551,14 +3582,17 @@ bru flow validate <path...>   Static validation; sends no requests
 | `--max-run-duration <ms>` | Bound the whole run; elapsing takes the cancellation path and exits 4 (§11.3) |
 | `--tags` / `--exclude-tags` | Filter flows by `meta.tags`, matching `bru run`'s existing tag filtering |
 | `--bail` | Stop after the first failing flow when several were selected |
-| `--reporter-json <path>` | Existing reporters, reused unchanged |
-| `--reporter-junit <path>` | |
-| `--reporter-html <path>` | |
+| `--reporter <spec>` | Repeatable. `<module>` or `<module>=<path>`; `<module>` is a built-in (`junit`\|`junit-flows`\|`json`\|`html`), a path, or a package name. `=<path>` is optional for a built-in — it defaults into the invocation's suite directory, alongside every selected flow's own run directory (§14.8.5) — and required for a custom module |
+| `--reporter-junit [<path>]` | Sugar for `--reporter junit[=<path>]`; omitted, it defaults into the invocation's suite directory (§14.8.5) |
+| `--reporter-junit-flows [<path>]` | Sugar for `--reporter junit-flows[=<path>]` — one testcase per flow rather than per step (§14.8.1b) |
+| `--reporter-json [<path>]` | Sugar for `--reporter json[=<path>]` |
+| `--reporter-html [<path>]` | Sugar for `--reporter html[=<path>]` |
+| `--reporter-option k=v` | Repeatable; passed to every reporter's `ReporterContext.options` (§14.8) |
 | `--strict` | Promote §14.3's warnings to errors (exit 2) |
 | `--show-sensitive` | Disable masking **for stdout only**; never affects reporter files or captures (§14.4) |
 | `--verbose` / `--quiet` / `--silent` | Console detail level (§14.7) |
 | `--no-color` / `--no-unicode` | Disable ANSI colour or box-drawing glyphs (§14.7) |
-| `--no-capture` / `--capture-dir <path>` | Disable capture, or relocate it (§14.5) |
+| `--no-capture` / `--capture-dir <path>` | Disable capture, or relocate the capture root (§14.5) that each invocation's suite directory (§14.8.5) is written under |
 | `--dry-run` | Materialize and validate every step, send nothing |
 
 Directory and glob arguments **skip library flows** (§12.5). Naming a library flow explicitly runs
@@ -3769,6 +3803,31 @@ untruncated payload is written to an artifact directory:
       attempt-1.response.pdf
 ```
 
+**Every run lives in a suite directory.** A run on its own opens a suite of one, minted from its own
+id so the pair carries the same four hex; a host running several flows opens one suite and writes
+every run into it, beside the reports that invocation was asked for (§14.8.5). One command's output
+is one folder either way, and every run sits at the same depth whoever produced it:
+
+```
+.bruno-runs/
+  suite-2026-08-05T14-22-01Z-a3f9/    # the app running one flow — a suite of one
+    2026-08-05T14-22-01Z-a3f9/        # …sharing the run's four hex
+  suite-2026-08-05T14-31-07Z-b1c4/    # one `bru flow run` over several flows (§14.8.5)
+    report-junit.xml
+    report.json
+    report.html
+    2026-08-05T14-31-07Z-c2d1/        # the invocation's runs, one per flow, unchanged inside
+    2026-08-05T14-31-09Z-e4f2/
+```
+
+A run directory's contents are identical either way — the nesting decides where a run is, never what
+it holds, and `RunResult.captureDir` and `run:start` (§13.2) name the run directory as they always
+have. Nothing nests below a run: the suite level is exactly one deep.
+
+`listRuns` (002 §11.2) reads runs inside suites and reports which suite each belongs to. It also
+still lists run directories sitting **directly** in the capture root: those are runs written before
+the suite was the unit, kept readable rather than dropped from a user's history.
+
 **One file per attempt, holding the whole `StepCapture`** (002 §11.2) — request, response,
 assertions and schema-validation outcomes together, which is exactly the object `readCapture`
 returns. Splitting it into `attempt-1.request.json` and `attempt-1.response.json` would mean a third
@@ -3866,14 +3925,27 @@ fixture corpus into every run's artifact, and
 unlike a response body the content is already in the repository — the reference is the more useful
 record anyway, since it names which fixture was sent.
 
+**`run.json` also records the run's `origin`** — which host started it, and the names of the
+environments it ran against. It rides in the manifest for `flowHash`'s reason: `listRuns` reads only
+this file per run, so a history that says where each run came from costs one small read per
+directory rather than a second artifact or a parse of every result. Absent on a run written before
+it was recorded, and on a host that named none.
+
 **Redaction (§14.4) applies to the artifact directory exactly as it does to reporter output.**
 This is the more important of the two: `.bruno-runs/` is precisely the thing a CI job uploads as a
 build artifact, and `--show-sensitive` never affects files.
 
-**Retention is bounded.** Capturing every step of every run accumulates without limit otherwise.
-The last `config.captureRetainRuns` runs are kept (default 10) and older directories are pruned at
-the start of a run. `--no-capture` disables capture entirely for pipelines that want minimal
-artifacts, and `--capture-dir` relocates the output.
+**Nothing is ever pruned.** The capture root grows with every run, and clearing it is the user's.
+The alternative — a bound that silently deletes the oldest runs — is the worse failure: the
+directory is exactly what a CI job archives and what a user opens a week later to compare a
+regression against, and a run that vanished on a schedule nobody chose is indistinguishable from one
+that was never written. Growth is visible, recoverable and gitignored (below); silent deletion is
+none of the three. §19 keeps a retention policy as future work, on the condition that it is chosen
+rather than assumed.
+
+`--no-capture` disables capture entirely for pipelines that want minimal artifacts, and
+`--capture-dir` relocates the output; a host that supplies its own directory is saying where runs
+go, and the engine mints no suite of its own beneath it.
 
 **Location.** `.bruno-runs/` is written at the **root of the scope that owns the flows being run** —
 the collection root for a collection-scoped run, the workspace root for a workspace-scoped one. It
@@ -3890,6 +3962,16 @@ index or artifact name can escape the run directory, which is the property the r
 
 `.bruno-runs/` must be added to that scope's `.gitignore` on creation — captured payloads are run
 output, not source, and they contain response data that has no business in a repository.
+
+The engine exports both halves of that rule — the root's path and the ignore entry — because §14.8's
+report files default into the same directory, including under `--no-capture`, where no capture is
+ever created to write the entry. A host computing either for itself would be a second copy of this
+section, free to drift from it.
+
+Those files go in the invocation's own `suite-<startedAt>-<id>/` directory (§14.8.5), alongside the
+run directories it holds. The `suite-` prefix keeps the name out of the run-directory pattern, so a
+suite is never mistaken for a run — `listRuns` descends into it rather than listing it. A batching
+host creates and clears its own; a run given no directory opens one for itself.
 
 **This is a different file from §13.4's manifest entry, and both are needed.** The manifest ignores
 `.bruno-runs/` in *this repository*, which covers runs against the collections living here. A
@@ -4122,6 +4204,462 @@ The `id` column is §5.2's path-derived identity shown by its final segment; whe
 segment, both are printed with as much of their path as tells them apart. `file` carries the full
 path either way, so the listing is never the only place the answer is.
 
+### 14.8 Reporters
+
+`bru flow run` writes machine-readable reports through one contract, implemented by four built-ins
+— `junit`, `junit-flows`, `json`, `html` — and by any module an author supplies. JUnit is the primary
+format: it is what CI gates on and what test-management tools import from.
+
+**The unit a reporter reports on is the invocation, not the flow.** `RunResult` (§13.2) is the
+engine's unit — a flow and its iterations — but `bru flow run` routinely selects a whole directory,
+and neither JUnit nor a CI pipeline wants one file per flow to reassemble itself. A JUnit consumer
+expects a single `<testsuites>` spanning everything that was selected; a CI job wants one artifact to
+upload, not `N` it has to glob together; and `--bail` still has to produce a report that accounts for
+the flows it never reached. The CLI therefore collects every selected flow's outcome into one
+`SuiteResult` and hands the whole thing to each reporter once, after the last flow finishes.
+
+**The contract.** These types live in `@bruno-max/flow`'s `types/reporter.ts`, beside `result.ts` —
+the file `RunResult` is defined in:
+
+```ts
+import type { Diagnostic, FlowEvent, RunResult, RunSummary } from './result';
+
+/** Why a flow in the selection ended the way it did. `invalid` = it never ran (validation error, or
+ *  `runFlow` refused it — a missing required param); the diagnostics say which. */
+export type FlowOutcome = 'passed' | 'failed' | 'cancelled' | 'invalid';
+
+export type FlowIdentity = {
+  /** Absolute path of the .flow.yml. */
+  file: string;
+  /** Path relative to the scope root with `.flow.yml` removed, posix separators — §5.2's identity. */
+  id: string;
+  /** meta.name, or the file's stem. */
+  name: string;
+  /** meta.tags, in file order. */
+  tags: string[];
+};
+
+export type FlowRunRecord = FlowIdentity & {
+  startedAt: string;   // ISO 8601
+  finishedAt: string;
+  durationMs: number;
+  outcome: FlowOutcome;
+  /** Absent when the flow never ran. */
+  result?: RunResult;
+  /** Pre-run validation diagnostics, plus a `run-refused` error when `runFlow` rejected. */
+  diagnostics: Diagnostic[];
+};
+
+export type SuiteSummary = {
+  flows: { total: number; passed: number; failed: number; cancelled: number; invalid: number };
+  /** Every flow's `result.summary`, summed. */
+  steps: RunSummary;
+};
+
+export type SuiteResult = {
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  /** In run order (path order, §14.1). */
+  flows: FlowRunRecord[];
+  summary: SuiteSummary;
+  /** §14.2's code the process will exit with. */
+  exitCode: number;
+};
+
+/**
+ * What a reporter may implement. Every hook is optional; a hook that throws is reported on stderr
+ * and never fails the run or changes the exit code.
+ */
+export type FlowReporter = {
+  onSuiteStart?(suite: { startedAt: string; flows: FlowIdentity[] }): void | Promise<void>;
+  onFlowStart?(flow: FlowIdentity): void | Promise<void>;
+  /** The engine's §13.2 stream, already redacted, tagged with the flow it belongs to. */
+  onEvent?(event: FlowEvent, flow: FlowIdentity): void | Promise<void>;
+  onFlowEnd?(record: FlowRunRecord): void | Promise<void>;
+  onSuiteEnd?(suite: SuiteResult): void | Promise<void>;
+};
+
+export type ReporterContext = {
+  /** Resolved absolute path this reporter writes to — explicit via `=<path>`, or a built-in's
+   *  default location in the invocation's suite directory (§14.8.5). Always present: a custom
+   *  reporter cannot be named without `=<path>`, and a built-in that receives none is given its
+   *  default. */
+  outputPath: string;
+  /** process.cwd() when the command ran. */
+  cwd: string;
+  /** Free-form `--reporter-option key=value` pairs, for custom reporters. */
+  options: Record<string, string>;
+};
+
+/** A reporter module's default export (or `module.exports`). */
+export type ReporterFactory = (context: ReporterContext) => FlowReporter;
+```
+
+**Types and implementations are split across packages for the reason §13.1 gives every other seam in
+this spec: the engine's types must not drift from what it emits.** `FlowRunRecord` wraps a
+`RunResult` and `SuiteResult` sums several; a reporter written against a hand-copied version of those
+shapes drifts the moment `RunResult` gains a field, silently, in whichever reporter nobody remembered
+to update. Declaring `reporter.ts` next to `result.ts` in `@bruno-max/flow` makes that drift a
+compile error. The built-ins themselves are host **output**, not engine behavior — the engine emits
+to no file of its own; §13.2's `WriteFile` port exists for capture (§14.5), and a reporter file is
+produced entirely on the CLI's side of that boundary. `junit.js`, `junit-flows.js`, `json.js`,
+`html.js` and the loader that resolves a `--reporter` spec and calls its factory therefore live in
+`packages/bruno-cli/src/fork/flow/reporters/`, the same fork-owned tree as the rest of the command.
+
+**Hooks are optional and awaited in declaration order** — one reporter's `onFlowEnd` finishes before
+the next reporter's fires, and a reporter that streams incrementally can rely on that ordering rather
+than racing its own writes. **A hook that throws is printed to stderr as `reporter <name>:
+<message>` and the run is otherwise unaffected** — neither the run's outcome nor the process's exit
+code depends on any reporter, so a broken reporter cannot take a passing run down with it, the same
+guarantee §13.2 already makes for a throwing `onEvent` consumer. Reporters run for `run` only —
+`validate` sends nothing and produces no `RunResult` to report on. `--silent` and `--quiet` govern
+stdout only (§14.7); a reporter file is written regardless, because it is frequently the *reason* a
+CI log can afford to be quiet. `<module>` in a `--reporter` spec resolves as a built-in name
+(`junit`, `json`, `html`), then a path when it starts with `.` or `/` or is absolute, else a package
+name resolved from `cwd` — the same order `require` would use. **A custom module named without
+`=<path>` is a usage error (exit 3)** — it has no default location to fall back to (§14.8.5), unlike
+a built-in, and a reporter nobody can find afterward is worse than an upfront rejection. A custom
+module that fails to resolve, or whose export is not a function, is also exit 3. An *explicit* output
+path whose parent directory does not exist is exit 3 too, checked for every `--reporter` before any
+flow runs; a defaulted one needs no such check, because the suite directory it lands in is created
+before any flow runs regardless of whether it was already there (§14.8.5) — so a long run never gets
+to its last line only to fail on a typo'd path, or a folder nobody made, with nothing written. Each
+reporter that wrote a file prints `Wrote <name> report to <path>` on stdout unless `--silent`.
+
+**A custom reporter is arbitrary code, `require`d directly into the CLI's own process, so it is named
+on the command line only — `--reporter ./reporters/x.js=out.txt` or a package name, always with
+`=<path>` (§14.8.5) — never from `.flow.yml`, `bruno.json` or `workspace.yml`, and the app never
+loads one.** A flow file is committed and shared;
+if a `.flow.yml` could name a reporter module, then cloning a teammate's branch and running so much
+as `bru flow validate` — or opening the collection in the app, which watches and validates on every
+change (002 §6) — could execute arbitrary code the instant anyone next ran a flow-aware tool against
+it, with nothing in the diff louder than an unfamiliar path. That is the exact shape of a
+supply-chain injection: a repository file that is ordinary data everywhere else becoming code
+execution the moment the right tool opens it. Keeping `--reporter` command-line-only keeps that
+decision with the person invoking `bru`, who already extends the same trust to every flag and flow
+path in the invocation — it is a different trust boundary from a flow's own `script:` blocks, which
+run *sandboxed* (§8.2) precisely because a flow file's author and its runner are routinely different
+people. A reporter module runs with none of that sandboxing, so the app — which opens flows nobody
+present necessarily wrote — never loads one; only `bru` does, from flags a person typed.
+
+**"Existing reporters, reused unchanged" — an earlier position — is retracted.** Upstream's
+`packages/bruno-cli/src/reporters/{junit,html}.js` consume a *different* result shape: `bru run`'s
+unit is a flat list of individual requests, with no notion of a graph, a sub-flow's internals, a
+per-iteration suite, or a skip reason. Reshaping a flow's `SuiteResult` to fit that shape would lose
+exactly the structure this format exists to report — the DAG, per-step outcomes and the distinction
+between a step that failed and one that was correctly skipped — so the built-ins here are new files,
+not edits to those. §19's former "a flow-shaped reporter" row is this section under a different name;
+it left that table because the work it named is now specified rather than merely wanted.
+
+**Redaction holds by construction.** A reporter's only inputs are `FlowEvent` (via `onEvent`) and
+`RunResult` (via `FlowRunRecord.result` and `SuiteResult`), and §14.4's masking is applied before
+either is emitted — there is no unredacted form of either type for a reporter to have been handed
+instead. `ReporterContext` carries `outputPath`, `cwd` and `options`; none of those is
+`--show-sensitive`, which disables masking for stdout only (§14.4) and has no path into a reporter at
+all, so a custom reporter cannot opt itself out of redaction even by reading its own options.
+
+#### 14.8.1 The JUnit mapping (step-level)
+
+This is the `junit` reporter's shape — one testcase per step, for a dashboard or a TestRail import
+that wants that granularity. A second built-in, `junit-flows` (§14.8.1b), reports one testcase per
+*flow* instead, for a tracker that wants exactly one case per flow and nothing finer; both can be
+written from the same run.
+
+`<testsuites name="bru flow run" tests= failures= errors= skipped= time= timestamp=>` wraps the
+whole invocation. Inside it, **one `<testsuite>` per flow-iteration** — a flow run once contributes
+one suite, a flow with a `dataset:` contributes one per row.
+
+- `name` is the flow's id (§5.2), with ` [row N]` appended (`N` = the row's 1-based index) whenever
+  the iteration carries a `row` or the flow ran more than one iteration — so a single-iteration flow
+  with no dataset gets a bare name, and every other case is disambiguated.
+- Suite attributes: `tests`, `failures`, `errors`, `skipped`, `time` (seconds, three decimals),
+  `timestamp` (ISO 8601 without the trailing `Z` or milliseconds — `YYYY-MM-DDTHH:mm:ss`, the form
+  most JUnit consumers expect), `hostname`.
+- Suite `<properties>`: `flow` (id), `test_id` (from the flow's `meta.testId`, present only when the
+  flow declares one — so a tracker importing per suite can match the flow it belongs to), `name`
+  (`meta.name`), `file` (relative to `cwd` when the flow is inside it, else absolute), `tags`
+  (comma-joined, present even when there are none, so a consumer can tell "no tags" from "property
+  missing"), `runId`, `status`, then `host`, `environment` and
+  `globalEnvironment` from `RunResult.origin` — each present only when `origin` carries it — and,
+  only when the iteration has a row, `iteration` (`N`, matching the suite name's suffix) plus one
+  `row.<key>` property per dataset column, each value `String()`-coerced. The first thing a reader of
+  a red build asks is which environment it ran against, and `origin` is the one place that answer
+  lives.
+
+**One `<testcase name="<step id>" classname="<flow id>" time=>` per step**, including sub-flow
+internals: a namespaced id like `auth/login` (§13.2) is its own testcase, so a shared sign-in
+sub-flow's steps show up as cases rather than disappearing into their container. A `uses:` step's own
+testcase is **dropped** when internals carrying its id as a prefix (`auth/login`, `auth/verify`, …)
+exist — otherwise the container and its contents would double-count the same work, once as a step and
+once as the sum of its parts. Testcase `<properties>`, each present only when it applies: `test_id`
+(from `meta.testId`, `String()`-coerced — §14.8.4), then one property per remaining `meta.*` entry —
+its own key, in declaration order, a scalar `String()`-coerced and anything else JSON-stringified —
+then `name` (`StepResult.name`), `reason`, and `attempts` only when more than one was made — a single
+attempt is the default, and writing it on every case is noise.
+
+**Why a testcase is a step, not an assertion.** JUnit's native unit is closer to an assertion than a
+request, but a step can fail with zero assertions — a `transport-error`, an `unexpected-status` with
+no `res.status` check, a `script-error` in an output. A testcase per assertion would have nothing to
+report for exactly the failures §10.1's automatic checks exist to catch, and would multiply one
+step's retries and one step's request into a case count nobody selected. A step is also the unit a
+`meta.testId` (§14.8.4) is declared on and the unit TestRail's importer expects a case's worth of
+pass/fail against — so the testcase boundary follows the file's own unit rather than JUnit's usual
+one.
+
+**Status maps to element by `reason`, not by `status` alone**, because JUnit's `<failure>` and
+`<error>` distinguish an assertion the test made from a fault the test infrastructure hit — a
+distinction `StepReason` (§14.6) already draws:
+
+- `success` → no child element.
+- `failed` with reason `assertion-failed`, `unexpected-status`, `schema-validation-failed` or
+  `subflow-failed` → `<failure type="<reason>" message="<message, or the reason if there is none>">`,
+  body below.
+- `failed` with any other reason (`transport-error`, `script-error`, `invalid-request`,
+  `file-read-failed`, `retries-exhausted`, `max-duration-exceeded`) → `<error type= message=>`, same
+  body — these are the reasons where nothing about the flow's own logic was exercised.
+- `skipped` or `cancelled` → `<skipped message="<reason>[: <message>]"/>`.
+- **Exception:** a step named in `RunResult.decidedBy` (§13.2, §14.6) whose own `status` is not
+  `failed` — the `failOnUnresolved` case, where a run is red with `0 failed` because a skip decided
+  it — is emitted as `<failure type="<reason>">` rather than `<skipped>`, its message explaining that
+  this step is the one the run's verdict fell on. Without the exception, that run's JUnit file would
+  show every testcase passing or skipped and no failure anywhere — green by every count a CI gate
+  reads, for a run the exit code (§14.2) already reports as failed.
+
+Body text, for both `<failure>` and `<error>`: each failed assertion as
+`expr\n  expected <json>\n  actual <json>`, each schema-validation error as
+`request|response <path> <message>`, the step's own `message` — except under a failed assertion, where
+it is the comparison already expanded above (§14.7's console output drops it for the same reason) —
+and `capture <capturePath>` when a capture exists.
+
+**A flow with no `result` — outcome `invalid` — becomes a suite of its own**, `tests="1"
+errors="1"`, one testcase named after the flow, `<error type="<first diagnostic code>">` listing
+every diagnostic in `FlowRunRecord.diagnostics`. It never ran, so there is no step to report against
+and no iteration to name a suite after; one case is the closest honest description of "this flow
+could not be tried."
+
+Suite `<system-out>` carries `RunResult.diagnostics` — warnings that did not stop the run — one per
+line, and `captureDir` when present.
+
+**Every string is sanitized before it reaches `xmlbuilder`**: characters illegal in XML 1.0
+(`\x00`–`\x08`, `\x0B`, `\x0C`, `\x0E`–`\x1F`, and the non-characters `￾`/`￿`) are stripped
+first, and `xmlbuilder` does the escaping from there — a response body or an assertion's `actual` can
+contain any of those, and a JUnit consumer handed one is a parse failure instead of a report.
+
+**Counts have to agree with what was emitted, not be computed separately**: `tests` is the number of
+testcases actually written, `failures`/`errors`/`skipped` the number of each element actually
+written — so a bug in the mapping shows up as a JUnit consumer rejecting a malformed count rather
+than as a silently wrong one.
+
+#### 14.8.1b Flow-level JUnit
+
+`junit-flows` reports the same invocation at flow granularity instead of step granularity: one
+`<testsuite name="bru flow run" tests= failures= errors= skipped= time= timestamp= hostname=>` for
+the whole run, no `<testsuites>` wrapper around it — there is never more than one — and **one
+`<testcase name="<flow id>" classname="<flow id>" time=<flow's own duration>>` per flow**, not per
+step.
+
+Testcase `<properties>`, each present only when it applies: `test_id` (from the flow's `meta.testId`,
+§5.2, `String()`-coerced) **first**, `name` (`meta.name`), `file` (§14.8.1's resolution), `tags`
+(comma-joined, present even when empty, for the same reason §14.8.1 keeps it), `host`, `environment`
+and `globalEnvironment` from `RunResult.origin` (§14.8.1), `runId`, `status`, and `iterations` — the
+row count, present only for a `dataset:` flow.
+
+**Outcome maps to element by the same failure/error split §14.8.1 draws per step, applied to
+whichever steps decided the flow's own verdict** — `RunResult.decidedBy` when the flow has one, else
+every `failed` step, across every iteration the flow ran:
+
+- `passed` → no child element.
+- `failed` → `<failure type="<first deciding step's reason>" message="<deciding step ids,
+  comma-joined>">` when **every** deciding step's reason is one of §14.8.1's API-disagreement set
+  (`assertion-failed`, `unexpected-status`, `schema-validation-failed`, `subflow-failed`); `<error>`,
+  same attributes, otherwise — one non-assertion reason among several deciding steps still means the
+  test infrastructure hit a fault, not only the assertion the flow wrote. Body: one line per deciding
+  step, `<step id>[ [row N]]: ` followed by that step's own body text exactly as §14.8.1 already
+  formats it.
+- `cancelled` → `<error type="run-cancelled">` — a flow that did not finish is neither a pass nor a
+  skip, so it takes the element that says something went wrong rather than the one that says nothing
+  ran.
+- `invalid` → `<error type="<first diagnostic code>">` listing every diagnostic in
+  `FlowRunRecord.diagnostics`, the same body §14.8.1 writes for its own invalid-flow suite.
+
+**A dataset flow is one testcase, its rows folded inside rather than one per row** — the opposite of
+§14.8.1's one suite per iteration, and deliberately so: this shape exists for a tracker that wants
+exactly one case per flow and nothing finer, so a row-by-row split here would just be a worse copy of
+the shape §14.8.1 already provides for whoever wants that granularity. `iterations` says how many
+rows ran, and a failed row's steps are named in the body with `[row N]`, but the case count itself
+never grows with the dataset.
+
+**Why a separate reporter, not a flag on `junit`.** A report's shape is part of its identity, not a
+mode switch on top of one — a CI config or a TestRail import mapping names a *file* and expects a
+fixed structure inside it, and a flag that could silently change what a testcase means would break
+whichever import was written against the shape already in use. `junit` and `junit-flows` are
+independent built-ins for that reason, and nothing stops writing both from one run:
+`--reporter-junit --reporter-junit-flows` produces `report-junit.xml` and `report-junit-flows.xml`
+side by side in the same suite directory (§14.8.5).
+
+**A flow-level case is matched by its own `test_id`, not by a step's.** A flow's `meta.testId` (§5.2)
+names a case for the *flow as a whole*, a separate field from a step's `meta.testId` (§14.8.4), which
+names a case for one step inside it — `junit-flows` reads the flow's, since a flow-level case has no
+steps of its own to have read one from instead. A flow that declares no `meta.testId` still has no
+case id to key on, and a tracker falls back to matching it by `name` or `tags`, as before.
+
+Bare `--reporter junit-flows` or `--reporter-junit-flows` defaults to `report-junit-flows.xml` in the
+invocation's suite directory (§14.8.5), alongside `report-junit.xml` when both are asked for.
+
+#### 14.8.2 JSON
+
+`reporters/json.js` writes `JSON.stringify(suite, null, 2)` of the `SuiteResult` above, with two
+extra top-level fields — `"format": "bruno-flow-suite"` and `"formatVersion": 1` — so a consumer can
+tell what it is holding without inferring it from shape. `origin` rides along on each flow's own
+`result` (`FlowRunRecord.result.origin`, §14.8.1) exactly as `RunResult` already carries it — nothing
+extra to compute for this format, since it is the same object the engine produced. Like every other
+format this spec governs (§15), it is additive-only: a field is never removed or renamed, and
+`formatVersion` moves only if one has to be.
+
+#### 14.8.3 HTML
+
+`reporters/html.js` writes one self-contained file — inline CSS and JS, no CDN, no external asset, no
+network access at read time — so it opens correctly offline and survives as a CI artifact fetched
+long after the pipeline that produced it is gone. Header (command, started/finished, duration, exit
+code), summary cards, one section per flow with its iterations' step tables, and an expandable detail
+block per failed or skipped step. **Every interpolated string is HTML-escaped** — a response body or
+an assertion's `actual` reaches this file and neither is trusted input. Unlike JUnit and JSON, this
+format is **not** part of §15's compatibility contract: it exists to be looked at by a person, not
+parsed by a tool, and its markup is free to change between releases.
+
+#### 14.8.4 Step `meta:`
+
+A step may declare `meta:` (§5.3), an open mapping the engine carries **verbatim** onto
+`StepResult.meta` and (002 §11.1's) `FlowNode.meta` — present only when non-empty — and never
+interprets. Its purpose is per-step data for reporters: a test-management case id, an owner, a link
+to a ticket or a runbook, whatever a team's reporting tool wants attached to a step. `testId` is the
+one key a built-in reporter names specially — `String()`-coerced and surfaced in JUnit as the
+testcase property `test_id`, because that is the property name TestRail's own JUnit importer reads
+to match a result back to a case. Every other key in the mapping still reaches the JUnit file, as a
+same-named `<property>` on the testcase (§14.8.1) — `meta:` is not a `testId`-only field that
+happens to allow other keys, it is a general one that this spec's own reporter gives exactly one key
+a special meaning to.
+
+**An open mapping rather than a field per concern**, because the set of things a team wants attached
+to a step is exactly as varied as the set of test-management and dashboard tools that read them —
+TestRail wants a case id, another tool wants an owner, a third wants a link — and the engine has no
+way to anticipate that set, let alone grow a typed field for each entrant. `meta:` is the escape
+hatch that keeps that variety from ever becoming this spec's problem: a new integration is a new key,
+authored today, needing no engine change and no schema version bump.
+
+**Values travel verbatim, not coerced at the boundary, because the engine does not know what a value
+means — a reporter does.** `testId: 1234` reaches `StepResult.meta.testId` as the number `1234`; it
+is the JUnit reporter, not the engine, that decides `test_id` is textual and calls `String()` on it
+(§14.8.1). A different reporter reading the same field might want the number. Coercing at the
+boundary would be the engine picking a type on every consumer's behalf for a value it has no stake
+in — the same reasoning that keeps `Vars` (§13.2) `unknown` rather than `string`.
+
+**Named `meta:` because it mirrors the flow-level block it sits alongside (§5.2), and stays open where
+that one stays closed for the opposite reason.** The flow-level `meta:` has five fixed keys, each
+wired to a specific behavior — `name` titles the graph, `tags` files and (eventually) filters,
+`library` changes discovery (§12.5), `testId` matches a flow-level JUnit case (§14.8.1b) — so an
+unrecognized key there is genuinely a typo the §14.3 unknown-property warning exists to catch. A
+step's `meta:` has no such behavior to wire into; it exists only to be *carried*, so the same warning
+would misfire on every legitimate key a reporter was written to read. The schema therefore declares
+step `meta:` as an open object, exempt from the unknown-property check that governs everywhere else
+in the document.
+
+**The flow-level `meta.testId` does not travel verbatim the way a step's does.** That block is
+closed and typed rather than a free mapping, so its `testId` is read once and `String()`-coerced by
+the engine itself, the same value every consumer then sees; a step's stays exactly the value the
+author wrote — number, string, or otherwise — until whichever reporter reads `StepResult.meta` decides
+what it means. Being named alike is not being governed alike: a flow declares one `testId` and the
+document schema owns its type, a step declares an open `meta:` and every reporter owns its own.
+
+**A `meta:` that is not a mapping is a `validateFlow` warning, `invalid-step-meta`, and treated as
+empty** — a scalar or a list under `meta:` cannot be walked key by key into testcase properties, and
+warning rather than erroring keeps a step running (and reported, minus its meta) rather than failing
+a flow over a field no engine behavior depends on.
+
+**Values must be `structuredClone`-safe**, the same constraint §13.2's events already carry, because
+`meta` rides on `StepResult` through the same event stream and (in the app) the same IPC boundary —
+plain YAML values already satisfy this, so the constraint costs an author nothing they were not
+already going to write.
+
+#### 14.8.5 Default locations and the suite directory
+
+**Naming a built-in with no `=<path>` is the expected, ordinary form — `--reporter junit`, or the
+bare sugar `--reporter-junit`.** Every run's output lives inside a **suite directory** — that is the
+one layout, not a CLI-specific one:
+
+```
+.bruno-runs/
+  suite-2026-08-05T14-22-01Z-a3f9/       # a default run — the engine opens this one itself
+    2026-08-05T14-22-01Z-a3f9/           # the one flow's own run directory — same id, nested
+      run.json
+      summary.json
+      create_payment/
+        attempt-1.json
+  suite-2026-08-05T15-01-09Z-c02e/       # a `bru flow run` invocation — the CLI opens this one
+    report-junit.xml
+    report-junit-flows.xml
+    report.json
+    report.html
+    2026-08-05T15-01-10Z-b71c/           # flows/checkout.flow.yml's own run directory (§14.5)
+      run.json
+      summary.json
+      ...
+    2026-08-05T15-01-12Z-9e02/           # flows/refunds.flow.yml's own run directory
+      run.json
+      summary.json
+      ...
+```
+
+`suite-<startedAt>-<id>/` names the directory: `startedAt` made path-safe the same way a run
+directory's is (§14.5), `id` a UUID's first four characters. **Every run is a suite; the two cases
+above differ only in who opens it and how many flows land inside.** `runFlow` (§13.2) called with no
+`capture.dir` — which is what a single flow run from the app does — opens a suite of its own around
+that one run, `suite-<ts>-<id>/<ts>-<id>/…`, the outer and inner directory sharing the same `<ts>-<id>`
+because they are one run wearing the layout twice. `bru flow run` opens a suite the same way but
+passes it in as `capture.dir` before it starts the first flow, so every flow it selects, and the
+reports above (§14.8), land inside the one suite it opened rather than each opening its own — a
+suite of many instead of a suite of one, the same shape scaled up. A future app feature that runs
+more than one flow at once needs no layout of its own for the same reason: it is a suite of *N*,
+exactly like the CLI's. An explicit reporter path (`--reporter junit=reports/out.xml`,
+`--reporter-junit reports/out.xml`) is the uncommon form, for a pipeline that collects a report from a
+location of its own choosing instead.
+
+**A run directory written flat at the top of `.bruno-runs/`, from before this layout existed, is
+still read by `listRuns`** (002 §11.2) as a legacy entry — the pattern that recognises a run directory
+does not require a `suite-.../` parent, only the `<startedAt>-<id>` name itself, so history does not
+go blank the first time this version runs. Nothing new is ever written flat, though: every run from
+here on opens its own suite, of one or of many.
+
+**One folder per run, holding both its report (when there is one) and the evidence it names, because
+that is what a person or a CI job actually collects.** A report that points at `create_payment`'s
+failure and a capture that shows what `create_payment` actually sent and received answer one question
+together and neither on its own; keeping them apart — a report at the capture root, run directories
+scattered beside it — asked whoever was debugging a failure to correlate a timestamp in the report
+against a timestamp in a directory listing by hand. Nested, `suite-<startedAt>-<id>/` is the one path
+a CI job downloads as a build artifact and a person `cd`s into, and everything either of them needs is
+already under it — true whether that suite holds one flow or forty.
+
+**Nothing under `.bruno-runs/` is ever pruned automatically** — it is `.gitignore`d (§14.5) and grows
+by one suite every run, and clearing it is the user's own to do, on their own schedule. §14.5 has the
+reasoning; it applies here unchanged, since a suite is the same directory that reasoning already
+governs.
+
+**The suite directory is created, and the capture root gets §14.5's `.gitignore` entry, before any
+flow runs — whenever capture is on, or a built-in reporter is defaulted, or both.** Either is enough
+on its own: a default reporter's file is the artifact a CI job collects even when `--no-capture`
+skipped every payload, and captures need somewhere to nest even when no reporter was asked for. The
+engine names the directory — `resolveSuiteDirectory` computes the path, built from the same
+`SUITE_DIRECTORY` naming pattern §14.5's `listRuns` uses to recognise one — and opens it itself for a
+default run; the CLI calls the same function and opens it up front for its own invocation, the same
+division of labor as the capture root (§14.5): the engine computes, whoever is running writes.
+
+**Caveat: yargs reads the token right after a bare `--reporter-junit` as its value.**
+`bru flow run --reporter-junit flows/` parses `flows/` as the JUnit output path, not as a flow to
+run, because a string option with no `=` still claims whatever follows it. Put `--reporter-junit` (or
+any other sugar flag) after the path arguments, or use `--reporter junit`, whose `=<path>` is
+unambiguous because `--reporter` always takes one explicit value.
+
 ---
 
 ## 15. Compatibility and persistence
@@ -4303,6 +4841,7 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | Header-name denylist as the only redaction | Blind to secrets in query params and request bodies, and to any header name nobody predicted. |
 | Redacting all headers and bodies by default | Destroys `--dry-run`'s purpose — inspecting a spec change's blast radius — to solve a problem targeted masking already solves. |
 | A `--show-sensitive` that also applies to reporter files | Reporter files are archived as CI artifacts and attached to tickets; a flag copy-pasted into a pipeline would leak them permanently. |
+| Reusing upstream's existing JSON/JUnit/HTML reporters unchanged | They consume `bru run`'s flat per-request result, not a flow's graph — the DAG, sub-flow internals and skip reasons a flow report needs have no field in that shape (§14.8). |
 | Capturing only failed steps | A failure caused by a bad value three steps upstream gives no way to see where that value entered. |
 | Capturing full bodies inline in reporters | Reporter files reach hundreds of megabytes on large payloads, and JUnit XML carrying an embedded binary body may not parse in some CI consumers. |
 | Unbounded capture retention | Capturing every step of every run fills a developer's disk silently; retention has to be bounded by default, not by remembering to clean up. |
@@ -4511,13 +5050,6 @@ directory would hold both that step's attempts and the sub-flow's children. `rea
 `stepId` without saying which form it expects. The layout is a declared contract and
 [002](./002-api-flows-ui.md) §11.2 reads it back, so the two have to agree.
 
-**What prunes retention when two runs overlap?** §14.5 prunes older run directories at the *start* of
-a run, which is safe for the CLI because §14.1 runs selected flows one at a time.
-[002](./002-api-flows-ui.md) §4.2 deliberately keeps a run alive across a closed tab, so the app can
-have two runs in one scope at once and the second's startup prune can delete the first's in-progress
-directory. R4g2 asserts *which* directories are removed, so a rule that only counts them is not
-enough.
-
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
 without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and
 002 §15 defers the app's dry run on the premise that the engine already supports it.
@@ -4536,8 +5068,8 @@ another. 002 §10 parses these names.
 
 These do not change a contract:
 
-- Default values for `capturePreviewBytes`, `captureRetainRuns` and `concurrency` may be tuned
-  once there is real usage to measure.
+- Default values for `capturePreviewBytes` and `concurrency` may be tuned once there is real usage
+  to measure.
 - The exact `did-you-mean` suggestion algorithm for §14.3's schema-aware override checking.
 
 ---
@@ -4552,12 +5084,12 @@ wanted but not now.
 | Item | Why not now | What it needs |
 |---|---|---|
 | **Non-REST protocols** — GraphQL, gRPC, WebSocket, SSE (§3) | The graph, connectors and assertions are protocol-agnostic; only the OpenAPI binding assumes HTTP | An operation-identity equivalent to `operationId` per protocol, so a request is *referenced* rather than duplicated — the premise of goal 1 |
-| **A flow-shaped reporter** | Flows reuse Bruno's existing JSON/JUnit/HTML reporters (§14.1), which describe a list of requests, not a graph | A report carrying the DAG, per-step outcomes and skip reasons. Worth doing once real runs show what people look for first |
 | **Deterministic seeding for generated data** (§7.3) | Generation currently cannot be replayed; §14.5 captures record what was sent, so failures stay diagnosable | A run seed in run metadata and seeded generators, plus `--seed` to replay one |
 | **Streaming uploads** (§7.5) | `ReadFile` returns a buffer, which suits fixture-sized payloads | Chunked transfer in the engine and a streaming port variant. Triggered by a real case, not anticipated |
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
 | **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
+| **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), and a rule for a run still in flight, which is the question the old per-run bound never answered |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an
 oversight to rediscover. An item moves out of this table by being specified, and the row is deleted

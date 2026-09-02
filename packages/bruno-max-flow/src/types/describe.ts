@@ -10,6 +10,8 @@ export type FlowNode = {
   /** Sub-flow internals namespaced: "auth/login". */
   id: string;
   name?: string;
+  /** §5.3's `meta:`, verbatim — what a report will key the step by. Absent when it declared none. */
+  meta?: Record<string, unknown>;
   kind: 'operation' | 'subflow';
   operation?: { api: string; method: string; path: string; operationId?: string };
   /** Sub-flow path, when kind is 'subflow'. */
@@ -77,6 +79,15 @@ export type FlowDescription = {
    * node is the whole of what a run starts from, and the expression is what an author changes.
    */
   vars: { name: string; expression: string }[];
+  /**
+   * The flow's `exports:` as the file declares them (001 §12.1) — the name a caller reads, and the
+   * `steps.<id>.<output>` it is taken from.
+   *
+   * The reference rather than a value, for `vars:`'s reason: what a library exports is a fact about
+   * the file, and there is no value at all until a run has ended. 002 §5.6 draws them opposite the
+   * inputs, and resolves each against the run on the graph when there is one.
+   */
+  exports: { name: string; source: string }[];
   /**
    * The flow's `apis:` bindings in file order, with §6.2's declared colour where there is one — 002
    * §5.1 draws by binding and is the only reader. Declared rather than used: what the file says.

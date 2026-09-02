@@ -87,6 +87,39 @@ describe('RunSelector', () => {
   });
 
   /**
+   * 001 §14.5's `origin`. A history of one flow is a list of timestamps and outcomes, and which
+   * environment a run was made against is what tells two of its rows apart.
+   */
+  it('names the environment a listed run was made against', async () => {
+    await renderSelector([entry('a', { origin: { host: 'app', environment: 'staging' } })]);
+
+    expect(screen.getByText(/passed · 2\/2 · staging/)).toBeInTheDocument();
+  });
+
+  /** A workspace-scoped flow has no collection environment; the global one is what it ran against. */
+  it('falls back to the global environment where there is no collection one', async () => {
+    await renderSelector([entry('a', { origin: { host: 'cli', globalEnvironment: 'shared' } })]);
+
+    expect(screen.getByText(/passed · 2\/2 · shared/)).toBeInTheDocument();
+  });
+
+  /** An interrupted run has no outcome to name, and still ran against something. */
+  it('names it on a run that never finished', async () => {
+    await renderSelector([
+      entry('a', { state: 'interrupted', status: undefined, summary: undefined, origin: { host: 'cli', environment: 'ci' } })
+    ]);
+
+    expect(screen.getByText(/interrupted · ci/)).toBeInTheDocument();
+  });
+
+  /** A run recorded before the field, or made against no environment: the row says what it did before. */
+  it('adds nothing for a run that recorded no environment', async () => {
+    await renderSelector([entry('a')]);
+
+    expect(screen.getByText(/passed · 2\/2$/)).toBeInTheDocument();
+  });
+
+  /**
    * §10: `current` is the flow as it stands, and the file can have been edited since the newest run
    * in the list — so it has to stay reachable *after* a run, not only before the first one.
    */

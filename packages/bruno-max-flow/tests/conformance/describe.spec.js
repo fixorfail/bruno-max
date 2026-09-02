@@ -397,6 +397,26 @@ describe('R4q — identity and the broken cases', () => {
     expect(description.isLibrary).toBe(true);
   });
 
+  /**
+   * §12.1's `exports:` are the library's half of its interface, and 002 §5.6 draws them opposite the
+   * params. The reference rather than a value: there is none until a run has ended, and the
+   * reference is what the file says and an author changes.
+   */
+  it('reports a library flow and the exports it hands back', async () => {
+    const description = await describeFlow('f2-login.flow.yml');
+
+    expect(description.exports).toEqual([
+      { name: 'token', source: 'steps.login.token' },
+      { name: 'userId', source: 'steps.login.userId' }
+    ]);
+  });
+
+  it('reports no exports for a flow that declares none', async () => {
+    const description = await describeFlow(flow('r4q-graph.flow.yml'));
+
+    expect(description.exports).toEqual([]);
+  });
+
   it('still opens a flow that does not parse', async () => {
     const entry = path.join(FLOWS, 'regressions', 'broken.variant.flow.yml');
     const description = await describeFlow(entry, {
@@ -418,5 +438,42 @@ describe('R4q — identity and the broken cases', () => {
     expect(description.nodes.map((candidate) => candidate.id)).toEqual(['create', 'consume']);
     expect(node(description, 'create').operation).toBeUndefined();
     expect(description.diagnostics.some((candidate) => candidate.code === 'unresolved-alias')).toBe(true);
+  });
+});
+
+/**
+ * §5.2's name falls back to the filename, which only works while an unsaid name is *absent*: a bare
+ * `name:` coerced to the string "null" would be truthy, and every such flow would draw as "null".
+ */
+describe('a flow whose meta names it nothing', () => {
+  it('falls back to the file stem', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.meta = { ...document.meta, name: null };
+    });
+    const description = await describeFlow(entry, { files });
+
+    expect(description.name).toBe('r4q-graph.variant');
+    expect(description.name).not.toBe('null');
+  });
+});
+
+describe('a node carries the step\'s meta:', () => {
+  it('leaves a node whose step name: says nothing without one', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'create').name = null;
+    });
+    const description = await describeFlow(entry, { files });
+
+    expect(node(description, 'create').name).toBeUndefined();
+  });
+
+  it('reports it verbatim where the file declares one, and leaves the rest without', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'create').meta = { testId: 'C1234', owner: 'payments' };
+    });
+    const description = await describeFlow(entry, { files });
+
+    expect(node(description, 'create').meta).toEqual({ testId: 'C1234', owner: 'payments' });
+    expect(node(description, 'settle')).not.toHaveProperty('meta');
   });
 });

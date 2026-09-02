@@ -79,12 +79,12 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         responses: {
           createThing: CREATED,
           getThing: (request, ctx, info) => {
+            const paths = info.files.paths();
             snapshot = {
-              paths: info.files.paths(),
-              manifest: info.files.json(path.join(CAPTURE_ROOT, info.files
-                .paths()
-                .map((target) => path.relative(CAPTURE_ROOT, target).split(path.sep)[0])
-                .find((name) => name !== '..'), 'run.json'))
+              paths,
+              // Found by name rather than by rebuilding the path: the run directory's depth is
+              // §14.5's business, and this assertion is about what exists mid-run, not where.
+              manifest: info.files.json(paths.find((target) => target.endsWith(`${path.sep}run.json`)))
             };
             return THING;
           }
@@ -118,71 +118,75 @@ describe('R4g2 — run identity is written before the run, not after', () => {
     });
   });
 
-  describe('retention', () => {
-    const olderRuns = (count) =>
-      Object.fromEntries(
-        Array.from({ length: count }, (unused, index) => [
-          path.join(CAPTURE_ROOT, `2020-01-01T00-00-${String(index).padStart(2, '0')}Z-aa${String(index).padStart(2, '0')}`, 'run.json'),
-          '{}'
-        ])
+  /**
+   * §14.5's default: a run that was given no directory opens a suite of its own, so every run in
+   * the capture root sits at the same depth whichever host wrote it (§14.8.5).
+   */
+  describe('a run of its own opens a suite of one', () => {
+    it('writes the run inside a suite, and nothing at the top level', async () => {
+      const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+        responses: { createThing: CREATED, getState: STATE }
+      });
+
+      const suite = path.basename(path.dirname(run.captureDir));
+      expect(path.dirname(path.dirname(run.captureDir))).toBe(CAPTURE_ROOT);
+      expect(suite).toMatch(/^suite-\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/);
+      // Nothing was written straight into the root — everything inside it goes through the suite.
+      const inRoot = run.files.paths().filter((target) => target.startsWith(`${CAPTURE_ROOT}${path.sep}`));
+      expect(inRoot.length).toBeGreaterThan(0);
+      for (const target of inRoot) {
+        expect(path.relative(CAPTURE_ROOT, target).startsWith(`${suite}${path.sep}`)).toBe(true);
+      }
+    });
+
+    // The suite is minted from the run's own id, so the pair reads as one thing.
+    it('gives the suite and the run it holds the same four hex', async () => {
+      const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+        responses: { createThing: CREATED, getState: STATE }
+      });
+
+      const suffix = (name) => name.slice(-4);
+      expect(suffix(path.basename(path.dirname(run.captureDir)))).toBe(suffix(path.basename(run.captureDir)));
+    });
+
+    it('still writes the .gitignore entry on the first run', async () => {
+      const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
+        responses: { createThing: CREATED, getState: STATE }
+      });
+
+      expect(run.files.read(path.join(FIXTURES, '.gitignore')).toString('utf8')).toBe('.bruno-runs/\n');
+    });
+
+    /**
+     * §14.5: nothing under the capture root is ever removed. The directory is gitignored and grows
+     * with every run, and clearing it is the user's — silently deleting from a directory that may
+     * be being archived is a worse failure than the growth it would save.
+     */
+    it('removes nothing, however many runs are already there', async () => {
+      const existing = Object.fromEntries(
+        Array.from({ length: 12 }, (unused, index) => {
+          const stamp = String(index).padStart(2, '0');
+          return [path.join(CAPTURE_ROOT, `suite-2020-01-01T00-00-${stamp}Z-aa${stamp}`, `2020-01-01T00-00-${stamp}Z-aa${stamp}`, 'run.json'), '{}'];
+        })
       );
-
-    it('removes the oldest directories and retains the newest', async () => {
       const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
         responses: { createThing: CREATED, getState: STATE },
-        captured: olderRuns(12)
+        captured: existing
       });
 
-      // Nine of the twelve survive, so this run is the tenth and `captureRetainRuns` is a bound on
-      // what exists *after* the run rather than before it.
-      expect(run.files.removed).toEqual([
-        path.join(CAPTURE_ROOT, '2020-01-01T00-00-00Z-aa00'),
-        path.join(CAPTURE_ROOT, '2020-01-01T00-00-01Z-aa01'),
-        path.join(CAPTURE_ROOT, '2020-01-01T00-00-02Z-aa02')
-      ]);
-      expect(run.files.has(path.join(CAPTURE_ROOT, '2020-01-01T00-00-03Z-aa03', 'run.json'))).toBe(true);
-      expect(run.files.has(path.join(CAPTURE_ROOT, '2020-01-01T00-00-11Z-aa11', 'run.json'))).toBe(true);
+      expect(run.files.removed).toEqual([]);
+      for (const target of Object.keys(existing)) expect(run.files.has(target)).toBe(true);
     });
 
-    it('leaves anything that is not a run directory alone', async () => {
-      const stranger = path.join(CAPTURE_ROOT, 'notes.md');
+    it('mints no suite when the host said where runs go', async () => {
       const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
         responses: { createThing: CREATED, getState: STATE },
-        captured: { ...olderRuns(12), [stranger]: 'keep me' }
+        overrides: { capture: { dir: CAPTURE_ROOT } }
       });
 
-      expect(run.files.has(stranger)).toBe(true);
+      expect(path.dirname(run.captureDir)).toBe(CAPTURE_ROOT);
+      expect(run.files.paths().some((target) => target.includes(`${path.sep}suite-`))).toBe(false);
     });
-
-    it('honours config.captureRetainRuns over the default', async () => {
-      const { entry, files } = variant(flow('r4b-condition-false.flow.yml'), (document) => {
-        document.config.captureRetainRuns = 2;
-      });
-      const run = await runFlow(entry, {
-        files,
-        responses: { createThing: CREATED, getState: STATE },
-        captured: olderRuns(4)
-      });
-
-      expect(run.files.removed).toHaveLength(3);
-    });
-  });
-
-  it('ignores the capture root in the scope on first creation', async () => {
-    const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
-      responses: { createThing: CREATED, getState: STATE }
-    });
-
-    expect(run.files.read(path.join(FIXTURES, '.gitignore')).toString('utf8')).toBe('.bruno-runs/\n');
-  });
-
-  it('does not touch the .gitignore when the capture root already exists', async () => {
-    const run = await runFlow(flow('r4b-condition-false.flow.yml'), {
-      responses: { createThing: CREATED, getState: STATE },
-      captured: { [path.join(CAPTURE_ROOT, '2020-01-01T00-00-00Z-aa00', 'run.json')]: '{}' }
-    });
-
-    expect(run.files.has(path.join(FIXTURES, '.gitignore'))).toBe(false);
   });
 
   describe('one file per attempt', () => {
@@ -531,5 +535,105 @@ describe('the flow as it was when the run started', () => {
 
     expect(bare.files.paths().filter((target) => target.includes('.bruno-runs'))).toEqual([]);
     expect(started.description).toBeUndefined();
+  });
+});
+
+/**
+ * §14.5's two halves as a host takes them on its own: §14.8's report files default into the same
+ * directory — under `--no-capture` too, where no run ever creates it — so the CLI resolves the path
+ * and writes the ignore entry itself, through these rather than through a rule of its own.
+ */
+describe('the capture root, resolved without a run', () => {
+  const {
+    resolveCaptureRoot,
+    resolveSuiteDirectory,
+    ensureCaptureIgnored,
+    RUN_DIRECTORY,
+    SUITE_DIRECTORY
+  } = require('../../src/capture');
+
+  const IGNORE = path.join(FIXTURES, '.gitignore');
+
+  /** The two ports `ensureCaptureIgnored` takes, over a map, so nothing here touches disk. */
+  const memoryPorts = (seed = {}) => {
+    const written = new Map(Object.entries(seed));
+    return {
+      written,
+      ports: {
+        readFile: async (target) => {
+          if (!written.has(target)) throw new Error(`no such file: ${target}`);
+          return Buffer.from(written.get(target));
+        },
+        writeFile: async (target, data) => {
+          written.set(target, data.toString('utf8'));
+        }
+      }
+    };
+  };
+
+  // §7.4's boundary: a flow inside a collection is owned by the collection, and its runs go there
+  // rather than beside every other collection's in the workspace.
+  it('sits under the collection root when there is one', () => {
+    expect(resolveCaptureRoot({ workspaceRoot: '/w', collectionRoot: '/w/api' })).toBe(
+      path.join('/w/api', '.bruno-runs')
+    );
+    expect(resolveCaptureRoot({ workspaceRoot: '/w' })).toBe(path.join('/w', '.bruno-runs'));
+  });
+
+  it('is whatever --capture-dir said, when it said anything', () => {
+    expect(resolveCaptureRoot({ workspaceRoot: '/w', collectionRoot: '/w/api' }, '/tmp/runs')).toBe('/tmp/runs');
+  });
+
+  it('names a suite directory the way it names a run, prefixed', () => {
+    const suite = resolveSuiteDirectory('/w/.bruno-runs', '2026-08-05T14:22:01.123Z', 'a3f9c1d2');
+
+    expect(suite).toBe(path.join('/w/.bruno-runs', 'suite-2026-08-05T14-22-01Z-a3f9'));
+  });
+
+  /**
+   * The prefix is load-bearing, not decoration: a suite directory shares the capture root with the
+   * runs, so a name that matched `RUN_DIRECTORY` would be listed by `listRuns` as a run and deleted
+   * by the engine's own pruning.
+   */
+  it('gives it a name no run directory can have', () => {
+    const name = path.basename(resolveSuiteDirectory('/w/.bruno-runs', '2026-08-05T14:22:01.123Z', 'a3f9c1d2'));
+
+    expect(SUITE_DIRECTORY.test(name)).toBe(true);
+    expect(RUN_DIRECTORY.test(name)).toBe(false);
+    // And the other way round, so the two patterns are disjoint rather than merely unequal here.
+    expect(SUITE_DIRECTORY.test('2026-08-05T14-22-01Z-a3f9')).toBe(false);
+    expect(RUN_DIRECTORY.test('2026-08-05T14-22-01Z-a3f9')).toBe(true);
+  });
+
+  it('writes the ignore entry where there is no .gitignore yet', async () => {
+    const { written, ports } = memoryPorts();
+    await ensureCaptureIgnored({ scope: { workspaceRoot: FIXTURES }, ports });
+
+    expect(written.get(IGNORE)).toBe('.bruno-runs/\n');
+  });
+
+  it('adds it to an existing .gitignore on a line of its own', async () => {
+    const { written, ports } = memoryPorts({ [IGNORE]: 'node_modules' });
+    await ensureCaptureIgnored({ scope: { workspaceRoot: FIXTURES }, ports });
+
+    expect(written.get(IGNORE)).toBe('node_modules\n.bruno-runs/\n');
+  });
+
+  // An author who deleted the line meant to, and a second run is not the moment to argue.
+  it('leaves an entry that is already there alone, in either spelling', async () => {
+    for (const existing of ['.bruno-runs/\n', '.bruno-runs\n']) {
+      const { written, ports } = memoryPorts({ [IGNORE]: existing });
+      await ensureCaptureIgnored({ scope: { workspaceRoot: FIXTURES }, ports });
+
+      expect(written.get(IGNORE)).toBe(existing);
+    }
+  });
+
+  // The entry names the default location, so relocating the output does not earn one.
+  it('writes nothing when the output was relocated', async () => {
+    const { written, ports } = memoryPorts();
+    await ensureCaptureIgnored({ scope: { workspaceRoot: FIXTURES }, dir: '/tmp/runs', ports });
+
+    expect(written.size).toBe(0);
   });
 });

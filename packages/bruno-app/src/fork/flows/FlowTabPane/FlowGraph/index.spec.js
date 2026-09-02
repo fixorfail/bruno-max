@@ -124,6 +124,52 @@ describe('FlowGraph parallel edges', () => {
 });
 
 /**
+ * §5.2: the corridor between two ranks is what a label has to fit in. Laid out *from* the midpoint
+ * of its edge it only ever had half of one, so a name of ordinary length — `accountId` — finished
+ * inside the box the edge points at, over the step's own name.
+ */
+describe('FlowGraph edge label width', () => {
+  const named = (output) => ({
+    ...description,
+    edges: [{ from: 'bearer_check', to: 'echo', kind: 'data', output, declared: true }]
+  });
+
+  const labels = (container) => [...container.querySelectorAll('.edge-label')];
+
+  it('centres a label on its edge rather than running it toward the next step', () => {
+    const { container } = renderGraphOf(named('accountId'), {});
+
+    expect(labels(container).map((label) => label.getAttribute('text-anchor'))).toEqual(['middle']);
+  });
+
+  it('leaves a name the corridor fits alone', () => {
+    const { container } = renderGraphOf(named('accountId'), {});
+
+    expect(labels(container)[0].textContent).toBe('accountId');
+  });
+
+  /** The elision is a display, not a rename: the name it stands for has to stay readable somewhere. */
+  it('elides a name wider than the corridor and keeps the whole of it on hover', () => {
+    const { container } = renderGraphOf(named('verifiedCompanyIdentifier'), {});
+
+    const label = labels(container)[0].textContent;
+    expect(label).toMatch(/…$/);
+    expect(label.length).toBeLessThan('verifiedCompanyIdentifier'.length);
+    expect(container.querySelector('.edge-data title').textContent).toBe('verifiedCompanyIdentifier');
+  });
+
+  /** The run's own answer is the better one, and elision must not displace it. */
+  it('keeps the value on hover when the run has one', () => {
+    const { container } = renderGraphOf(named('verifiedCompanyIdentifier'), {
+      bearer_check: { state: 'success', outputs: { verifiedCompanyIdentifier: 'co_1' } },
+      echo: { state: 'success', outputs: {} }
+    });
+
+    expect(container.querySelector('.edge-data title').textContent).toBe('verifiedCompanyIdentifier = "co_1"');
+  });
+});
+
+/**
  * §8.2: `running` and `retrying` are separate states because a poll that reads as `running` for a
  * minute is indistinguishable from a hang. The halo carries both — its motion says a request is in
  * flight, its colour says which of the two.

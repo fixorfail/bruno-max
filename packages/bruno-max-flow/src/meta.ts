@@ -22,6 +22,8 @@ import * as YAML from 'yaml';
 export type FlowProperties = {
   name?: string;
   description?: string;
+  /** §5.2's flow-level case id, carried into reports (§14.8.1b) and read by nothing else. */
+  testId?: string;
   tags: string[];
   library: boolean;
 };
@@ -81,10 +83,14 @@ export const readFlowProperties = (text: string): FlowProperties | undefined => 
   const model = YAML.isMap(meta) ? (meta.toJSON() as Record<string, unknown>) : {};
   const name = model.name;
   const description = model.description;
+  // `document.ts` coerces this one, because §5.2 fixes its type and YAML reads a bare `1000` as a
+  // number; the dialog edits text, so it reads back the same string the engine would normalize to.
+  const testId = model.testId === undefined || model.testId === null ? '' : String(model.testId).trim();
 
   return {
     ...(typeof name === 'string' && name.trim() ? { name: name.trim() } : {}),
     ...(typeof description === 'string' && description.trim() ? { description: description.trim() } : {}),
+    ...(testId ? { testId } : {}),
     tags: asStringArray(model.tags),
     // §12.5's flag as the engine reads it — `Boolean(meta.library)` in `document.ts`. Anything else
     // would let the dialog disagree with the run about which flows `bru flow run .` executes.
@@ -134,6 +140,7 @@ export const writeFlowProperties = (text: string, properties: FlowProperties): s
   const entries: [string, unknown][] = [
     ['name', typeof properties.name === 'string' ? properties.name.trim() : ''],
     ['description', typeof properties.description === 'string' ? properties.description.trim() : ''],
+    ['testId', typeof properties.testId === 'string' ? properties.testId.trim() : ''],
     ['tags', asStringArray(properties.tags)],
     ['library', properties.library === true]
   ];

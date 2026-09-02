@@ -23,6 +23,7 @@ import type {
   RunManifest,
   StepCapture
 } from './types/capture';
+import type { RunOrigin, Scope } from './types/options';
 import type { EnginePorts, FlowContext } from './types/ports';
 import type { ExecutedResponse, MaterializedRequest, RequestBody } from './types/request';
 import type { AssertionResult, RunResult, StepResult } from './types/result';
@@ -34,6 +35,16 @@ import type { AssertionResult, RunResult, StepResult } from './types/result';
 export const CAPTURE_DIRNAME = '.bruno-runs';
 
 export const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
+
+/**
+ * A CLI invocation's report directory (§14.8.5), which shares the capture root with the runs but is
+ * not one of them.
+ *
+ * The `suite-` prefix is the whole of what keeps the two apart: `RUN_DIRECTORY` is anchored on a
+ * digit, so no suite directory can ever match it — which is what makes `listRuns` skip these and
+ * `prune` refuse to delete them. A suite directory belongs to the CLI; the engine only names it.
+ */
+export const SUITE_DIRECTORY = /^suite-\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
 
 /** §14.5's snapshot of the flow the run executed — the graph a viewer draws, and the text it came from. */
 export const FLOW_DESCRIPTION_FILE = 'flow.json';
@@ -48,9 +59,12 @@ export const RUN_INPUTS_FILE = 'inputs.json';
  */
 export const flowDigest = (source: string): string => createHash('sha256').update(source).digest('hex');
 
+/** An ISO instant as a directory name: no colons, and no sub-second part to make one run unfindable. */
+const pathSafeTimestamp = (startedAt: string): string => startedAt.replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
+
 /** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus the runId's first four hex. */
 const runDirectoryName = (startedAt: string, runId: string): string =>
-  `${startedAt.replace(/\.\d+Z$/, 'Z').replace(/:/g, '-')}-${runId.replace(/-/g, '').slice(0, 4)}`;
+  `${pathSafeTimestamp(startedAt)}-${runId.replace(/-/g, '').slice(0, 4)}`;
 
 /** An id may legally spell one of these (§5.2's charset allows it) and Windows would refuse it. */
 const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
@@ -237,14 +251,84 @@ export type Capture = {
   finish(result: RunResult): Promise<void>;
 };
 
+/** §7.4's boundary: the collection or workspace root that owns the flows, and the capture with them. */
+const scopeRootOf = (scope: Scope): string => scope.collectionRoot || scope.workspaceRoot;
+
+/**
+ * The ports want a context, and the helpers below run outside any run — the same minimum
+ * `history.ts` builds for the readers.
+ */
+const hostContext = (scope: Scope): FlowContext => ({
+  runId: '',
+  flow: '',
+  scope,
+  signal: new AbortController().signal
+});
+
+/**
+ * Where a run's artifacts go — `--capture-dir` when a host set one, and §14.5's default beneath the
+ * scope root otherwise.
+ */
+export const resolveCaptureRoot = (scope: Scope, dir?: string): string =>
+  dir || path.join(scopeRootOf(scope), CAPTURE_DIRNAME);
+
+/**
+ * `<captureRoot>/suite-2026-08-05T14-22-01Z-a3f9` — where one `bru flow run` invocation puts the
+ * report files it was asked for (§14.8.5).
+ *
+ * Named here rather than by the CLI because the naming is §14.5's, down to the path-safe timestamp
+ * a run directory uses: a second spelling of it would be a second layout, and this one shares a
+ * directory with the runs. `SUITE_DIRECTORY` says why the prefix matters.
+ */
+export const resolveSuiteDirectory = (captureRoot: string, startedAt: string, suiteId: string): string =>
+  path.join(captureRoot, `suite-${pathSafeTimestamp(startedAt)}-${suiteId.slice(0, 4)}`);
+
+/**
+ * §14.5's on-creation write, as a step a host can take on its own.
+ *
+ * Skipped when `dir` relocated the output, since the entry names the default location — and written
+ * at most once, because an author who deleted the line meant to.
+ */
+export const ensureCaptureIgnored = async ({
+  scope,
+  dir,
+  ports
+}: {
+  scope: Scope;
+  dir?: string;
+  ports: Pick<EnginePorts, 'readFile' | 'writeFile'>;
+}): Promise<void> => {
+  if (dir) return;
+
+  const context = hostContext(scope);
+  const file = path.join(scopeRootOf(scope), '.gitignore');
+  let existing = '';
+  try {
+    existing = (await ports.readFile(file, context)).toString('utf8');
+  } catch {
+    /* no .gitignore yet — the write below creates one */
+  }
+
+  const entry = `${CAPTURE_DIRNAME}/`;
+  if (existing.split(/\r?\n/).some((line) => line.trim() === entry || line.trim() === CAPTURE_DIRNAME)) return;
+
+  const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
+  await ports.writeFile(file, Buffer.from(`${existing}${separator}${entry}\n`), context);
+};
+
 export type CaptureSetup = {
-  ports: Pick<EnginePorts, 'readFile' | 'writeFile' | 'listDirectory' | 'removeDirectory'>;
+  ports: Pick<EnginePorts, 'readFile' | 'writeFile' | 'listDirectory'>;
   context: FlowContext;
-  scopeRoot: string;
-  /** `--capture-dir`; when absent the root is `<scopeRoot>/.bruno-runs` (§14.5). */
+  /**
+   * Write run directories directly here, with no suite of their own — for a host that has already
+   * opened a suite for several flows (§14.8.5). `--capture-dir` supplies it too, which is the same
+   * statement: the caller has decided where runs go. When absent, this run opens a suite of one
+   * beneath `<scopeRoot>/.bruno-runs` (§14.5).
+   */
   dir?: string;
   startedAt: string;
-  retainRuns: number;
+  /** §14.5's manifest field, copied through as the host gave it — the engine reads no part of it. */
+  origin?: RunOrigin;
   redactHeaders: string[];
 };
 
@@ -255,51 +339,34 @@ const writeJson = (
 ): Promise<void> => setup.ports.writeFile(file, Buffer.from(`${JSON.stringify(value, null, 2)}\n`), setup.context);
 
 /**
- * §14.5's on-creation write. A capture directory holds response data that has no business in a
- * repository, and the moment it first appears is the only moment anything knows to say so. It is
- * skipped when `--capture-dir` relocated the output, since the entry names the default location.
+ * Whether this is the first thing to be written under the capture root, which is the only question
+ * §14.5's `.gitignore` write turns on.
+ *
+ * Nothing here is ever deleted: a capture directory is gitignored and grows with every run, and
+ * clearing it is the user's. Silently removing runs from a directory that may be being archived is
+ * a worse failure than the growth it would save.
  */
-const ignoreCaptureRoot = async (setup: CaptureSetup): Promise<void> => {
-  if (setup.dir) return;
-
-  const file = path.join(setup.scopeRoot, '.gitignore');
-  let existing = '';
+const captureRootIsNew = async (setup: CaptureSetup, root: string): Promise<boolean> => {
   try {
-    existing = (await setup.ports.readFile(file, setup.context)).toString('utf8');
+    return (await setup.ports.listDirectory(root, setup.context)).length === 0;
   } catch {
-    /* no .gitignore yet — the write below creates one */
-  }
-
-  const entry = `${CAPTURE_DIRNAME}/`;
-  if (existing.split(/\r?\n/).some((line) => line.trim() === entry || line.trim() === CAPTURE_DIRNAME)) return;
-
-  const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
-  await setup.ports.writeFile(file, Buffer.from(`${existing}${separator}${entry}\n`), setup.context);
-};
-
-/**
- * Pruned at the *start* of a run and down to `retainRuns - 1`, so the run about to be written is
- * the last of the retained set rather than one over it. Only directories matching the layout's own
- * naming are candidates — whatever else shares the capture root is not the engine's to delete.
- */
-const prune = async (setup: CaptureSetup, root: string): Promise<boolean> => {
-  let entries: string[];
-  try {
-    entries = await setup.ports.listDirectory(root, setup.context);
-  } catch {
+    // Nothing has been written here yet.
     return true;
   }
-
-  const runs = entries.filter((entry) => RUN_DIRECTORY.test(entry)).sort();
-  const stale = runs.slice(0, Math.max(0, runs.length - Math.max(0, setup.retainRuns - 1)));
-  for (const entry of stale) await setup.ports.removeDirectory(path.join(root, entry), setup.context);
-
-  return entries.length === 0;
 };
 
 export const createCapture = (setup: CaptureSetup): Capture => {
-  const root = setup.dir || path.join(setup.scopeRoot, CAPTURE_DIRNAME);
-  const dir = path.join(root, runDirectoryName(setup.startedAt, setup.context.runId));
+  const root = resolveCaptureRoot(setup.context.scope, setup.dir);
+  /**
+   * A host that supplied `dir` has already opened a suite for the flows it is running (§14.8.5) and
+   * writes its runs straight into it. A run on its own opens a suite of one, so every run in the
+   * capture root sits at the same depth whichever host produced it.
+   *
+   * Minted from the run's own id, so a suite of one and the run inside it carry the same four hex —
+   * `suite-…-a3f9/…-a3f9` reads as one thing rather than as two unrelated names.
+   */
+  const suite = setup.dir ? undefined : resolveSuiteDirectory(root, setup.startedAt, setup.context.runId);
+  const dir = path.join(suite || root, runDirectoryName(setup.startedAt, setup.context.runId));
   const redactor = createRedactor(setup.redactHeaders);
   /** What `start` recorded, held so `finish` can rewrite the file with the vars beside it. */
   let startedWithParams: Record<string, unknown> | undefined;
@@ -321,11 +388,12 @@ export const createCapture = (setup: CaptureSetup): Capture => {
      * flow as it was, which 002 §10 reports rather than papering over.
      */
     start: async (snapshot) => {
-      const created = await prune(setup, root);
+      const created = await captureRootIsNew(setup, root);
       const manifest: RunManifest = {
         runId: setup.context.runId,
         flow: setup.context.flow,
         startedAt: setup.startedAt,
+        ...(setup.origin ? { origin: setup.origin } : {}),
         flowHash: snapshot && flowDigest(snapshot.source)
       };
       await writeJson(setup, path.join(dir, 'run.json'), manifest);
@@ -342,7 +410,11 @@ export const createCapture = (setup: CaptureSetup): Capture => {
         ]);
       }
 
-      if (created) await ignoreCaptureRoot(setup);
+      if (created) {
+        // A capture directory holds response data that has no business in a repository, and the
+        // moment it first appears is the only moment anything knows to say so.
+        await ensureCaptureIgnored({ scope: setup.context.scope, dir: setup.dir, ports: setup.ports });
+      }
     },
 
     attempt: async (record) => {

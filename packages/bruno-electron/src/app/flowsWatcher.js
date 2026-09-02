@@ -13,10 +13,27 @@ const IGNORED_DIRECTORIES = ['node_modules', '.git'];
  */
 const SCRIPTS_DIRECTORY = 'scripts';
 
+/**
+ * 002 §4.6's home for 001 §7.4's file sources — the JSON, YAML and CSV a flow reads through `!file`,
+ * `bodyFile` and `dataset:`.
+ *
+ * A convention with meaning, exactly as `scripts/` is: `!file` resolves an ordinary relative path
+ * from the flow, so a fixture may live anywhere, and it is the directory that makes one a *listed*
+ * fixture. Listing every non-flow file under `flows/` instead would make the section a file browser.
+ */
+const FIXTURES_DIRECTORY = 'fixtures';
+
 const isFlowFile = (pathname) => pathname.endsWith(FLOW_SUFFIX);
 
 /** A collection-scoped flow lives under the collection, a workspace-scoped one under the workspace (001 §5.1). */
 const flowsDirectoryFor = ({ workspaceRoot, collectionRoot }) => path.join(collectionRoot || workspaceRoot, 'flows');
+
+/** Whether a path is inside one of `flows/`'s conventional subdirectories, at any depth. */
+const isInFlowsSubdirectory = (pathname, scope, directory) => {
+  const relative = path.relative(flowsDirectoryFor(scope), pathname);
+  const [first] = relative.split(path.sep);
+  return first === directory && !relative.startsWith('..');
+};
 
 /**
  * §4.5: a `.js` file under `flows/scripts/`, at any depth.
@@ -29,14 +46,28 @@ const flowsDirectoryFor = ({ workspaceRoot, collectionRoot }) => path.join(colle
  * Nothing here reads the file. A script declares no name and no flag — it is source, and the only
  * thing the sidebar can honestly say about one is what it is called.
  */
-const isScriptFile = (pathname, scope) => {
-  if (path.extname(pathname).toLowerCase() !== '.js') {
-    return false;
-  }
-  const relative = path.relative(flowsDirectoryFor(scope), pathname);
-  const [first] = relative.split(path.sep);
-  return first === SCRIPTS_DIRECTORY && !relative.startsWith('..');
-};
+const isScriptFile = (pathname, scope) =>
+  path.extname(pathname).toLowerCase() === '.js' && isInFlowsSubdirectory(pathname, scope, SCRIPTS_DIRECTORY);
+
+/**
+ * §4.6: anything under `flows/fixtures/`, at any depth and whatever its extension.
+ *
+ * **Any extension, because a fixture has no single one.** 001 §7.4 reads JSON, YAML and CSV through
+ * `!file`, takes a request body from a file of whatever type the operation wants, and attaches
+ * documents — the `.pdf` in that section's own example included. An extension list would decide what
+ * counts as data, which is the author's decision and not this file's.
+ *
+ * **A `.flow.yml` is a flow wherever it sits**, so a flow filed under `fixtures/` is still listed and
+ * run as one rather than turning into an opaque data file because of where it was put.
+ *
+ * Nothing here reads the file. A fixture declares no name and no flag; whether its bytes are text at
+ * all is decided when someone asks to open it, by the read that would have to succeed anyway.
+ */
+const isFixtureFile = (pathname, scope) =>
+  !isFlowFile(pathname) && isInFlowsSubdirectory(pathname, scope, FIXTURES_DIRECTORY);
+
+const isListedFile = (pathname, scope) =>
+  isFlowFile(pathname) || isScriptFile(pathname, scope) || isFixtureFile(pathname, scope);
 
 /**
  * 002 §4.1's display name and library flag — `meta.name` and `meta.library`, and nothing else the
@@ -70,10 +101,14 @@ const buildEntry = (pathname, scope) => {
     entry.collectionRoot = collectionRoot;
   }
 
-  // §4.5: source, not a document — there is no `meta:` to read and reading it would be a file read
-  // per script on every tree change, for a field a script does not have.
+  // §4.5 and §4.6: source and data, not documents — there is no `meta:` to read, and reading one
+  // would be a file read per entry on every tree change for a field neither kind has.
   if (!isFlowFile(pathname)) {
-    entry.script = true;
+    if (isFixtureFile(pathname, scope)) {
+      entry.fixture = true;
+    } else {
+      entry.script = true;
+    }
     return entry;
   }
 
@@ -105,7 +140,7 @@ const scanFlows = async (directory, scope) => {
       if (!IGNORED_DIRECTORIES.includes(entry.name)) {
         found.push(...(await scanFlows(target, scope)));
       }
-    } else if (isFlowFile(entry.name) || isScriptFile(target, scope)) {
+    } else if (isListedFile(target, scope)) {
       found.push(target);
     }
   }
@@ -151,7 +186,7 @@ class FlowsWatcher {
     });
 
     const report = (event) => (pathname) => {
-      if (isFlowFile(pathname) || isScriptFile(pathname, scope)) {
+      if (isListedFile(pathname, scope)) {
         win.webContents.send('main:flow-tree-updated', event, buildEntry(pathname, scope));
       }
     };

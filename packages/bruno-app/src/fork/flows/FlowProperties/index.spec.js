@@ -95,6 +95,39 @@ describe('FlowProperties', () => {
     });
   });
 
+  /**
+   * §5.2's `meta.testId` — the case this flow stands for in a test-management tool. Nothing in the
+   * run reads it; a report carries it, which is why it is a plain string the dialog passes through.
+   */
+  describe('the test id', () => {
+    it('opens on the one the flow already declares', () => {
+      renderDialog({ properties: { ...SAVED, testId: 'TC-4821' } });
+
+      expect(screen.getByTestId('flow-properties-test-id')).toHaveValue('TC-4821');
+    });
+
+    it('sends it trimmed', async () => {
+      renderDialog({ properties: SAVED });
+
+      fireEvent.change(screen.getByTestId('flow-properties-test-id'), { target: { value: '  TC-4821  ' } });
+      submit();
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-update-properties', expect.anything()));
+      expect(updateRequest().properties.testId).toBe('TC-4821');
+    });
+
+    /** Cleared is the empty string, which the writer removes the key for — not a case id of `''`. */
+    it('sends an empty string when it is cleared', async () => {
+      renderDialog({ properties: { ...SAVED, testId: 'TC-4821' } });
+
+      fireEvent.change(screen.getByTestId('flow-properties-test-id'), { target: { value: '' } });
+      submit();
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-update-properties', expect.anything()));
+      expect(updateRequest().properties.testId).toBe('');
+    });
+  });
+
   it('appends the extension to the stem rather than asking the author for it', async () => {
     renderDialog({ properties: SAVED });
 

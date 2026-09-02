@@ -1,7 +1,20 @@
 import React, { forwardRef, useMemo, useRef, useState } from 'react';
 import path from 'path';
 import { useDispatch, useSelector } from 'react-redux';
-import { IconCursorText, IconDots, IconEdit, IconPlus, IconSettings, IconSitemap } from '@tabler/icons';
+import {
+  IconChevronDown,
+  IconChevronRight,
+  IconCursorText,
+  IconDots,
+  IconDotsVertical,
+  IconCopy,
+  IconEdit,
+  IconFoldDown,
+  IconFoldUp,
+  IconPlus,
+  IconSettings,
+  IconSitemap
+} from '@tabler/icons';
 import toast from 'react-hot-toast';
 import Dropdown from 'components/Dropdown';
 import SidebarSection from 'components/Sidebar/SidebarSection';
@@ -12,6 +25,8 @@ import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
 import { collectionUidForScope } from '../collectionScope';
 import { flowsFolderFor, readFlowProperties } from '../actions';
+import { buildFlowTree, flowLabel, folderKeysOf, relativePathOf } from '../flowTree';
+import { folderToggled, foldersCollapsed, foldersExpanded } from '../slice';
 import CreateFlow from '../CreateFlow';
 import FlowProperties from '../FlowProperties';
 import RenameScript from '../RenameScript';
@@ -109,16 +124,23 @@ const RowMenu = ({ items }) => {
   );
 };
 
-const FlowMenu = ({ flow, onEditYaml, onEditProperties }) => (
+/**
+ * Menu items are identified by the flow's bucket-relative path rather than its filename, for the
+ * reason the row itself is (`relativePathOf`): two folders may hold a `create.flow.yml`, and a
+ * duplicate `data-testid` fails in whichever test reaches for it second. A flow at the top of its
+ * bucket has no folders, so the ids there are the filename ones that existed before folders did.
+ */
+const FlowMenu = ({ relativePath, onEditYaml, onEditProperties, onDuplicate }) => (
   <RowMenu
     items={[
-      { testId: `flow-edit-yaml-${flow.filename}`, icon: IconEdit, label: 'Edit Yaml', onClick: onEditYaml },
+      { testId: `flow-edit-yaml-${relativePath}`, icon: IconEdit, label: 'Edit Yaml', onClick: onEditYaml },
       {
-        testId: `flow-properties-${flow.filename}`,
+        testId: `flow-properties-${relativePath}`,
         icon: IconSettings,
         label: 'Flow Properties',
         onClick: onEditProperties
-      }
+      },
+      { testId: `flow-duplicate-${relativePath}`, icon: IconCopy, label: 'Duplicate', onClick: onDuplicate }
     ]}
   />
 );
@@ -128,19 +150,11 @@ const FlowMenu = ({ flow, onEditYaml, onEditProperties }) => (
  * called. §4.3's `Edit Yaml` and §4.4's properties both act on a flow's `meta:`, which a script does
  * not have — and opening the script is what the row itself already does.
  */
-const ScriptMenu = ({ script, onRename }) => (
+const ScriptMenu = ({ relativePath, onRename }) => (
   <RowMenu
-    items={[{ testId: `script-rename-${script.filename}`, icon: IconCursorText, label: 'Rename', onClick: onRename }]}
+    items={[{ testId: `script-rename-${relativePath}`, icon: IconCursorText, label: 'Rename', onClick: onRename }]}
   />
 );
-
-/**
- * §4.1: a flow reads by the `meta.name` it declares, and by its filename when it declares none. The
- * watcher carries the name on the tree entry, so a flow is named in the sidebar without having been
- * opened — nothing here would otherwise know it, and describing every listed flow to find out would
- * resolve each one's OpenAPI documents over the network.
- */
-const flowLabel = (flow) => flow.name || flow.filename;
 
 /**
  * §4.1: within a scope, library flows are listed last and under their own label.
@@ -166,16 +180,37 @@ const LIBRARY_LABEL = 'Libraries';
  */
 const SCRIPT_LABEL = 'Scripts';
 
-const sectionsOf = ({ flows, libraries, scripts }) =>
+/**
+ * §4.6: the data files in `flows/fixtures/`, listed last and under their own label.
+ *
+ * Below the scripts because the list answers "what can I run here" from the top down and a fixture is
+ * the furthest thing from an answer to it — 001 §7.4 makes one an input a flow reads, which does not
+ * run and is not composed into anything that does. They are listed for the reason scripts are: a
+ * `!file` path is explicit, and a corpus nobody can see is a corpus nobody reuses.
+ */
+const FIXTURE_LABEL = 'Fixtures';
+
+const sectionsOf = ({ flows, libraries, scripts, fixtures }) =>
   [
     { key: 'flows', label: undefined, flows },
     { key: 'libraries', label: LIBRARY_LABEL, flows: libraries },
-    { key: 'scripts', label: SCRIPT_LABEL, flows: scripts }
-  ].filter((section) => section.flows.length);
+    { key: 'scripts', label: SCRIPT_LABEL, flows: scripts },
+    { key: 'fixtures', label: FIXTURE_LABEL, flows: fixtures }
+  ]
+    .filter((section) => section.flows.length)
+    // §4.1a: each bucket is a tree of its own, counted from its own base — so a helper in
+    // `flows/scripts/auth/` reads by where it sits among the helpers rather than repeating the
+    // `Scripts` label as a `scripts` folder row directly beneath it.
+    .map((section) => ({
+      key: section.key,
+      label: section.label,
+      tree: buildFlowTree(section.flows, section.key)
+    }));
 
 /** Which of a group's three lists an entry belongs to — the watcher's flags, in precedence order. */
 const bucketOf = (entry) => {
   if (entry.script) return 'scripts';
+  if (entry.fixture) return 'fixtures';
   // The flag rides the watcher's tree entry (§11.3): the section lists flows nobody has opened, and
   // `describeFlow` — the only other source of it — resolves each flow's OpenAPI documents.
   return entry.library ? 'libraries' : 'flows';
@@ -187,25 +222,15 @@ const groupFlows = (flows) => {
   for (const flow of flows) {
     const root = flow.collectionRoot || flow.workspaceRoot;
     const label = flow.collectionRoot ? path.basename(flow.collectionRoot) : 'Workspace';
-    const group = groups.get(root) || { root, label, flows: [], libraries: [], scripts: [] };
+    const group = groups.get(root) || { root, label, flows: [], libraries: [], scripts: [], fixtures: [] };
     group[bucketOf(flow)].push(flow);
     groups.set(root, group);
   }
 
-  const byPathname = (a, b) => a.pathname.localeCompare(b.pathname);
-  const sorted = (entries) => [...entries].sort(byPathname);
-
   // Workspace first, then collections by name — a stable order that does not depend on which
-  // watcher reported first.
+  // watcher reported first. Within a group, `buildFlowTree` orders each bucket.
   return [...groups.values()]
-    .map((group) => ({
-      ...group,
-      sections: sectionsOf({
-        flows: sorted(group.flows),
-        libraries: sorted(group.libraries),
-        scripts: sorted(group.scripts)
-      })
-    }))
+    .map((group) => ({ ...group, sections: sectionsOf(group) }))
     .sort((a, b) => {
       if (a.label === 'Workspace') return -1;
       if (b.label === 'Workspace') return 1;
@@ -213,11 +238,80 @@ const groupFlows = (flows) => {
     });
 };
 
+/**
+ * §4.1a: one folder of a bucket, and what is inside it when it is open.
+ *
+ * A closed folder renders none of its children, which is what upstream's collection tree does and is
+ * more than cosmetic: the rows below carry the run marks and hover menus of flows the reader has
+ * chosen not to look at.
+ */
+const FlowFolder = ({ folder, depth, expansion, onToggle, renderRow }) => {
+  const expanded = Boolean(expansion[folder.key]);
+
+  const toggle = () => onToggle(folder.key);
+
+  return (
+    <>
+      <div
+        className="flow-folder"
+        style={{ '--flow-depth': depth }}
+        data-testid={`flow-folder-${folder.path}`}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            toggle();
+          }
+        }}
+      >
+        <span className="flow-folder-chevron">
+          {expanded ? <IconChevronDown size={12} stroke={1.5} /> : <IconChevronRight size={12} stroke={1.5} />}
+        </span>
+        <span className="flow-name">{folder.name}</span>
+      </div>
+      {expanded ? (
+        <FlowNode node={folder} depth={depth + 1} expansion={expansion} onToggle={onToggle} renderRow={renderRow} />
+      ) : null}
+    </>
+  );
+};
+
+/**
+ * A tree level: its folders, then the flows sitting directly in it.
+ *
+ * `renderRow` is passed down rather than the handful of things a row needs, because every one of
+ * them belongs to the section — the run map, the tab dispatch, the two dialogs — and threading them
+ * through each level would make the recursion about the section's state rather than about the tree.
+ */
+// A function declaration, so the mutual recursion with `FlowFolder` reads in render order — folder
+// row, then what is inside it — rather than being inverted to satisfy declaration order.
+function FlowNode({ node, depth, expansion, onToggle, renderRow }) {
+  return (
+    <>
+      {node.folders.map((folder) => (
+        <FlowFolder
+          key={folder.key}
+          folder={folder}
+          depth={depth}
+          expansion={expansion}
+          onToggle={onToggle}
+          renderRow={renderRow}
+        />
+      ))}
+      {node.flows.map((flow) => renderRow(flow, depth))}
+    </>
+  );
+}
+
 const FlowSidebarSection = () => {
   const dispatch = useDispatch();
   const flows = useSelector((state) => state.flows.flows);
   const runs = useSelector((state) => state.flows.runs);
   const sources = useSelector((state) => state.flows.sources);
+  const folderExpansion = useSelector((state) => state.flows.folderExpansion);
   const collections = useSelector((state) => state.collections.collections);
   const workspaces = useSelector((state) => state.workspaces.workspaces);
   const activeWorkspaceUid = useSelector((state) => state.workspaces.activeWorkspaceUid);
@@ -249,6 +343,9 @@ const FlowSidebarSection = () => {
   /** §4.5's rename, which needs no read: a script's only editable name is the one already listed. */
   const [renamingScript, setRenamingScript] = useState(null);
 
+  /** §4.7's duplicate — the source flow and the `meta:` the form opens on, or `null` while closed. */
+  const [duplicatingFlow, setDuplicatingFlow] = useState(null);
+
   /**
    * §4.4 refuses to open over unsaved YAML, and the refusal is the handling rather than a warning.
    *
@@ -257,17 +354,50 @@ const FlowSidebarSection = () => {
    * had just set. Nothing on either surface would say that had happened. Saving or discarding first
    * is a decision only the author can make, so it is the one asked for.
    */
-  const openFlowProperties = async (flow) => {
+  /**
+   * A flow's `meta:` as it is **on disk**, or nothing when the editor holds something else.
+   *
+   * §4.4 refuses to open over unsaved YAML, and the refusal is the handling rather than a warning.
+   * The dialog edits the text on disk; a dirty editor means the disk is already behind what the
+   * author is looking at, and the next auto-save would write the draft back over the properties they
+   * had just set. Nothing on either surface would say that had happened. Saving or discarding first
+   * is a decision only the author can make, so it is the one asked for.
+   */
+  const readSavedProperties = async (flow, doing) => {
     const source = sources[flow.pathname];
     if (source && source.content !== source.saved) {
       toast.error('This flow has unsaved YAML changes — save or discard them first');
-      return;
+      return undefined;
     }
 
     try {
-      setFlowProperties({ flow, properties: await dispatch(readFlowProperties(flow)) });
+      return await dispatch(readFlowProperties(flow));
     } catch (error) {
-      toast.error(error?.message || 'An error occurred while reading the flow properties');
+      toast.error(error?.message || `An error occurred while ${doing}`);
+      return undefined;
+    }
+  };
+
+  const openFlowProperties = async (flow) => {
+    const properties = await readSavedProperties(flow, 'reading the flow properties');
+    if (properties) {
+      setFlowProperties({ flow, properties });
+    }
+  };
+
+  /**
+   * §4.7's duplicate opens the create form on the source's own `meta:`, and the copy the host makes
+   * is of the file on disk.
+   *
+   * It refuses over an unsaved editor for §4.4's reason, sharpened: the properties dialog would have
+   * written a draft back over the author's edits, and this reads a document the author is looking at
+   * a different version of — a duplicate silently missing the last ten minutes of work, in a file
+   * they would go on to edit as though it had them.
+   */
+  const openDuplicateFlow = async (flow) => {
+    const properties = await readSavedProperties(flow, 'reading the flow');
+    if (properties) {
+      setDuplicatingFlow({ flow, properties, directory: path.dirname(flow.pathname) });
     }
   };
 
@@ -281,19 +411,72 @@ const FlowSidebarSection = () => {
     }
   };
 
-  const sectionActions = (
-    <MenuDropdown
-      data-testid="flows-header-add-menu"
-      items={[{ id: 'create-flow', leftSection: IconPlus, label: 'Create API Flow', onClick: openCreateFlow }]}
-      placement="bottom-end"
-    >
-      <ActionIcon label="Add new Flow" data-testid="flows-header-add">
-        <IconPlus size={14} stroke={1.5} aria-hidden="true" />
-      </ActionIcon>
-    </MenuDropdown>
+  const groups = useMemo(() => groupFlows(flowsInWorkspace(flows, activeWorkspace)), [flows, activeWorkspace]);
+
+  /**
+   * §4.1a's header actions act on the folders the section is currently showing, so the keys are
+   * collected from the rendered groups rather than from the store — which holds every scope watched
+   * since launch (§4.1).
+   */
+  const folderKeys = useMemo(
+    () => groups.flatMap((group) => group.sections.flatMap((section) => folderKeysOf(section.tree))),
+    [groups]
   );
 
-  const groups = useMemo(() => groupFlows(flowsInWorkspace(flows, activeWorkspace)), [flows, activeWorkspace]);
+  /**
+   * Both actions are offered whenever there are folders at all, rather than one of them switching to
+   * the other once everything is open.
+   *
+   * A menu item that changes meaning between two openings of the same menu is a control you have to
+   * read before clicking, and the state it reflects — every folder in every scope — is not one the
+   * reader can see. Upstream's own collection menu carries `Collapse` unconditionally for the same
+   * reason.
+   */
+  const folderActions = folderKeys.length
+    ? [
+        {
+          id: 'expand-folders',
+          leftSection: IconFoldUp,
+          label: 'Expand All Folders',
+          onClick: () => dispatch(foldersExpanded({ keys: folderKeys }))
+        },
+        {
+          id: 'collapse-folders',
+          leftSection: IconFoldDown,
+          label: 'Collapse All Folders',
+          onClick: () => dispatch(foldersCollapsed({ keys: folderKeys }))
+        }
+      ]
+    : [];
+
+  /**
+   * Creating is the section's one *additive* action and the folder actions are about the tree that is
+   * already there, so they are two controls rather than one menu: the header reads left to right as
+   * add, then act on what is listed, which is the arrangement §4.1a's neighbour sections already use.
+   *
+   * **The `+` is the action, not a menu of one.** With the folder items moved out it had a single
+   * entry left, and a dropdown that exists to be dismissed is a click spent on nothing —
+   * `MockServersSection` binds its `+` straight to the thing it creates for the same reason.
+   *
+   * **The overflow menu is absent rather than empty when the section holds no folders.** An enabled
+   * control that opens onto nothing is a worse answer than no control, and `folderActions` is already
+   * empty in exactly that case.
+   */
+  const sectionActions = (
+    <>
+      <ActionIcon label="Add new Flow" onClick={openCreateFlow} data-testid="flows-header-add">
+        <IconPlus size={14} stroke={1.5} aria-hidden="true" />
+      </ActionIcon>
+
+      {folderActions.length ? (
+        <MenuDropdown data-testid="flows-header-actions-menu" items={folderActions} placement="bottom-end">
+          <ActionIcon label="More actions" data-testid="flows-header-actions">
+            <IconDotsVertical size={14} stroke={1.5} aria-hidden="true" />
+          </ActionIcon>
+        </MenuDropdown>
+      ) : null}
+    </>
+  );
 
   /**
    * The tab strip renders per active collection, `findTabByPathname` bails without a
@@ -328,10 +511,93 @@ const FlowSidebarSection = () => {
     );
   };
 
+  const toggleFolder = (key) => dispatch(folderToggled({ key }));
+
+  /**
+   * One row of a bucket's tree, at the depth the tree put it. §4.5's scripts carry a rename and
+   * nothing else, and every other row carries §4.3's editor and §4.4's properties.
+   */
+  const renderRow = (flow, depth) => {
+    const relativePath = relativePathOf(flow);
+
+    /**
+     * §4.5: a script row opens the file and carries no flow menu. Neither item on it means anything
+     * here — there is no `meta:` to edit and no YAML to edit it as — and a menu holding nothing is
+     * worse than no menu.
+     */
+    if (flow.script) {
+      return (
+        <div
+          key={flow.pathname}
+          className="flow-row"
+          style={{ '--flow-depth': depth }}
+          data-testid={`flow-row-${relativePath}`}
+          onClick={() => openFlow(flow, 'flow-script')}
+        >
+          <span className="flow-name">{flow.filename}</span>
+          <div className="flow-row-actions">
+            <ScriptMenu relativePath={relativePath} onRename={() => setRenamingScript(flow)} />
+          </div>
+        </div>
+      );
+    }
+
+    /**
+     * §4.6: a fixture row opens the file as text and carries no menu. Like a script it has no
+     * `meta:` to edit and no YAML to edit it as; unlike one it has no rename either, because
+     * `!file` and `bodyFile` name a fixture by the path written in each flow that reads it and
+     * nothing here would rewrite them.
+     */
+    if (flow.fixture) {
+      return (
+        <div
+          key={flow.pathname}
+          className="flow-row"
+          style={{ '--flow-depth': depth }}
+          data-testid={`flow-row-${relativePath}`}
+          onClick={() => openFlow(flow, 'flow-fixture')}
+        >
+          <span className="flow-name">{flow.filename}</span>
+        </div>
+      );
+    }
+
+    const run = runs[flow.pathname];
+
+    return (
+      <div
+        key={flow.pathname}
+        className="flow-row"
+        style={{ '--flow-depth': depth }}
+        data-testid={`flow-row-${relativePath}`}
+        data-run-state={run?.state}
+        onClick={() => openFlow(flow, 'flow')}
+      >
+        <span className="flow-name">{flowLabel(flow)}</span>
+        <div className="flow-row-actions">
+          {run ? <span className={`flow-run-mark ${run.status || run.state}`} /> : null}
+          <FlowMenu
+            relativePath={relativePath}
+            onEditYaml={() => openFlow(flow, 'flow-yaml')}
+            onEditProperties={() => openFlowProperties(flow)}
+            onDuplicate={() => openDuplicateFlow(flow)}
+          />
+        </div>
+      </div>
+    );
+  };
+
   return (
     <>
       {newFlowDirectory === null ? null : (
         <CreateFlow defaultDirectory={newFlowDirectory} onClose={() => setNewFlowDirectory(null)} />
+      )}
+      {duplicatingFlow === null ? null : (
+        <CreateFlow
+          defaultDirectory={duplicatingFlow.directory}
+          source={duplicatingFlow}
+          onClose={() => setDuplicatingFlow(null)}
+        />
       )}
       {flowProperties === null ? null : (
         <FlowProperties
@@ -363,50 +629,13 @@ const FlowSidebarSection = () => {
                       {section.label}
                     </div>
                   ) : null}
-                  {section.flows.map((flow) => {
-                    const run = runs[flow.pathname];
-
-                    /**
-                     * §4.5: a script row opens the file and carries no menu. Neither item on it
-                     * means anything here — there is no `meta:` to edit and no YAML to edit it as —
-                     * and a menu holding nothing is worse than no menu.
-                     */
-                    if (flow.script) {
-                      return (
-                        <div
-                          key={flow.pathname}
-                          className="flow-row"
-                          data-testid={`flow-row-${flow.filename}`}
-                          onClick={() => openFlow(flow, 'flow-script')}
-                        >
-                          <span className="flow-name">{flow.filename}</span>
-                          <div className="flow-row-actions">
-                            <ScriptMenu script={flow} onRename={() => setRenamingScript(flow)} />
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div
-                        key={flow.pathname}
-                        className="flow-row"
-                        data-testid={`flow-row-${flow.filename}`}
-                        data-run-state={run?.state}
-                        onClick={() => openFlow(flow, 'flow')}
-                      >
-                        <span className="flow-name">{flowLabel(flow)}</span>
-                        <div className="flow-row-actions">
-                          {run ? <span className={`flow-run-mark ${run.status || run.state}`} /> : null}
-                          <FlowMenu
-                            flow={flow}
-                            onEditYaml={() => openFlow(flow, 'flow-yaml')}
-                            onEditProperties={() => openFlowProperties(flow)}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <FlowNode
+                    node={section.tree}
+                    depth={0}
+                    expansion={folderExpansion}
+                    onToggle={toggleFolder}
+                    renderRow={renderRow}
+                  />
                 </div>
               ))}
             </div>

@@ -14,6 +14,7 @@
  * Redaction (§14.4) has already been applied, so nothing reading these filters anything.
  */
 import type { FlowDescription } from './describe';
+import type { RunOrigin } from './options';
 import type { AssertionResult, StepResult } from './result';
 
 /** A file part is captured by reference (§7.5): its content is already in the repository. */
@@ -88,6 +89,14 @@ export type RunManifest = {
    * a reader must not report an old run as matching.
    */
   flowHash?: string;
+  /**
+   * Who started the run and against which environments — here for `flowHash`'s reason: `listRuns`
+   * reads only this file per run, so a history that says where each one came from costs one small
+   * read per directory rather than a second artifact.
+   *
+   * Absent on a run written before it was recorded, and on a host that supplied none.
+   */
+  origin?: RunOrigin;
 };
 
 /**

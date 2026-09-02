@@ -369,6 +369,110 @@ describe('FlowSidebarSection', () => {
     });
   });
 
+  /**
+   * 002 §4.7 — the row menu's third item: the create form, opened over the flow that was clicked.
+   */
+  describe('duplicating a flow (§4.7)', () => {
+    const named = { ...flowIn('/home/dev/workspace-one', 'checkout.flow.yml'), name: 'Checkout' };
+
+    let invoke;
+
+    beforeEach(() => {
+      invoke = jest.fn(async (channel) =>
+        (channel === 'renderer:flow-read-properties'
+          ? {
+              filename: 'checkout.flow.yml',
+              name: 'Checkout',
+              description: 'the happy path',
+              tags: ['smoke'],
+              library: true
+            }
+          : undefined));
+      window.ipcRenderer = { invoke };
+    });
+
+    const openDuplicate = (sources = {}) => {
+      const rendered = renderSection({ flows: [named], workspaces, activeWorkspaceUid: 'one', sources });
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      fireEvent.click(screen.getByTestId('flow-duplicate-checkout.flow.yml'));
+      return rendered;
+    };
+
+    it('opens the create form on the source flow, named as a copy', async () => {
+      openDuplicate();
+
+      expect(await screen.findByTestId('create-flow-name')).toHaveValue('Checkout copy');
+      expect(screen.getByTestId('create-flow-file-name')).toHaveValue('checkout-copy');
+      expect(screen.getByTestId('create-flow-description')).toHaveValue('the happy path');
+      expect(screen.getByTestId('create-flow-tags')).toHaveValue('smoke');
+      expect(screen.getByTestId('create-flow-library')).toBeChecked();
+    });
+
+    /** The copy lands beside its original unless the author browses somewhere else. */
+    it('offers the source flow\'s own directory', async () => {
+      openDuplicate();
+
+      expect(await screen.findByTestId('create-flow-location')).toHaveValue('/home/dev/workspace-one/flows');
+    });
+
+    /**
+     * A duplicate binds what its source binds, so there is nothing to choose — and a list that could
+     * only show the specs open in this workspace would read as complete while missing the rest.
+     */
+    it('offers no api spec list, and says what is carried over instead', async () => {
+      openDuplicate();
+
+      expect(await screen.findByTestId('create-flow-duplicate-note')).toHaveTextContent('checkout.flow.yml');
+      expect(screen.queryByTestId('create-flow-api-list')).not.toBeInTheDocument();
+    });
+
+    it('duplicates through the host, sending the form\'s meta and no document', async () => {
+      openDuplicate();
+      await screen.findByTestId('create-flow-name');
+
+      fireEvent.change(screen.getByTestId('create-flow-name'), { target: { value: 'Checkout nightly' } });
+      fireEvent.click(screen.getByText('Duplicate'));
+
+      await waitFor(() =>
+        expect(invoke).toHaveBeenCalledWith('renderer:flow-duplicate', {
+          entry: named.pathname,
+          scope: { workspaceRoot: '/home/dev/workspace-one', collectionRoot: undefined },
+          directory: '/home/dev/workspace-one/flows',
+          filename: 'checkout-copy.flow.yml',
+          properties: { name: 'Checkout nightly', description: 'the happy path', tags: ['smoke'], library: true }
+        }));
+      expect(invoke).not.toHaveBeenCalledWith('renderer:flow-create', expect.anything());
+    });
+
+    /**
+     * The host copies the file on disk, so a draft the author is looking at would be silently
+     * missing from the duplicate — in a file they would go on to edit as though it had it.
+     */
+    it('refuses to open over a raw editor with unsaved changes', async () => {
+      openDuplicate({ [named.pathname]: { content: 'version: 2\n', saved: 'version: 1\n' } });
+
+      await waitFor(() => expect(invoke).not.toHaveBeenCalledWith('renderer:flow-read-properties', expect.anything()));
+      expect(screen.queryByTestId('create-flow-name')).not.toBeInTheDocument();
+    });
+
+    /** §4.5's scripts and §4.6's fixtures have no document with a `meta:` to rewrite. */
+    it('is not offered on a script', () => {
+      renderSection({
+        flows: [{
+          pathname: '/home/dev/workspace-one/flows/scripts/text.js',
+          filename: 'text.js',
+          workspaceRoot: '/home/dev/workspace-one',
+          script: true
+        }],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+
+      expect(screen.queryByTestId('flow-duplicate-text.js')).not.toBeInTheDocument();
+    });
+  });
+
   /** §4.1: the filename is the fallback, not the label — a flow that names itself reads by that name. */
   describe('the row label', () => {
     const named = { ...flowIn('/home/dev/workspace-one', 'checkout.flow.yml'), name: 'Checkout' };
@@ -451,7 +555,6 @@ describe('FlowSidebarSection', () => {
       });
 
       fireEvent.click(screen.getByTestId('flows-header-add'));
-      fireEvent.click(screen.getByTestId('flows-header-add-menu-create-flow'));
       await screen.findByTestId('create-flow-name');
     };
 
@@ -596,10 +699,343 @@ describe('FlowSidebarSection', () => {
       });
 
       fireEvent.click(screen.getByTestId('flows-header-add'));
-      fireEvent.click(screen.getByTestId('flows-header-add-menu-create-flow'));
       await screen.findByTestId('create-flow-api-auth-v2.yaml');
 
       expect(screen.queryByTestId('create-flow-api-other.yaml')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * 002 §4.1a. The watcher has always reported a flow at any depth under `flows/`, so these entries
+   * are nothing new — what is new is that the directory holding one says something in the sidebar.
+   */
+  describe('folders', () => {
+    const nested = (workspaceRoot, relativePath, collectionRoot, extra = {}) => ({
+      pathname: `${collectionRoot || workspaceRoot}/flows/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot,
+      collectionRoot,
+      ...extra
+    });
+
+    const inFolders = [
+      nested('/home/dev/workspace-one', 'checkout.flow.yml'),
+      nested('/home/dev/workspace-one', 'company/create_company.flow.yml'),
+      nested('/home/dev/workspace-one', 'company/billing/invoice.flow.yml')
+    ];
+
+    const openFolder = (path) => fireEvent.click(screen.getByTestId(`flow-folder-${path}`));
+
+    const rowOrder = () =>
+      [...document.querySelectorAll('.flow-folder, .flow-row')].map((element) => element.dataset.testid);
+
+    it('names each directory as a row of its own', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByTestId('flow-folder-company')).toBeInTheDocument();
+    });
+
+    /**
+     * Collapsed is what upstream's collection folders do — `slices/collections` creates every folder
+     * item collapsed — so it is what a reader of this sidebar already expects of a folder row.
+     */
+    it('starts collapsed, showing nothing inside', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.queryByTestId('flow-row-company/create_company.flow.yml')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('flow-folder-company/billing')).not.toBeInTheDocument();
+    });
+
+    it('shows what is inside when it is opened, one level at a time', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      openFolder('company');
+
+      expect(screen.getByTestId('flow-row-company/create_company.flow.yml')).toBeInTheDocument();
+      expect(screen.getByTestId('flow-folder-company/billing')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-row-company/billing/invoice.flow.yml')).not.toBeInTheDocument();
+
+      openFolder('company/billing');
+
+      expect(screen.getByTestId('flow-row-company/billing/invoice.flow.yml')).toBeInTheDocument();
+    });
+
+    it('closes again on a second click', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      openFolder('company');
+      openFolder('company');
+
+      expect(screen.queryByTestId('flow-row-company/create_company.flow.yml')).not.toBeInTheDocument();
+    });
+
+    it('lists folders above the flows beside them', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(rowOrder()).toEqual(['flow-folder-company', 'flow-row-checkout.flow.yml']);
+    });
+
+    /** A flow at the top of its bucket is identified the way it was before folders existed. */
+    it('leaves an unnested flow identified by its filename', () => {
+      renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByTestId('flow-row-checkout.flow.yml')).toBeInTheDocument();
+    });
+
+    /**
+     * Two folders holding the same filename is the ordinary reason to have folders at all, and a
+     * duplicate `data-testid` does not fail where it is created — it fails in whichever test reaches
+     * for it second.
+     */
+    it('distinguishes the same filename in two folders, on the row and in its menu', async () => {
+      renderSection({
+        flows: [
+          nested('/home/dev/workspace-one', 'company/create.flow.yml'),
+          nested('/home/dev/workspace-one', 'user/create.flow.yml')
+        ],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      openFolder('company');
+      openFolder('user');
+
+      expect(screen.getByTestId('flow-row-company/create.flow.yml')).toBeInTheDocument();
+      expect(screen.getByTestId('flow-row-user/create.flow.yml')).toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByTestId('flow-menu-trigger')[0]);
+      expect(await screen.findByTestId('flow-edit-yaml-company/create.flow.yml')).toBeInTheDocument();
+    });
+
+    it('opens a nested flow in its run view', () => {
+      const { store } = renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+      openFolder('company');
+      fireEvent.click(screen.getByTestId('flow-row-company/create_company.flow.yml'));
+
+      expect(store.getState().tabs.tabs).toEqual([
+        expect.objectContaining({
+          type: 'flow',
+          pathname: '/home/dev/workspace-one/flows/company/create_company.flow.yml'
+        })
+      ]);
+    });
+
+    /** §4.1: a library is bucketed apart, and its own directory is a folder inside that bucket. */
+    it('nests a library under the Libraries label', () => {
+      renderSection({
+        flows: [
+          nested('/home/dev/workspace-one', 'checkout.flow.yml'),
+          nested('/home/dev/workspace-one', 'auth/login.flow.yml', undefined, { library: true })
+        ],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      expect(rowOrder()).toEqual(['flow-row-checkout.flow.yml', 'flow-folder-auth']);
+      expect(screen.getByTestId('flow-subgroup-libraries')).toBeInTheDocument();
+
+      openFolder('auth');
+
+      expect(screen.getByTestId('flow-row-auth/login.flow.yml')).toBeInTheDocument();
+    });
+
+    /**
+     * One directory holding both kinds is drawn as two rows, either side of the `Libraries` label —
+     * so they open independently. A row that opens because a different row was clicked is an
+     * unexplained jump, whatever the two share on disk.
+     */
+    it('opens a folder independently of its twin in another bucket', () => {
+      renderSection({
+        flows: [
+          nested('/home/dev/workspace-one', 'company/create.flow.yml'),
+          nested('/home/dev/workspace-one', 'company/login.flow.yml', undefined, { library: true })
+        ],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      const [inFlows, inLibraries] = screen.getAllByTestId('flow-folder-company');
+      expect(inLibraries).toBeInTheDocument();
+
+      fireEvent.click(inFlows);
+
+      expect(screen.getByTestId('flow-row-company/create.flow.yml')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-row-company/login.flow.yml')).not.toBeInTheDocument();
+    });
+
+    /**
+     * §4.5: a helper's folders are counted from `flows/scripts/`, so the `Scripts` label is not
+     * immediately restated as a `scripts` folder row underneath it.
+     */
+    it('counts a script folder from the scripts directory', () => {
+      renderSection({
+        flows: [nested('/home/dev/workspace-one', 'scripts/auth/sign.js', undefined, { script: true })],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      expect(screen.queryByTestId('flow-folder-scripts')).not.toBeInTheDocument();
+      expect(screen.getByTestId('flow-folder-auth')).toBeInTheDocument();
+    });
+
+    /** A folder is keyed by its absolute path, so opening one does not open another that shares a name. */
+    it('opens only the folder that was clicked when two scopes name one alike', () => {
+      renderSection({
+        flows: [
+          nested('/home/dev/workspace-one', 'company/create.flow.yml'),
+          nested('/home/dev/payments', 'company/refund.flow.yml', '/home/dev/payments')
+        ],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      fireEvent.click(screen.getAllByTestId('flow-folder-company')[0]);
+
+      expect(screen.getByTestId('flow-row-company/create.flow.yml')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-row-company/refund.flow.yml')).not.toBeInTheDocument();
+    });
+
+    describe('the header actions', () => {
+      const openHeaderMenu = () => fireEvent.click(screen.getByTestId('flows-header-actions'));
+
+      it('open every folder at every depth', () => {
+        renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+        openHeaderMenu();
+        fireEvent.click(screen.getByTestId('flows-header-actions-menu-expand-folders'));
+
+        expect(screen.getByTestId('flow-row-company/create_company.flow.yml')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-row-company/billing/invoice.flow.yml')).toBeInTheDocument();
+      });
+
+      it('close every folder again', () => {
+        renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+        openHeaderMenu();
+        fireEvent.click(screen.getByTestId('flows-header-actions-menu-expand-folders'));
+        openHeaderMenu();
+        fireEvent.click(screen.getByTestId('flows-header-actions-menu-collapse-folders'));
+
+        expect(screen.queryByTestId('flow-row-company/create_company.flow.yml')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('flow-folder-company')).toBeInTheDocument();
+      });
+
+      /**
+       * They are the overflow menu's only items, so with no folders to fold there is nothing behind
+       * the control and it is not drawn — rather than opening onto an empty list.
+       */
+      it('take the menu with them when the section holds no folders', () => {
+        renderSection({ flows, workspaces, activeWorkspaceUid: 'one' });
+
+        expect(screen.queryByTestId('flows-header-actions')).not.toBeInTheDocument();
+        expect(screen.getByTestId('flows-header-add')).toBeInTheDocument();
+      });
+
+      /** The `+` creates; folding lives next to it rather than inside it. */
+      it('are not in the create menu', () => {
+        renderSection({ flows: inFolders, workspaces, activeWorkspaceUid: 'one' });
+
+        fireEvent.click(screen.getByTestId('flows-header-add'));
+
+        expect(screen.queryByTestId('flows-header-actions-menu-expand-folders')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  /**
+   * 002 §4.6. The data a flow reads through `!file`, `bodyFile` and `dataset:` — listed last, because
+   * the section answers "what can I run here" from the top down and a fixture is an input rather than
+   * anything that runs.
+   */
+  describe('fixtures (§4.6)', () => {
+    const fixtureIn = (workspaceRoot, relativePath, collectionRoot) => ({
+      pathname: `${collectionRoot || workspaceRoot}/flows/fixtures/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot,
+      collectionRoot,
+      fixture: true
+    });
+
+    const withFixtures = [
+      flowIn('/home/dev/workspace-one', 'checkout.flow.yml'),
+      flowIn('/home/dev/workspace-one', 'login.flow.yml', undefined, { library: true }),
+      {
+        pathname: '/home/dev/workspace-one/flows/scripts/text.js',
+        filename: 'text.js',
+        workspaceRoot: '/home/dev/workspace-one',
+        script: true
+      },
+      fixtureIn('/home/dev/workspace-one', 'catalog.json')
+    ];
+
+    const rowOrder = () =>
+      [...document.querySelectorAll('.flow-subgroup-label, .flow-row')].map((element) =>
+        (element.classList.contains('flow-row') ? element.dataset.testid : element.textContent));
+
+    it('lists them last, under their own label', () => {
+      renderSection({ flows: withFixtures, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(rowOrder()).toEqual([
+        'flow-row-checkout.flow.yml',
+        'Libraries',
+        'flow-row-login.flow.yml',
+        'Scripts',
+        'flow-row-text.js',
+        'Fixtures',
+        'flow-row-catalog.json'
+      ]);
+    });
+
+    it('labels nothing when a scope has no fixtures', () => {
+      renderSection({ flows, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.queryByTestId('flow-subgroup-fixtures')).not.toBeInTheDocument();
+    });
+
+    it('is listed by its filename', () => {
+      renderSection({ flows: withFixtures, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByTestId('flow-row-catalog.json')).toHaveTextContent('catalog.json');
+    });
+
+    it('opens the fixture in its own editor tab, named by its file', () => {
+      const { store } = renderSection({ flows: withFixtures, workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-row-catalog.json'));
+
+      expect(store.getState().tabs.tabs).toEqual([
+        expect.objectContaining({
+          type: 'flow-fixture',
+          pathname: '/home/dev/workspace-one/flows/fixtures/catalog.json',
+          tabName: 'catalog.json'
+        })
+      ]);
+    });
+
+    /**
+     * Neither of §4.3's items means anything for a data file, and §4.5's rename does not either: a
+     * fixture is named by the path written into every flow that reads it, and nothing here rewrites
+     * those.
+     */
+    it('carries no row menu', () => {
+      renderSection({ flows: [fixtureIn('/home/dev/workspace-one', 'catalog.json')], workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.queryByTestId('flow-menu-trigger')).not.toBeInTheDocument();
+    });
+
+    /** §4.6's folders are counted from `flows/fixtures/`, so the label is not restated as a row. */
+    it('folds a nested fixture from the fixtures directory', () => {
+      renderSection({
+        flows: [fixtureIn('/home/dev/workspace-one', 'orders/large.json')],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      expect(screen.queryByTestId('flow-folder-fixtures')).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('flow-folder-orders'));
+
+      expect(screen.getByTestId('flow-row-orders/large.json')).toBeInTheDocument();
     });
   });
 });

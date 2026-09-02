@@ -293,6 +293,20 @@ const paramsFor = (declared: NormalizedFlow['params'], supplied: Vars): Vars =>
   );
 
 /**
+ * What every `StepResult` opens with, in one place: a step that was skipped or failed before it ran
+ * carries the same `name:` and `meta:` as one that succeeded, and a report keyed on either would
+ * otherwise have holes exactly where it is read most.
+ */
+const identity = (step: NormalizedStep, prefix: string): Pick<StepResult, 'id' | 'name' | 'meta' | 'kind'> => ({
+  id: `${prefix}${step.id}`,
+  ...(step.name === undefined ? {} : { name: step.name }),
+  // Passed through rather than copied: the values are the parse's own, which are the plain objects
+  // and scalars `FlowEvent` needs every result to clone.
+  ...(Object.keys(step.meta).length ? { meta: step.meta } : {}),
+  kind: step.kind
+});
+
+/**
  * §11.2. A step referencing an output that was never produced is skipped rather than failed, and
  * only that skip reason is what `failOnUnresolved` acts on.
  */
@@ -302,8 +316,7 @@ const skip = (
   reason: StepResult['reason'],
   message?: string
 ): StepResult => ({
-  id: `${prefix}${step.id}`,
-  kind: step.kind,
+  ...identity(step, prefix),
   status: 'skipped',
   reason,
   message,
@@ -657,8 +670,7 @@ const executeFlow = async (
     return {
       httpStatus: outcome.response?.status,
       result: {
-        id: stepId,
-        kind: 'operation',
+        ...identity(step, prefix),
         // §14.6: `cancelled` is the status of a step that had started, where a step the run never
         // reached is `skipped`. Both name `run-cancelled`, because both are about the same event.
         status: interrupted ? 'cancelled' : reason ? 'failed' : 'success',
@@ -706,8 +718,7 @@ const executeFlow = async (
     // the normal §11.2 rules. Its `attempts` is always 1, since §12.4 bars `retry:` there.
     return [
       {
-        id: `${prefix}${step.id}`,
-        kind: 'subflow',
+        ...identity(step, prefix),
         status: failed ? 'failed' : 'success',
         reason: failed ? 'subflow-failed' : undefined,
         // Which internals failed, because the container's own line is all a collapsed sub-flow
@@ -754,8 +765,7 @@ const executeFlow = async (
         // A throwing condition fails the step rather than skipping it: "this errored" is not
         // "this was false", and a skip would be a false statement about why (§8.2).
         record(step, {
-          id: `${prefix}${step.id}`,
-          kind: step.kind,
+          ...identity(step, prefix),
           status: 'failed',
           reason: 'script-error',
           message: `when: threw: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -778,8 +788,7 @@ const executeFlow = async (
       if (computed.error) {
         // §8.2's rule, one position along: a throw fails the step, and no request is sent.
         record(step, {
-          id: `${prefix}${step.id}`,
-          kind: step.kind,
+          ...identity(step, prefix),
           status: 'failed',
           reason: 'script-error',
           message: computed.error.message,
@@ -906,6 +915,9 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
 
   const signal = controller.signal;
   const flowContext: FlowContext = { runId, flow: options.entry, scope: options.scope, signal };
+  // The manifest, the stream and the result all report this same object, so nothing that reads a
+  // run can disagree with the run's own file about where it came from.
+  const origin = options.origin;
 
   const state: RunState = {
     runId,
@@ -994,10 +1006,9 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     state.capture = createCapture({
       ports: options.ports,
       context: flowContext,
-      scopeRoot: scopeRoot(state),
       dir: options.overrides?.capture?.dir,
+      origin,
       startedAt: new Date(state.clock.now()).toISOString(),
-      retainRuns: flow.config.captureRetainRuns,
       redactHeaders: flow.config.redactHeaders
     });
     snapshot = await flowSnapshot(state, options.entry, reportedParams);
@@ -1021,6 +1032,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   state.emit({
     type: 'run:start',
     runId,
+    ...(origin ? { origin } : {}),
     flow: options.entry,
     iterationCount: rows.length,
     captureDir: state.capture?.dir,
@@ -1043,6 +1055,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
    */
   const crashed = (error: unknown): RunResult => ({
     runId,
+    ...(origin ? { origin } : {}),
     status: 'failed',
     iterations,
     decidedBy: [],
@@ -1085,6 +1098,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
 
     const result: RunResult = {
       runId,
+      ...(origin ? { origin } : {}),
       status: signal.aborted
         ? 'cancelled'
         : iterations.some((iteration) => iteration.status === 'failed')

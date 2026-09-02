@@ -224,4 +224,84 @@ describe('FlowsWatcher', () => {
       ]);
     });
   });
+
+  /**
+   * 002 §4.6. The directory is the convention, not the extension — 001 §7.4 reads JSON, YAML and CSV
+   * through `!file` and attaches documents of whatever type the operation takes.
+   */
+  describe('fixtures (§4.6)', () => {
+    const fixturesDir = () => path.join(flowsDir, 'fixtures');
+
+    beforeEach(() => {
+      fs.mkdirSync(fixturesDir(), { recursive: true });
+    });
+
+    it('lists a fixture, flagged, with no name read from it', async () => {
+      fs.writeFileSync(path.join(fixturesDir(), 'catalog.json'), '{}\n');
+
+      const [entry] = await watcher.listFlows({ workspaceRoot });
+
+      expect(entry).toEqual({
+        pathname: path.join(fixturesDir(), 'catalog.json'),
+        filename: 'catalog.json',
+        workspaceRoot,
+        fixture: true
+      });
+    });
+
+    it('lists one whatever its extension, including a binary document', async () => {
+      fs.writeFileSync(path.join(fixturesDir(), 'customers.csv'), 'id,name\n');
+      fs.writeFileSync(path.join(fixturesDir(), 'contract.pdf'), Buffer.from([0x25, 0x50, 0x44, 0x46]));
+      fs.writeFileSync(path.join(fixturesDir(), 'notes'), 'no extension at all\n');
+
+      const flows = await watcher.listFlows({ workspaceRoot });
+
+      expect(flows.map((flow) => flow.filename).sort()).toEqual(['contract.pdf', 'customers.csv', 'notes']);
+      expect(flows.every((flow) => flow.fixture)).toBe(true);
+    });
+
+    it('lists one nested inside the fixtures directory', async () => {
+      fs.mkdirSync(path.join(fixturesDir(), 'orders'));
+      fs.writeFileSync(path.join(fixturesDir(), 'orders', 'large.json'), '{}\n');
+
+      const flows = await watcher.listFlows({ workspaceRoot });
+
+      expect(flows.map((flow) => flow.filename)).toEqual(['large.json']);
+    });
+
+    /** The convention is what keeps the section from being a file browser. */
+    it('ignores a data file anywhere else under flows/', async () => {
+      fs.mkdirSync(path.join(flowsDir, 'data'));
+      fs.writeFileSync(path.join(flowsDir, 'data', 'catalog.json'), '{}\n');
+      fs.writeFileSync(path.join(flowsDir, 'catalog.json'), '{}\n');
+
+      expect(await watcher.listFlows({ workspaceRoot })).toEqual([]);
+    });
+
+    /** A flow is a flow wherever it is filed, rather than becoming opaque data. */
+    it('lists a .flow.yml under fixtures as a flow', async () => {
+      fs.writeFileSync(path.join(fixturesDir(), 'seed.flow.yml'), 'meta:\n  name: Seed\n');
+
+      const [entry] = await watcher.listFlows({ workspaceRoot });
+
+      expect(entry).toMatchObject({ filename: 'seed.flow.yml', name: 'Seed' });
+      expect(entry.fixture).toBeUndefined();
+    });
+
+    it('reports a fixture added, changed and deleted', async () => {
+      watcher.addWatcher(win, { workspaceRoot });
+      const target = path.join(fixturesDir(), 'catalog.json');
+
+      fs.writeFileSync(target, '{ "a": 1 }\n');
+      await until(() => sent('addFile').some(([, , entry]) => entry.filename === 'catalog.json'));
+      expect(sent('addFile').at(-1)[2]).toMatchObject({ filename: 'catalog.json', fixture: true });
+
+      fs.writeFileSync(target, '{ "a": 2 }\n');
+      await until(() => sent('changeFile').length > 0);
+
+      fs.rmSync(target);
+      await until(() => sent('unlinkFile').length > 0);
+      expect(sent('unlinkFile').at(-1)[2]).toMatchObject({ filename: 'catalog.json', fixture: true });
+    });
+  });
 });

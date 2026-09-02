@@ -27,6 +27,19 @@ const CURRENT = '';
 const OPEN = 'open';
 
 /**
+ * The environment a listed run was made against, from 001 §14.5's `origin`.
+ *
+ * The host is not named here and the badge above the graph carries it: this list is one flow's own
+ * history and the environment is what tells two of its rows apart, while `app` on every row would
+ * only make each one longer. A run recorded before the field, or made against no environment, adds
+ * nothing rather than a word standing in for one.
+ */
+const against = (origin) => {
+  const environment = origin ? origin.environment || origin.globalEnvironment : undefined;
+  return environment ? ` · ${environment}` : '';
+};
+
+/**
  * §10: a run made against text the flow no longer has says so, because the graph it opens into is
  * that older flow's and would otherwise be indistinguishable from the current one.
  *
@@ -37,11 +50,12 @@ const OPEN = 'open';
 const label = (entry) => {
   const when = entry.startedAt.replace('T', ' ').replace(/\.\d+Z$/, '');
   const edited = entry.flowChanged === true ? ' · flow edited since' : '';
+  const environment = against(entry.origin);
   if (entry.state === 'complete') {
-    return `${when} · ${entry.status} · ${entry.summary.passed}/${entry.summary.total}${edited}`;
+    return `${when} · ${entry.status} · ${entry.summary.passed}/${entry.summary.total}${environment}${edited}`;
   }
   // §10: an interrupted run must not claim an outcome — nobody recorded one.
-  return `${when} · ${entry.state}${edited}`;
+  return `${when} · ${entry.state}${environment}${edited}`;
 };
 
 /** The same rule for the run in the view: state, and a status only where one was recorded. */

@@ -39,8 +39,13 @@ export const NODE_FOOTER_HEIGHT = 18;
  * growing it.
  */
 const NODE_HEIGHT = 84 + NODE_FOOTER_HEIGHT;
-/** Between one rank and the next — the direction the flow runs, and the room an edge turns in. */
-const RANK_GAP = 72;
+/**
+ * Between one rank and the next — the direction the flow runs, and the room an edge turns in. It is
+ * also the corridor an edge label rides, which is why it is exported: a label wider than the gap
+ * reaches the box on the far side of it, and the drawing measures that budget from this number
+ * rather than from a copy of it.
+ */
+export const RANK_GAP = 72;
 /** Between steps that share a rank. */
 const SIBLING_GAP = 32;
 /** Between two routes sharing a lane, which is what keeps parallel edges separable. */
@@ -376,42 +381,65 @@ const slotPath = (from, to) => {
 };
 
 /**
- * 002 §5.6's inputs panel — the params and vars a run starts from, drawn as the graph's leftmost
- * box.
+ * 002 §5.6's side panels — what a run starts from, and what a library hands back. One is the graph's
+ * leftmost box and the other its rightmost, which is the axis the flow already runs along: a value
+ * enters at rank 0 and leaves past the last rank, so each panel sits at the end it belongs to.
  *
  * **A layer beside the graph rather than a rank in it**, laid out the way `layoutSlotLane` is: the
  * engine's ranks are 001's and dagre is not allowed to re-derive them, so inserting a node at rank
- * -1 would change what every other rank means. This claims the gutter to the left of the drawing and
- * leaves the ranks untouched.
+ * -1 — or one past the last — would change what every other rank means. These claim the gutter
+ * outside the drawing and leave the ranks untouched.
  *
- * No edges are drawn from it. `{{params.x}}` is read by most steps in a flow that declares any, and
- * a line from this box to nearly every other one draws a fact the reader already has — the same
- * reason §5.3's slot layer is off by default.
+ * No edges are drawn from either. `{{params.x}}` is read by most steps in a flow that declares any,
+ * and an export names the step it comes from in its own row; a line from a box to nearly every other
+ * one, or one that restates a row of text, draws a fact the reader already has — the same reason
+ * §5.3's slot layer is off by default.
  */
-export const INPUTS_WIDTH = 208;
-const INPUTS_GAP = RANK_GAP;
-const INPUTS_HEADER = 26;
-const INPUTS_ROW = 46;
-const INPUTS_SECTION_LABEL = 20;
-const INPUTS_PADDING = 10;
+const PANEL_WIDTH = 208;
+const PANEL_GAP = RANK_GAP;
+const PANEL_HEADER = 26;
+const PANEL_ROW = 46;
+const PANEL_SECTION_LABEL = 20;
+const PANEL_PADDING = 10;
+
+/** A header, a row per entry, and a label above each group that has one. */
+const panelHeight = ({ rows, labels }) =>
+  PANEL_HEADER + labels * PANEL_SECTION_LABEL + rows * PANEL_ROW + PANEL_PADDING;
+
+// Against the top of the first rank rather than centred on the drawing: a panel is read once, on the
+// way past, and a tall flow would otherwise put it halfway down the scroll.
+const PANEL_Y = 0;
 
 export const layoutInputsPanel = (graph, { params = [], vars = [] }) => {
   if (!params.length && !vars.length) {
     return undefined;
   }
 
-  const sections
-    = (params.length ? INPUTS_SECTION_LABEL + params.length * INPUTS_ROW : 0)
-      + (vars.length ? INPUTS_SECTION_LABEL + vars.length * INPUTS_ROW : 0);
-  const height = INPUTS_HEADER + sections + INPUTS_PADDING;
+  return {
+    x: -(PANEL_WIDTH + PANEL_GAP),
+    y: PANEL_Y,
+    width: PANEL_WIDTH,
+    // Params and vars are two kinds of input and say which they are; an export is the only kind in
+    // its panel, so its title is the whole heading it needs.
+    height: panelHeight({
+      rows: params.length + vars.length,
+      labels: (params.length ? 1 : 0) + (vars.length ? 1 : 0)
+    })
+  };
+};
+
+export const layoutExportsPanel = (graph, exports = []) => {
+  if (!exports.length) {
+    return undefined;
+  }
 
   return {
-    x: -(INPUTS_WIDTH + INPUTS_GAP),
-    // Against the top of the first rank rather than centred on the drawing: the panel is read once,
-    // on the way in, and a tall flow would otherwise put its inputs halfway down the scroll.
-    y: 0,
-    width: INPUTS_WIDTH,
-    height: Math.min(height, Math.max(graph.height, height))
+    // Past the drawing's own extent rather than past the last box: a route that swings out beyond
+    // the final rank is still part of the picture, and a panel drawn over it would sit on a line.
+    x: round(graph.width + PANEL_GAP),
+    y: PANEL_Y,
+    width: PANEL_WIDTH,
+    height: panelHeight({ rows: exports.length, labels: 0 })
   };
 };
 

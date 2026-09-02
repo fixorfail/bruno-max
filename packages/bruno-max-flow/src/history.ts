@@ -19,6 +19,7 @@ import {
   FLOW_SOURCE_FILE,
   RUN_INPUTS_FILE,
   RUN_DIRECTORY,
+  SUITE_DIRECTORY,
   attemptFile,
   flowDigest,
   stepCaptureDir
@@ -122,11 +123,33 @@ export const listRuns = async (options: ListRunsOptions): Promise<RunIndexEntry[
   const changedSince = (manifest: RunManifest): boolean | undefined =>
     current === undefined || manifest.flowHash === undefined ? undefined : manifest.flowHash !== current;
 
+  /**
+   * Every run lives in a suite directory now (§14.5): one of its own when it ran alone, or the
+   * invocation's when a host was batching flows into it (§14.8.5). Top-level run directories are
+   * runs written before that was true, still listed so a history does not lose them.
+   *
+   * One level down and no further: nothing nests below a run, so a deeper walk would be searching a
+   * tree the layout does not have.
+   */
+  const candidates: { dir: string; suite?: string }[] = entries
+    .filter((entry) => RUN_DIRECTORY.test(entry))
+    .map((entry) => ({ dir: path.join(root, entry) }));
+
+  for (const suite of entries.filter((entry) => SUITE_DIRECTORY.test(entry))) {
+    let nested: string[];
+    try {
+      nested = await options.ports.listDirectory(path.join(root, suite), context);
+    } catch {
+      continue;
+    }
+    for (const entry of nested.filter((child) => RUN_DIRECTORY.test(child))) {
+      candidates.push({ dir: path.join(root, suite, entry), suite });
+    }
+  }
+
   const runs = await Promise.all(
-    entries
-      .filter((entry) => RUN_DIRECTORY.test(entry))
-      .map(async (entry): Promise<RunIndexEntry | undefined> => {
-        const dir = path.join(root, entry);
+    candidates
+      .map(async ({ dir, suite }): Promise<RunIndexEntry | undefined> => {
         const manifest = await readJson<RunManifest>(options.ports.readFile, path.join(dir, 'run.json'), context);
         // A directory that cannot be attributed to a flow is not a run: §14.5 writes run.json before
         // anything else, so its absence means this is not one of ours.
@@ -138,6 +161,8 @@ export const listRuns = async (options: ListRunsOptions): Promise<RunIndexEntry[
           return {
             runId: manifest.runId,
             dir,
+            ...(manifest.origin ? { origin: manifest.origin } : {}),
+            ...(suite === undefined ? {} : { suite }),
             flow: manifest.flow,
             startedAt: manifest.startedAt,
             state: active.has(manifest.runId) ? 'running' : 'interrupted',
@@ -148,6 +173,8 @@ export const listRuns = async (options: ListRunsOptions): Promise<RunIndexEntry[
         return {
           runId: manifest.runId,
           dir,
+          ...(manifest.origin ? { origin: manifest.origin } : {}),
+          ...(suite === undefined ? {} : { suite }),
           flow: manifest.flow,
           startedAt: manifest.startedAt,
           state: 'complete',
@@ -221,6 +248,7 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
   return {
     runId: manifest.runId,
     dir: options.dir,
+    ...(manifest.origin ? { origin: manifest.origin } : {}),
     flow: manifest.flow,
     startedAt: manifest.startedAt,
     state: result ? 'complete' : active.has(manifest.runId) ? 'running' : 'interrupted',

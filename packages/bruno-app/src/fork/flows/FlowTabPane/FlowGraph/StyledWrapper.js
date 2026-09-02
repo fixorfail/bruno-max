@@ -154,27 +154,29 @@ const StyledWrapper = styled.div`
     cursor: pointer;
   }
 
-  /* 002 §5.6's inputs panel — the same box the steps are drawn in, so it reads as part of the
-     drawing rather than as a control strip that happens to sit beside it. */
-  .flow-inputs .inputs-box {
+  /* 002 §5.6's side panels — the inputs to the left of the drawing and the exports to its right, in
+     the same box the steps are drawn in so they read as part of the drawing rather than as control
+     strips that happen to sit beside it. One set of rules for both: they are the same panel at
+     opposite ends, and two copies of this would drift on the first change made to either. */
+  .flow-panel .panel-box {
     fill: ${(props) => props.theme.sidebar.bg};
     stroke: ${(props) => props.theme.sidebar.collection.item.focusBorder};
     stroke-width: 1;
   }
 
-  .inputs-body {
+  .panel-body {
     padding: 0.375rem 0.5rem;
     font-size: 0.6875rem;
     color: ${(props) => props.theme.colors.text.muted};
   }
 
-  .inputs-title {
+  .panel-title {
     font-weight: 600;
     color: ${(props) => props.theme.colors.text.default};
     margin-bottom: 0.25rem;
   }
 
-  .inputs-section-label {
+  .panel-section-label {
     text-transform: uppercase;
     letter-spacing: 0.04em;
     font-size: 0.5625rem;
@@ -182,23 +184,23 @@ const StyledWrapper = styled.div`
     margin-top: 0.25rem;
   }
 
-  .inputs-row {
+  .panel-row {
     display: flex;
     flex-direction: column;
     gap: 0.0625rem;
     padding: 0.1875rem 0;
   }
 
-  .inputs-name {
+  .panel-name {
     color: ${(props) => props.theme.colors.text.default};
   }
 
-  .inputs-required {
+  .panel-required {
     color: ${(props) => props.theme.colors.text.danger};
     margin-left: 0.125rem;
   }
 
-  .inputs-input {
+  .panel-input {
     width: 100%;
     padding: 0.125rem 0.25rem;
     font-size: 0.6875rem;
@@ -215,11 +217,17 @@ const StyledWrapper = styled.div`
 
   /* A recorded value is text rather than a disabled input: a box you cannot type in still looks
      like one you should be able to, and this is a fact about a run that already happened. */
-  .inputs-value {
+  .panel-value {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: monospace;
+  }
+
+  /* An export the run has not produced yet. It is the ordinary state of the panel before and during
+     a run, so it recedes rather than being marked: there is nothing wrong here, only nothing yet. */
+  .panel-value.pending {
+    opacity: 0.6;
   }
 
   .node-box {

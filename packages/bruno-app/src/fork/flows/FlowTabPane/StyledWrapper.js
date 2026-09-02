@@ -21,6 +21,18 @@ const StyledWrapper = styled.div`
     }
   }
 
+  /* §10's provenance, beside the selector that names which run is on screen. A pill rather than
+     another word on the row, because it describes the run the row is choosing rather than being one
+     more control on it. */
+  .flow-run-origin {
+    padding: 0.0625rem 0.375rem;
+    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    border-radius: 999px;
+    color: ${(props) => props.theme.colors.text.muted};
+    white-space: nowrap;
+    cursor: default;
+  }
+
   .flow-loading,
   .flow-error {
     padding: 0.5rem 1rem;

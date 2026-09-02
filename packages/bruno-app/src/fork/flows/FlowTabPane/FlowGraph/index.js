@@ -1,6 +1,14 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { useTheme } from 'styled-components';
-import { NODE_FOOTER_HEIGHT, layoutGraph, layoutInputsPanel, layoutSlotLane, layoutStages } from './layout';
+import {
+  NODE_FOOTER_HEIGHT,
+  RANK_GAP,
+  layoutExportsPanel,
+  layoutGraph,
+  layoutInputsPanel,
+  layoutSlotLane,
+  layoutStages
+} from './layout';
 import { assignApiColors } from './apiColors';
 import { assignSubflowColors } from './subflowColors';
 import { useFollowActiveNode } from './follow';
@@ -70,6 +78,27 @@ const edgeLabel = (edge) => {
 const LABEL_BASELINE = -4;
 const LABEL_ROW = -11;
 
+/**
+ * A label is centred on the midpoint of its edge, and elided to what fits beside it.
+ *
+ * Both halves answer the same fault: the label ran *from* the midpoint rightward, so every character
+ * past the half-corridor was drawn over the box the edge points at — at `.edge-label`'s size, from
+ * about the seventh. Centring spends the corridor from both ends instead of one, and the elision is
+ * what keeps a name longer than the whole corridor from reaching a box anyway. The full text is on
+ * the hover, which the edge already carries for the value it moved (§5.3), so nothing is lost.
+ *
+ * The budget is measured rather than guessed at: `RANK_GAP` is the corridor, the clearance keeps a
+ * full-width label off the borders on either side of it, and 10px text averages a little over half
+ * its size per character. Being a character out costs a character, which is why this is arithmetic
+ * on the layout's own numbers and not a constant somebody would have to keep in step with them.
+ */
+const LABEL_CHAR_WIDTH = 5.2;
+const LABEL_CLEARANCE = 8;
+const LABEL_MAX_CHARS = Math.floor((RANK_GAP - LABEL_CLEARANCE) / LABEL_CHAR_WIDTH);
+
+const elide = (label) =>
+  label && label.length > LABEL_MAX_CHARS ? `${label.slice(0, LABEL_MAX_CHARS - 1)}…` : label;
+
 const labelRows = (edges) => {
   const taken = new Map();
 
@@ -87,11 +116,12 @@ const labelRows = (edges) => {
 /**
  * The mark hangs to the *left* of the label rather than being prefixed to it.
  *
- * A label is laid out from the midpoint of its edge and runs rightward, so a prefix pushes the name
- * it identifies away from the edge it belongs to and toward the node it points at. Stepping back by
- * the mark's own advance and returning a hair of it as a gap leaves the name where an unmarked one
- * sits, with the mark in the space before it. The two are the mark's width at `.edge-label`'s font
- * size — a measurement is not available before layout, and being a pixel out here costs nothing.
+ * A label is centred on the midpoint of its edge, and a prefix would push the name it identifies off
+ * that midpoint and toward the node the edge points at. Stepping back by the mark's own advance and
+ * returning a hair of it as a gap cancels it out of the centring — the chunk's advance is what the
+ * anchor measures — so the name sits where an unmarked one sits, with the mark in the space before
+ * it. The two are the mark's width at `.edge-label`'s font size — a measurement is not available
+ * before layout, and being a pixel out here costs nothing.
  */
 const MARK_OFFSET = -13;
 const MARK_GAP = 3;
@@ -294,6 +324,30 @@ const dataEdgeTitle = (edge, nodeStates, unproduced) => {
 };
 
 /**
+ * §5.6: an `exports:` entry references `steps.<id>.<output>` (001 §12.1, and validation requires the
+ * output to exist), so the value it carries is the producing step's declared output — the same fact
+ * `dataEdgeTitle` reads off the same run, asked of the flow's boundary rather than of an edge.
+ *
+ * Nothing is claimed before that step ends: a value read mid-run would be the previous attempt's on
+ * a step that is retrying, and `undefined` is not "no value" until there is no attempt left to make.
+ */
+const EXPORT_REFERENCE = /^steps\.([^.]+)\.([^.]+)$/;
+
+const exportValue = (source, nodeStates) => {
+  const reference = EXPORT_REFERENCE.exec(source);
+  if (!reference) {
+    return undefined;
+  }
+
+  const producer = nodeStates[reference[1]];
+  if (!producer || !TERMINAL_STATES.has(producer.state) || !producer.outputs) {
+    return undefined;
+  }
+  const value = producer.outputs[reference[2]];
+  return value === undefined ? undefined : preview(value);
+};
+
+/**
  * §5.3: which slots a step touches. A slot is the one relationship on this drawing that cannot be
  * traced by following the lines — 001 §9.1 has it name no producer — so the step being read brings
  * its own along, whether or not the whole layer is on.
@@ -445,11 +499,17 @@ const FlowGraph = ({
    */
   const inputParams = description.params || [];
   const inputVars = description.vars || [];
+  const exportEntries = description.exports || [];
   const inputs = layoutInputsPanel(graph, { params: inputParams, vars: inputVars });
-  // The gutter the panel claims, added to the drawing's extent the way the slot lane adds to its
-  // height — the viewBox starts further left rather than the graph being shifted right. The panel
-  // sits at a negative x, so the room it needs is exactly how far left it starts.
+  const exportsPanel = layoutExportsPanel(graph, exportEntries);
+  // The gutters the panels claim, added to the drawing's extent the way the slot lane adds to its
+  // height — the viewBox starts further left and ends further right rather than the graph being
+  // shifted. The inputs panel sits at a negative x, so the room it needs is exactly how far left it
+  // starts; the exports panel's is how far past the drawing it ends.
   const gutter = inputs ? -inputs.x : 0;
+  const rightGutter = exportsPanel ? exportsPanel.x + exportsPanel.width - graph.width : 0;
+  const width = graph.width + gutter + rightGutter;
+  const drawnHeight = Math.max(height, inputs?.height || 0, exportsPanel?.height || 0);
 
   /**
    * The drawing scrolls inside this box (§5.2), so the run walks off the edge of it on any flow
@@ -493,9 +553,9 @@ const FlowGraph = ({
       <div className="flow-graph-viewport" ref={viewportRef} data-testid="flow-graph-viewport">
         <svg
           className="flow-graph"
-          viewBox={`${-GRAPH_MARGIN - gutter} ${-GRAPH_MARGIN - band} ${graph.width + gutter + GRAPH_MARGIN * 2} ${Math.max(height, inputs?.height || 0) + GRAPH_MARGIN * 2 + band}`}
-          width={graph.width + gutter + GRAPH_MARGIN * 2}
-          height={Math.max(height, inputs?.height || 0) + GRAPH_MARGIN * 2 + band}
+          viewBox={`${-GRAPH_MARGIN - gutter} ${-GRAPH_MARGIN - band} ${width + GRAPH_MARGIN * 2} ${drawnHeight + GRAPH_MARGIN * 2 + band}`}
+          width={width + GRAPH_MARGIN * 2}
+          height={drawnHeight + GRAPH_MARGIN * 2 + band}
           data-focus={focusedStep || undefined}
           data-testid="flow-graph"
         >
@@ -508,25 +568,25 @@ const FlowGraph = ({
           {/* 002 §5.6: what the run starts from, in the gutter to the left of rank 0. Editable while
               the tab shows the flow as it stands; a record of values once it shows a stored run. */}
           {inputs ? (
-            <g className="flow-inputs" transform={`translate(${inputs.x}, ${inputs.y})`} data-testid="flow-inputs">
-              <rect className="inputs-box" width={inputs.width} height={inputs.height} rx="4" />
+            <g className="flow-panel flow-inputs" transform={`translate(${inputs.x}, ${inputs.y})`} data-testid="flow-inputs">
+              <rect className="panel-box" width={inputs.width} height={inputs.height} rx="4" />
               <foreignObject x="0" y="0" width={inputs.width} height={inputs.height}>
-                <div className="inputs-body" xmlns="http://www.w3.org/1999/xhtml">
-                  <div className="inputs-title">{onParamChange ? 'Inputs' : 'Inputs · as run'}</div>
+                <div className="panel-body" xmlns="http://www.w3.org/1999/xhtml">
+                  <div className="panel-title">{onParamChange ? 'Inputs' : 'Inputs · as run'}</div>
 
                   {inputParams.length ? (
-                    <div className="inputs-section">
-                      <div className="inputs-section-label">Params</div>
+                    <div className="panel-section">
+                      <div className="panel-section-label">Params</div>
                       {inputParams.map((param) => (
-                        <label className="inputs-row" key={param.name}>
-                          <span className="inputs-name">
+                        <label className="panel-row" key={param.name}>
+                          <span className="panel-name">
                             {param.name}
-                            {param.required ? <span className="inputs-required">*</span> : null}
+                            {param.required ? <span className="panel-required">*</span> : null}
                           </span>
                           {onParamChange ? (
                             <input
                               type={param.secret ? 'password' : 'text'}
-                              className="inputs-input"
+                              className="panel-input"
                               data-testid={`flow-input-${param.name}`}
                               value={paramValues?.[param.name] ?? ''}
                               placeholder={param.default === undefined ? '' : String(param.default)}
@@ -535,7 +595,7 @@ const FlowGraph = ({
                           ) : (
                             /* A run that predates the record says so rather than showing an empty
                                box, which would read as "nothing was supplied". */
-                            <span className="inputs-value" data-testid={`flow-input-${param.name}`}>
+                            <span className="panel-value" data-testid={`flow-input-${param.name}`}>
                               {paramValues === undefined
                                 ? 'not recorded'
                                 : paramValues[param.name] === undefined
@@ -551,17 +611,17 @@ const FlowGraph = ({
                   {/* §7.3 resolves `vars:` per iteration, so what is shown is the expression the
                       file declares — the same thing in both modes, and what an author would edit. */}
                   {inputVars.length ? (
-                    <div className="inputs-section">
-                      <div className="inputs-section-label">Vars</div>
+                    <div className="panel-section">
+                      <div className="panel-section-label">Vars</div>
                       {inputVars.map((entry) => (
-                        <div className="inputs-row" key={entry.name}>
-                          <span className="inputs-name">{entry.name}</span>
+                        <div className="panel-row" key={entry.name}>
+                          <span className="panel-name">{entry.name}</span>
                           {/* The value this run resolved where there is one, and the expression
                               otherwise: `{{$guid}}` is the interesting thing about a flow that has
                               not run and the least interesting thing about one that has. The
                               expression stays reachable as the title. */}
                           <span
-                            className="inputs-value"
+                            className="panel-value"
                             title={entry.expression}
                             data-testid={`flow-var-${entry.name}`}
                           >
@@ -573,6 +633,44 @@ const FlowGraph = ({
                       ))}
                     </div>
                   ) : null}
+                </div>
+              </foreignObject>
+            </g>
+          ) : null}
+
+          {/* 002 §5.6: what a library hands back (001 §12.1), in the gutter past the last rank —
+              the end of the drawing a value leaves by, opposite the inputs it entered at. */}
+          {exportsPanel ? (
+            <g
+              className="flow-panel flow-exports"
+              transform={`translate(${exportsPanel.x}, ${exportsPanel.y})`}
+              data-testid="flow-exports"
+            >
+              <rect className="panel-box" width={exportsPanel.width} height={exportsPanel.height} rx="4" />
+              <foreignObject x="0" y="0" width={exportsPanel.width} height={exportsPanel.height}>
+                <div className="panel-body" xmlns="http://www.w3.org/1999/xhtml">
+                  <div className="panel-title">Exports</div>
+
+                  {exportEntries.map((entry) => {
+                    const value = exportValue(entry.source, nodeStates);
+                    return (
+                      <div className="panel-row" key={entry.name}>
+                        <span className="panel-name">{entry.name}</span>
+                        {/* The value this run produced where there is one, and the reference the
+                            file declares otherwise — the same trade §5.6's vars row makes, and for
+                            the same reason: `steps.login.token` is the interesting thing about a
+                            library that has not run and the least interesting thing about one that
+                            has. The reference stays reachable as the title. */}
+                        <span
+                          className={`panel-value${value === undefined ? ' pending' : ''}`}
+                          title={entry.source}
+                          data-testid={`flow-export-${entry.name}`}
+                        >
+                          {value === undefined ? entry.source : value}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </div>
               </foreignObject>
             </g>
@@ -619,8 +717,11 @@ const FlowGraph = ({
 
           {edges.map((edge, index) => {
             const label = edgeLabel(edge);
+            const shown = elide(label);
             const unproduced = isUnproduced(edge, nodeStates);
-            const title = dataEdgeTitle(edge, nodeStates, unproduced);
+            // An elided label names itself on hover, where the edge already answers for the value it
+            // carried — the shortened name must not be the only place the full one is written.
+            const title = dataEdgeTitle(edge, nodeStates, unproduced) || (shown === label ? undefined : label);
             return (
               <g
                 key={`${edge.from}-${edge.to}-${edge.kind}-${index}`}
@@ -633,18 +734,18 @@ const FlowGraph = ({
                   on the label, so the path answers for itself too. */}
                 {title ? <title>{title}</title> : null}
                 <path d={edge.path} markerEnd="url(#flow-arrow)" />
-                {label ? (
-                  <text className="edge-label" dy={LABEL_BASELINE + rows[index] * LABEL_ROW}>
+                {shown ? (
+                  <text className="edge-label" textAnchor="middle" dy={LABEL_BASELINE + rows[index] * LABEL_ROW}>
                     <textPath href={`#edge-path-${index}`} startOffset="50%">
                       {unproduced ? (
                         <>
                           <tspan className="edge-mark" dx={MARK_OFFSET}>
                             ✗
                           </tspan>
-                          <tspan dx={MARK_GAP}>{label}</tspan>
+                          <tspan dx={MARK_GAP}>{shown}</tspan>
                         </>
                       ) : (
-                        label
+                        shown
                       )}
                     </textPath>
                   </text>

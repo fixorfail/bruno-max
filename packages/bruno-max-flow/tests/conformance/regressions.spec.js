@@ -1165,6 +1165,10 @@ describe('R4j — run:start names the capture directory', () => {
 
     expect(event.captureDir).toBe(started.captureDir);
     expect(event.captureDir).toEqual(expect.any(String));
+    // Still the *run* directory, not the suite holding it: §14.5 nesting a run changed where the
+    // directory is, not what `captureDir` names.
+    expect(path.basename(path.dirname(event.captureDir))).toMatch(/^suite-/);
+    expect(run.files.has(path.join(event.captureDir, 'run.json'))).toBe(true);
   });
 
   it('omits it when capture is disabled', async () => {
@@ -1845,5 +1849,155 @@ describe('R4f — cookie jar scoping', () => {
     // The sub-flow received the Set-Cookie; the caller's later step sees it.
     expect(run.call('getThing', 1).cookie).toBe('sid=a');
     expect(new Set(run.calls.map((entry) => entry.jar)).size).toBe(1);
+  });
+});
+
+/**
+ * §13.2's results carry the step's `name:` and `meta:` alongside its id, because a report keyed on
+ * either has to key every row: a suite where the skipped and sub-flow rows lost their case id would
+ * import into a test manager as a partially unrecognised run.
+ */
+describe('a step result carries the step\'s name and meta', () => {
+  const RESPONSES = {
+    login: { status: 200, body: { data: { access_token: 'tok-user', user: { id: 'cust-7' } } } },
+    createOrder: { status: 201, body: { data: { id: 'ord-1' } } },
+    createQuote: { status: 200, body: { data: { quote: { id: 'q_a1', amount: 4200 } } } },
+    getRates: { status: 200, body: { data: { rates: [{ id: 'r_b7', amount: 3900 }] } } },
+    bookShipment: { status: 200, body: { data: { order_id: 'ord-1', tracking: 'TRK-1' } } },
+    cancelOrder: { status: 200, body: { data: { id: 'ord-1', state: 'cancelled' } } }
+  };
+
+  let run;
+
+  beforeAll(async () => {
+    // The sub-flow is labelled in its own file, which is where the assertion below has to come
+    // from: an internal step's metadata is the sub-flow's to declare, not the caller's.
+    const library = variant('f2-login.flow.yml', (document) => {
+      Object.assign(document.steps[0], { name: 'Sign in', meta: { testId: 'C0001' } });
+    });
+    const caller = variant('f2-order-fulfillment.flow.yml', (document) => {
+      const step = (id) => document.steps.find((entry) => entry.id === id);
+      step('auth').uses = './f2-login.variant.flow.yml';
+      Object.assign(step('auth'), { name: 'Authenticate', meta: { testId: 'C1000' } });
+      Object.assign(step('create_order'), {
+        name: 'Create the order',
+        meta: { testId: 2001, owner: 'payments', tags: ['smoke'] }
+      });
+      Object.assign(step('quote_fallback'), { name: 'Fallback quote', meta: { testId: 'C3000' } });
+    });
+
+    run = await runFlow(caller.entry, {
+      responses: RESPONSES,
+      files: { ...library.files, ...caller.files }
+    });
+  });
+
+  it('labels a step that ran, without coercing what it declared', () => {
+    expect(run.outcome('create_order')).toBe('success');
+    expect(run.step('create_order')).toMatchObject({
+      name: 'Create the order',
+      meta: { testId: 2001, owner: 'payments', tags: ['smoke'] }
+    });
+  });
+
+  it('labels a step that never ran', () => {
+    expect(run.outcome('quote_fallback')).toBe('skipped:unmet-dependency');
+    expect(run.step('quote_fallback')).toMatchObject({ name: 'Fallback quote', meta: { testId: 'C3000' } });
+  });
+
+  it('labels a sub-flow internal from its own file, and the container from the caller', () => {
+    expect(run.step('auth/login')).toMatchObject({ name: 'Sign in', meta: { testId: 'C0001' } });
+    expect(run.step('auth')).toMatchObject({ name: 'Authenticate', meta: { testId: 'C1000' } });
+  });
+
+  // A key opened and left empty is not a label, and `StepResult.name` is read straight into a JUnit
+  // testcase property — "null" there would be a name nobody wrote.
+  it('leaves a step whose name: says nothing without one', async () => {
+    const { entry, files } = variant(flow('r1-dead-service.flow.yml'), (document) => {
+      document.steps.find((step) => step.id === 'create').name = null;
+      document.steps.find((step) => step.id === 'consume').name = '   ';
+    });
+    const bare = await runFlow(entry, { files, responses: { createThing: CREATED, getThing: STATE } });
+
+    expect(bare.step('create')).not.toHaveProperty('name');
+    expect(bare.step('consume')).not.toHaveProperty('name');
+  });
+
+  it('says nothing for a step that declares none', () => {
+    expect(run.step('quote_primary').name).toBeUndefined();
+    expect(run.step('quote_primary')).not.toHaveProperty('meta');
+  });
+
+  // The stream and the result are two views of one outcome (§13.2), so a reporter reading events
+  // and one reading `RunResult` must not see different rows. Compared as a set, because a sub-flow
+  // internal ends before the container it is inside and the two views order that pair differently.
+  it('reports the same labels on step:end as on the result', () => {
+    const label = (step) => `${step.id}|${step.name}|${JSON.stringify(step.meta)}`;
+    const ended = run.events.filter((event) => event.type === 'step:end');
+
+    expect(ended.map((event) => label(event.result)).sort()).toEqual(
+      run.iterations[0].steps.map(label).sort()
+    );
+    // §13.2 requires every event to survive the clone, which a verbatim mapping has to as well.
+    expect(structuredClone(ended.find((event) => event.result.id === 'auth/login').result).meta).toEqual({
+      testId: 'C0001'
+    });
+  });
+});
+
+/**
+ * §13.2's `origin` — who started a run and against what.
+ *
+ * The engine records it and reads no part of it. Reported in three places because three different
+ * readers need it at three different moments: the manifest for a history that has not opened the
+ * run (§14.5), `run:start` for a view watching one in flight (002 §10), and the result for a
+ * reporter writing it out (§14.8). All three are the same object, so none can contradict another.
+ */
+describe('a run records where it came from', () => {
+  const ORIGIN = { host: 'cli', environment: 'staging', globalEnvironment: 'shared' };
+
+  const started = (run) => run.events.find((event) => event.type === 'run:start');
+
+  it('reports it on the stream, on the result and in the manifest', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE },
+      origin: ORIGIN
+    });
+
+    expect(started(run).origin).toEqual(ORIGIN);
+    expect(run.result.origin).toEqual(ORIGIN);
+    expect(run.files.json(path.join(run.captureDir, 'run.json')).origin).toEqual(ORIGIN);
+  });
+
+  // A host reporting only which side it ran from says nothing about environments, and an absent
+  // name must not become an empty one.
+  it('carries only what the host named', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE },
+      origin: { host: 'app' }
+    });
+
+    expect(run.result.origin).toEqual({ host: 'app' });
+    expect(run.result.origin).not.toHaveProperty('environment');
+  });
+
+  it('says nothing at all when the host named nothing', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE }
+    });
+
+    expect(run.result).not.toHaveProperty('origin');
+    expect(started(run)).not.toHaveProperty('origin');
+    expect(run.files.json(path.join(run.captureDir, 'run.json'))).not.toHaveProperty('origin');
+  });
+
+  // §13.2 requires every event to survive the clone; these are plain strings, so it does.
+  it('survives the clone the event stream requires', async () => {
+    const run = await runFlow(flow('r1-dead-service.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE },
+      origin: ORIGIN
+    });
+
+    expect(structuredClone(started(run)).origin).toEqual(ORIGIN);
   });
 });

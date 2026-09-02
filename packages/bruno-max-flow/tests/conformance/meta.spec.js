@@ -20,6 +20,7 @@ describe('R4z — reading a flow\'s properties', () => {
       'meta:',
       '  name: "  Checkout happy path  "',
       '  description: Creates a payment.',
+      '  testId: "  C1000  "',
       '  tags: [checkout, smoke]',
       '  library: true',
       ''
@@ -28,6 +29,7 @@ describe('R4z — reading a flow\'s properties', () => {
     expect(readFlowProperties(text)).toEqual({
       name: 'Checkout happy path',
       description: 'Creates a payment.',
+      testId: 'C1000',
       tags: ['checkout', 'smoke'],
       library: true
     });
@@ -41,6 +43,16 @@ describe('R4z — reading a flow\'s properties', () => {
   it('reports the defaults for a flow that declares no meta, and for one that declares them false', () => {
     expect(readFlowProperties('version: 1\nsteps:\n  - id: a\n')).toEqual(NONE);
     expect(readFlowProperties('version: 1\nmeta:\n  library: false\n  tags: []\n')).toEqual(NONE);
+  });
+
+  /**
+   * `document.ts` coerces this key, so the dialog has to read back the string the engine would
+   * normalize to — otherwise the field shows `1000` as a number the moment it is edited.
+   */
+  it('reads a case id the author wrote as a bare number, and omits a blank one', () => {
+    expect(readFlowProperties('version: 1\nmeta:\n  testId: 1000\n')).toEqual({ ...NONE, testId: '1000' });
+    expect(readFlowProperties('version: 1\nmeta:\n  testId: "   "\n')).toEqual(NONE);
+    expect(readFlowProperties('version: 1\nmeta:\n  testId:\n')).toEqual(NONE);
   });
 
   it('reads a flow carrying §5.4\'s local tags, which a plain parser calls an error', () => {
@@ -154,9 +166,73 @@ describe('R4z — writing a flow\'s properties', () => {
       .toBeUndefined();
   });
 
+  /** §5.2's order: the case id sits with the prose it describes, above the tags. */
+  it('writes a case id after description and before tags', () => {
+    const text = 'version: 1\nmeta:\n  name: Checkout\n';
+
+    expect(writeFlowProperties(text, { name: 'Checkout', description: 'Does things.', testId: 'C1000', tags: ['smoke'], library: false }))
+      .toBe(
+        [
+          'version: 1',
+          'meta:',
+          '  name: Checkout',
+          '  description: Does things.',
+          '  testId: C1000',
+          '  tags:',
+          '    - smoke',
+          ''
+        ].join('\n')
+      );
+  });
+
+  it('deletes a case id that was cleared, like every other default', () => {
+    const text = 'version: 1\nmeta:\n  name: Checkout\n  testId: C1000\n';
+
+    expect(writeFlowProperties(text, { ...NONE, name: 'Checkout' })).toBe('version: 1\nmeta:\n  name: Checkout\n');
+    expect(writeFlowProperties(text, { ...NONE, name: 'Checkout', testId: '   ' }))
+      .toBe('version: 1\nmeta:\n  name: Checkout\n');
+  });
+
+  /**
+   * The guarantee the whole module exists for, applied to the new key: setting it must move nothing
+   * else, comments and steps included.
+   */
+  it('leaves the rest of the document byte-identical when only the case id changes', () => {
+    const text = [
+      'version: 1',
+      '',
+      'meta:',
+      '  name: Checkout # the prose name',
+      '',
+      'apis:',
+      // One space before the comment on purpose: aligned padding collapses, which is this
+      // module's one documented exception and has a test of its own above.
+      '  payments-api: ./payments.yml # the binding',
+      '',
+      'vars:',
+      '  catalog: !file ./catalog.json',
+      '',
+      'steps:',
+      '  - id: a',
+      '    operation: payments-api#createPayment',
+      ''
+    ].join('\n');
+    const written = writeFlowProperties(text, { ...NONE, name: 'Checkout', testId: 'C1000' });
+
+    expect(written).toBe(text.replace('  name: Checkout # the prose name', '  name: Checkout # the prose name\n  testId: C1000'));
+    // And removing it puts the file back exactly as it was.
+    expect(writeFlowProperties(written, { ...NONE, name: 'Checkout' })).toBe(text);
+  });
+
   /** What is written has to read back as what was asked for, for every field at once. */
   it('round-trips through the reader', () => {
-    const properties = { name: 'Checkout', description: 'Does things.', tags: ['checkout', 'smoke'], library: true };
+    const properties = {
+      name: 'Checkout',
+      description: 'Does things.',
+      testId: 'C1000',
+      tags: ['checkout', 'smoke'],
+      library: true
+    };
 
     expect(readFlowProperties(writeFlowProperties('version: 1\nsteps:\n  - id: a\n', properties))).toEqual(properties);
   });

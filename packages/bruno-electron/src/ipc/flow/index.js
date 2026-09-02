@@ -155,14 +155,71 @@ const requireScriptInScope = (entry, scope) => {
   return resolved;
 };
 
-const requireEditableInScope = (entry, scope) =>
-  (typeof entry === 'string' && entry.toLowerCase().endsWith('.js')
-    ? requireScriptInScope(entry, scope)
-    : requireFlowInScope(entry, scope));
+/**
+ * 002 §4.6's data files — the same rule as a script's, over a different directory.
+ *
+ * There is no extension test to pair it with: 001 §7.4 reads JSON, YAML and CSV and takes bodies and
+ * attachments of whatever type the operation wants, so the directory is the whole of the rule.
+ */
+const requireFixtureInScope = (entry, scope) => {
+  requireScope(scope);
+  const root = path.resolve(scope.collectionRoot || scope.workspaceRoot);
+  const resolved = path.resolve(entry);
+  const relative = path.relative(path.join(root, 'flows', 'fixtures'), resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('fixture is outside the scope flows/fixtures directory');
+  }
+  return resolved;
+};
 
-/** 002 §4.3 — the flow's own text, for the raw editor; §4.5's script, for its own. */
-const readFlowSourceHandler = async ({ entry, scope }) =>
-  fs.promises.readFile(requireEditableInScope(entry, scope), 'utf8');
+const isInFixturesDirectory = (entry, scope) => {
+  try {
+    requireFixtureInScope(entry, scope);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+/**
+ * Fixtures are tested first, and by directory alone.
+ *
+ * A `.js` under `flows/fixtures/` is a fixture — it is data a flow reads, not a `use:` helper — and
+ * checking the extension first would send it to the script guard, which would refuse it for sitting
+ * outside `flows/scripts/`. The two directories are disjoint, so nothing else changes hands.
+ */
+const requireEditableInScope = (entry, scope) => {
+  if (typeof entry === 'string' && isInFixturesDirectory(entry, scope)) {
+    return requireFixtureInScope(entry, scope);
+  }
+  return typeof entry === 'string' && entry.toLowerCase().endsWith('.js')
+    ? requireScriptInScope(entry, scope)
+    : requireFlowInScope(entry, scope);
+};
+
+/**
+ * Whether a buffer is text at all — a NUL byte in the first 8 KiB, which is the heuristic `git` uses
+ * to call a file binary.
+ *
+ * §4.6 lists a fixture whatever its type, because that is what the corpus holds — 001 §7.4's own
+ * example attaches a `.pdf`. Decoding one as UTF-8 would fill the editor with replacement characters
+ * and the next save would write them back, destroying the file with nothing on screen having said
+ * so. Refusing the read is the only honest answer, and content decides it rather than an extension
+ * list, which would be wrong for exactly the unfamiliar types a fixture corpus collects.
+ */
+const BINARY_SNIFF_BYTES = 8192;
+
+const isBinary = (buffer) => buffer.subarray(0, BINARY_SNIFF_BYTES).includes(0);
+
+/** 002 §4.3 — the flow's own text, for the raw editor; §4.5's script and §4.6's fixture, for theirs. */
+const readFlowSourceHandler = async ({ entry, scope }) => {
+  const resolved = requireEditableInScope(entry, scope);
+  const buffer = await fs.promises.readFile(resolved);
+  if (isBinary(buffer)) {
+    throw new Error('this file is not text, and editing it here would corrupt it');
+  }
+  return buffer.toString('utf8');
+};
 
 /**
  * The editor writes the file the watcher is already watching, so the tree update, the re-describe
@@ -279,7 +336,7 @@ const flowsFolderHandler = ({ scopeRoot }) => {
  * The extension is required rather than appended: `.flow.yml` is what `scanFlows` matches on, and a
  * file written without it would be created successfully and then be invisible to everything.
  */
-const createFlowHandler = async ({ directory, filename, content }) => {
+const writeNewFlow = async ({ directory, filename, content }) => {
   requireFlowFilename(filename);
   if (typeof directory !== 'string' || !directory) {
     throw new Error('a flow needs a directory to be created in');
@@ -302,6 +359,31 @@ const createFlowHandler = async ({ directory, filename, content }) => {
   }
 
   return pathname;
+};
+
+const createFlowHandler = (request) => writeNewFlow(request);
+
+/**
+ * 002 §4.7 — duplicating a flow: its document, under a new name.
+ *
+ * **The copy is the source's own text with `meta:` replaced, rather than a document rebuilt from the
+ * form.** `writeFlowProperties` is §4.4's writer and preserves every node it does not touch —
+ * comments, anchors, `!file` tags, blank lines and the whole of `steps:` — which is the difference
+ * between a duplicate the author can diff against its original and one they have to re-read. The
+ * form supplies the four fields `meta:` holds and nothing else, because everything else is the point
+ * of duplicating rather than creating.
+ *
+ * The source is scope-checked, like every read; the destination is not, like every create — the form
+ * offers the source's own directory and lets the author browse anywhere, exactly as §4.1's does.
+ */
+const duplicateFlowHandler = async ({ entry, scope, directory, filename, properties }) => {
+  const source = requireFlowInScope(entry, scope);
+  const content = writeFlowProperties(await fs.promises.readFile(source, 'utf8'), properties);
+  if (!content) {
+    throw new Error(`${path.basename(source)} is not a YAML document — fix it in the YAML editor first`);
+  }
+
+  return writeNewFlow({ directory, filename, content });
 };
 
 /**
@@ -343,6 +425,21 @@ const readCaptureHandler = ({ dir, stepId, iteration, attempt }) => {
 };
 
 /**
+ * What a reader of the run sees as its provenance — 001 §14.5 records it beside the result, so the
+ * §10 list and a CI reporter say where a run came from without asking whichever host is rendering
+ * it.
+ *
+ * Only the tier *names* travel: the values are already in `variables`, and a name is the part a
+ * reader reads. A tier nobody selected has no key at all rather than an `undefined` one, because
+ * this is written to JSON and an absent environment is not an environment named nothing.
+ */
+const originFor = (tiers = {}) => ({
+  host: 'app',
+  ...(tiers.environment?.name ? { environment: tiers.environment.name } : {}),
+  ...(tiers.globalEnvironment?.name ? { globalEnvironment: tiers.globalEnvironment.name } : {})
+});
+
+/**
  * Resolves as soon as the run has an identity rather than when it finishes, because the renderer
  * needs the `runId` to attach the events already arriving. A failure before `run:start` — a flow
  * that does not parse — has no run to report and rejects instead.
@@ -368,6 +465,7 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
         onRequest: (log) => queueRequestLog(win, log)
       }),
       variables: buildVariables({ tiers, scope }),
+      origin: originFor(tiers),
       params,
       overrides,
       signal: controller.signal,
@@ -450,6 +548,7 @@ const registerFlowIpc = (mainWindow) => {
   ipcMain.handle('renderer:flow-read-capture', (event, request) => readCaptureHandler(request));
   ipcMain.handle('renderer:flow-folder', (event, request) => flowsFolderHandler(request));
   ipcMain.handle('renderer:flow-create', (event, request) => createFlowHandler(request));
+  ipcMain.handle('renderer:flow-duplicate', (event, request) => duplicateFlowHandler(request));
   ipcMain.handle('renderer:flow-read-properties', (event, request) => readFlowPropertiesHandler(request));
   ipcMain.handle('renderer:flow-update-properties', (event, request) => updateFlowPropertiesHandler(request));
   ipcMain.handle('renderer:flow-rename-script', (event, request) => renameFlowScriptHandler(request));
@@ -470,6 +569,7 @@ module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
 module.exports.flowsFolderHandler = flowsFolderHandler;
 module.exports.createFlowHandler = createFlowHandler;
+module.exports.duplicateFlowHandler = duplicateFlowHandler;
 module.exports.readFlowPropertiesHandler = readFlowPropertiesHandler;
 module.exports.updateFlowPropertiesHandler = updateFlowPropertiesHandler;
 module.exports.renameFlowScriptHandler = renameFlowScriptHandler;

@@ -32,8 +32,9 @@ const FlowTabLabel = withSuspense(lazy(() => import('./flows/FlowTabLabel')));
 const FlowTabHeader = withSuspense(lazy(() => import('./flows/FlowTabHeader')));
 const FlowYamlTabPane = withSuspense(lazy(() => import('./flows/FlowYamlTabPane')));
 const FlowYamlTabLabel = withSuspense(lazy(() => import('./flows/FlowYamlTabLabel')));
-const FlowScriptTabPane = withSuspense(lazy(() => import('./flows/FlowScriptTabPane')));
+const FlowSourceTabPane = withSuspense(lazy(() => import('./flows/FlowSourceTabPane')));
 const FlowScriptTabLabel = withSuspense(lazy(() => import('./flows/FlowScriptTabLabel')));
+const FlowFixtureTabLabel = withSuspense(lazy(() => import('./flows/FlowFixtureTabLabel')));
 const FlowSpecialTab = withSuspense(lazy(() => import('./flows/ForkSpecialTab')));
 
 export const forkReducers = {
@@ -58,7 +59,9 @@ export const ForkTabPane = ({ tab }) => {
   if (tab.type === 'flow-yaml') {
     return <FlowYamlTabPane tab={tab} />;
   }
-  return tab.type === 'flow-script' ? <FlowScriptTabPane tab={tab} /> : null;
+  // §4.5's script and §4.6's fixture are one pane: both edit a plain file with §4.3's session and
+  // neither has a graph.
+  return tab.type === 'flow-script' || tab.type === 'flow-fixture' ? <FlowSourceTabPane tab={tab} /> : null;
 };
 
 export const ForkTabLabel = ({ type, tabName }) => {
@@ -68,7 +71,10 @@ export const ForkTabLabel = ({ type, tabName }) => {
   if (type === 'flow-yaml') {
     return <FlowYamlTabLabel tabName={tabName} />;
   }
-  return type === 'flow-script' ? <FlowScriptTabLabel tabName={tabName} /> : null;
+  if (type === 'flow-script') {
+    return <FlowScriptTabLabel tabName={tabName} />;
+  }
+  return type === 'flow-fixture' ? <FlowFixtureTabLabel tabName={tabName} /> : null;
 };
 
 /**

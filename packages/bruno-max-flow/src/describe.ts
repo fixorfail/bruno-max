@@ -120,6 +120,7 @@ const nodesOf = (flow: NormalizedFlow, specs: Map<string, SpecIndex>, prefix: st
     return {
       id: `${prefix}${step.id}`,
       name: step.name,
+      ...(Object.keys(step.meta).length ? { meta: step.meta } : {}),
       kind: step.kind,
       // The method and path are what the step *does*, and resolving them is the whole point of
       // having an engine describe the flow rather than the renderer reading the YAML (002 §5.1).
@@ -230,6 +231,7 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     isLibrary: false,
     params: [],
     vars: [],
+    exports: [],
     apis: [],
     nodes: [],
     edges: [],
@@ -267,6 +269,9 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
       name,
       expression: typeof expression === 'string' ? expression : JSON.stringify(expression)
     })),
+    // The reference the file wrote, not the value it will carry: an export has no value until the
+    // run that produces it has ended, and the reference is what an author reads and changes.
+    exports: Object.entries(flow.exports).map(([name, source]) => ({ name, source })),
     // §6.2's bindings, in the order the file declares them — which is the order 002 §5.1 assigns
     // colours in for the ones that declare none.
     apis: Object.values(flow.apis).map((binding) => ({ alias: binding.alias, color: binding.color })),

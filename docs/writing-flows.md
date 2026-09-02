@@ -120,6 +120,7 @@ Where prose goes, and what each field is actually used for today:
 |---|---|---|---|
 | Flow | `meta.name` | Human title | The graph title and `FlowDescription.name`; falls back to the filename |
 | Flow | `meta.description` | What the flow does and why | The app's [flow properties dialog](#flow-properties), and the reader of the file |
+| Flow | `meta.testId` | A test-management case id for the flow as a whole | Carried into reports as `test_id` (see [Reports](#reports)) |
 | Flow | `meta.tags` | Labels for grouping | The properties dialog edits them; **nothing selects on them yet** — `--tags` filtering is specified (001 §14.1) but not implemented |
 | Step | `name` | Human label for one step | Shown on the graph node beside the id |
 | Anywhere | `# comment` | Everything else | Nothing reads them; they survive in the file |
@@ -132,12 +133,17 @@ meta:
 
     Runs against the sandbox tenant. `SANDBOX_TOKEN` must be set in the
     environment, and the fixture in ./fixtures/ is shared with the refund flow.
+  testId: C1000                        # this flow's own case id — see Reports
   tags: [checkout, smoke]
 
 steps:
   - id: create_payment
     name: Create a pending payment      # shown on the node
 ```
+
+`meta.testId` is a case id for the flow as a whole, distinct from a step's own `testId` under
+[`meta:`](#a-step) — the flow's shows up as `test_id` on a flow-level report, a step's on the step's
+own testcase (see [Reports](#reports) for both).
 
 **There is no per-step `description:` field.** A step has `name` for the label and YAML comments for
 anything longer:
@@ -196,7 +202,6 @@ config:
     maxAttempts: 3
     delay: 1000
   redactHeaders: [X-Legacy-Key]   # masked in logs and captures, on top of the built-in list
-  captureRetainRuns: 10           # run directories kept before the oldest are pruned
 
 authProfiles:                  # named auth configs, referenced by steps and api bindings
   user-token:
@@ -300,6 +305,9 @@ chain as Bruno's environment variables, which they shadow.
 steps:
   - id: create_payment                       # required; unique; letters, digits, _ (no - or .)
     name: Create a pending payment           # optional label
+    meta:                                    # optional; free-form, carried into reports unchanged
+      testId: C1234                          #   TestRail-style case id — emitted as JUnit's `test_id`
+      owner: payments-team                   #   any other key just rides along as its own property
     operation: payments-api#createPayment    # required — or `uses:` for a sub-flow, never both
     auth: user-token                         # optional; an authProfiles name, or `none`
 
@@ -352,6 +360,12 @@ steps:
 **Step ids must be valid identifiers** — a letter or underscore, then letters, digits and
 underscores. `create-payment`, `create.payment` and `2nd_call` are all rejected, because ids are read
 in expressions where `-` and `.` mean something else. The validator suggests the underscored form.
+
+**`meta:` is free-form** — put whatever a reporter or a dashboard should know about this step under
+it, and it rides into every report unchanged, key for key. `testId` is the one key a built-in
+reporter treats specially: it is what the JUnit report (see [Reports](#reports)) emits as the
+testcase property `test_id`, which is the property TestRail's importer reads. Any other key you add
+— `owner`, a ticket link, whatever your team wants — becomes its own property alongside it.
 
 ---
 
@@ -1101,6 +1115,7 @@ block and the filename together:
 | Flow Name | `meta.name` — required, because the sidebar lists the flow by it |
 | File Name | the file, renamed in place; the `.flow.yml` extension is the form's, not yours |
 | Description | `meta.description` |
+| Test ID | `meta.testId` — optional, carried into reports as `test_id` |
 | Tags | `meta.tags`, as one comma-separated line |
 | Library | `meta.library` |
 
@@ -1211,10 +1226,23 @@ The options you are most likely to want:
 | `--bail` | Stop after the first failing flow |
 | `--no-capture` | Do not write `.bruno-runs/` artifacts |
 | `--capture-dir path` | Write captures somewhere other than `<scope>/.bruno-runs` |
-| `--verbose` / `--quiet` / `--silent` | How much the reporter prints |
+| `--reporter-junit` / `--reporter-json` / `--reporter-html path` | Write a report — see [Reports](#reports) below |
+| `--verbose` / `--quiet` / `--silent` | How much the console output prints |
 
-Each run writes a directory under `.bruno-runs/` holding the flow as it was, every request and
-response, and the outcome — which is what the app's run selector reads back later.
+Each run writes a directory holding the flow as it was, every request and response, and the outcome —
+which is what the app's run selector reads back later. Every run opens its own **suite** to hold it:
+a suite of one for a single flow, whether that's a run from the app or `bru flow run` against one
+file, and a suite of many — plus the reports above — when `bru flow run` selects several. See
+[Reports](#reports) for the layout either way. `listRuns` reads every suite, so the app's history
+shows a CLI run exactly as it shows one of its own; it also still reads a run directory written flat,
+from before this layout existed, as an older entry. Nothing under `.bruno-runs/` is ever deleted for
+you — it grows by one suite every run, so clearing it out is yours to do when you want the space
+back.
+
+Every run also records which environment it used — `--env` and `--global-env` here, whatever the
+run control's environment selector had chosen in the app. The app shows it as a small badge next to
+a run's result, so you can tell at a glance which environment a graph you're looking at ran against;
+the JUnit report carries the same information as suite properties (see [Reports](#reports) below).
 
 What the command exits with, for a CI job that has to tell these apart:
 
@@ -1225,6 +1253,159 @@ What the command exits with, for a CI job that has to tell these apart:
 | `2` | A flow did not validate, so it was not run |
 | `3` | The command itself was wrong — a bad path, or a `--global-env` that does not exist |
 | `4` | The run was cancelled, including by `--max-run-duration` elapsing |
+
+### Reports
+
+For CI, or for importing results into a test-management tool, ask for one of the three built-in
+reporters. The ordinary way is to name one with no path:
+
+```bash
+bru flow run flows/ --reporter-junit
+```
+
+Everything that invocation produces lands together, in one directory named for it:
+
+```
+.bruno-runs/
+  suite-2026-09-02T12-40-04Z-a3f9/     # this invocation
+    report-junit.xml
+    2026-09-02T12-40-05Z-b71c/         # flows/checkout.flow.yml's own run
+      run.json
+      ...
+    2026-09-02T12-40-07Z-9e02/         # flows/refunds.flow.yml's own run
+      run.json
+      ...
+```
+
+The report sits right beside the run directories it describes — open `report-junit.xml`, see a step
+failed, and that step's full request and response are in the sibling folder next to it, not somewhere
+else in `.bruno-runs/` you have to go find. That `suite-<startedAt>-<id>/` directory (or under
+`--capture-dir`, if you passed one) is created and `.gitignore`d before the run starts, even under
+`--no-capture`, so it's there to collect either way. `--reporter-json` and `--reporter-html` default
+the same way, to `report.json` and `report.html` alongside `report-junit.xml`, and all three can run
+together in one invocation. Because the folder name changes every run, a CI job that wants the JUnit
+file back generally globs for it — `.bruno-runs/suite-*/report-junit.xml` — rather than hardcoding
+one run's path.
+
+Give one an explicit path instead when you want the file somewhere else — a build directory a CI job
+already collects, say:
+
+```bash
+bru flow run flows/ --reporter-junit reports/flows.xml --reporter-html reports/flows.html
+```
+
+Either way, each reporter writes a single file covering **every** flow selected by the command, not
+one file per flow, and prints `Wrote <name> report to <path>` when it finishes, unless `--silent`.
+
+> Put a bare `--reporter-junit` / `-json` / `-html` **after** the flow paths on the command line — as
+> a plain string flag it otherwise swallows the very next argument as its output path, so
+> `bru flow run --reporter-junit flows/` runs nothing: `flows/` became the JUnit path, not a flow to
+> run. `--reporter junit` (the long form, with the module name spelled out) doesn't have this
+> problem, because `--reporter` always takes one explicit value.
+
+The JUnit file has one `<testsuite>` per flow (per dataset row, if the flow has one), with the flow's
+`meta.tags` and a few other identifying facts as suite properties, and one `<testcase>` per step:
+
+```xml
+<testsuite name="checkout" tests="3" failures="0" errors="0" skipped="0" time="2.341" timestamp="2026-09-02T09:14:03">
+  <properties>
+    <property name="flow" value="checkout"/>
+    <property name="name" value="Checkout happy path"/>
+    <property name="tags" value="checkout,smoke"/>
+    <property name="status" value="passed"/>
+    <property name="host" value="cli"/>
+    <property name="globalEnvironment" value="staging"/>
+  </properties>
+  <testcase name="create_payment" classname="checkout" time="0.412">
+    <properties>
+      <property name="test_id" value="C1234"/>
+      <property name="owner" value="payments-team"/>
+      <property name="name" value="Create a pending payment"/>
+    </properties>
+  </testcase>
+</testsuite>
+```
+
+That `test_id` property is where a step's `meta.testId` (see [above](#a-step)) ends up — it is the
+property TestRail's own JUnit importer reads to match a result back to a case, so tagging steps with
+their case ids is what lets a `bru flow run` in CI update TestRail directly. Every other key under a
+step's `meta:` rides along the same way — `owner` above came from `meta: { owner: payments-team }` on
+that step — so a report can carry whatever your team's tooling wants without waiting on this format
+to grow a field for it. The flow's `tags` gives you the coarser grouping: filter or group runs by
+whatever `meta.tags` a flow carries.
+
+`host` and `globalEnvironment` (plus `environment`, for a collection-scoped flow) record where the
+run came from and which environment it used — `host` is always `cli` here, since these come from
+`bru flow run`, and `globalEnvironment` is whatever `--global-env` named (see below); a run from the
+app records the same two properties with `host: app`, so a JUnit file lets a CI failure and an app
+run be told apart at a glance.
+
+`--reporter-junit-flows` writes a second JUnit shape: one `<testcase>` per **flow** instead of per
+step, all inside a single `<testsuite name="bru flow run">` for the whole invocation:
+
+```xml
+<testcase name="checkout" classname="checkout" time="2.341">
+  <properties>
+    <property name="test_id" value="C1000"/>
+    <property name="status" value="passed"/>
+    <property name="host" value="cli"/>
+  </properties>
+</testcase>
+```
+
+That `test_id` is the flow's own `meta.testId` (see [above](#documenting-a-flow)) — a case id for the
+flow as a whole, not a step's. A failed flow's `message` names whichever step (or steps) decided the
+outcome, so you still know where to look without one case per step. Pick `--reporter-junit` for a
+case per step, the shape TestRail-style case ids and per-step dashboards want; pick
+`--reporter-junit-flows` for a case per flow, the shape a tracker that only cares about whole flows
+wants. Both can run in the same invocation.
+
+### Custom reporters
+
+`--reporter` also accepts your own module, in addition to or instead of the built-ins. **Unlike a
+built-in, a custom module has no default location, so `=<path>` is required** — `--reporter
+./reporters/slack.js` with nothing after it is rejected before any flow runs, not left to fail
+partway through:
+
+```bash
+bru flow run flows/ --reporter ./reporters/slack.js=out.txt --reporter-option channel=#qa
+```
+
+A reporter module exports a factory that returns whichever hooks it wants — all of them are optional:
+
+```js
+// reporters/slack.js
+const fs = require('fs');
+
+module.exports = ({ outputPath, options }) => {
+  const lines = [];
+  return {
+    onFlowEnd(record) {
+      const owners = (record.result?.iterations[0]?.steps ?? [])
+        .map((s) => s.meta?.owner)
+        .filter(Boolean);
+      const mark = record.outcome === 'passed' ? '✓' : '✗';
+      lines.push(`${mark} ${record.name}${owners.length ? ` (${owners.join(', ')})` : ''}`);
+    },
+    onSuiteEnd(suite) {
+      const { passed, total } = suite.summary.flows;
+      const text = [`${passed}/${total} flows passed`, ...lines].join('\n');
+      fs.writeFileSync(outputPath, text);
+      // post `text` to Slack channel `options.channel` here, if you want
+    }
+  };
+};
+```
+
+`outputPath` is whatever followed `=` in `--reporter`, resolved to an absolute path; `options` holds
+every `--reporter-option key=value` pair, so the same module can be reused with different settings
+per invocation. `record.result.iterations[0].steps[i].meta` is a step's `meta:` block exactly as
+written in the flow — reach into it for whatever key your own reporter cares about.
+
+**A reporter is arbitrary code, and it runs unsandboxed in your own process** — unlike a flow's
+`script:` blocks, which run sandboxed. For that reason `--reporter` only ever comes from the command
+line: it cannot be declared in a `.flow.yml`, `bruno.json` or `workspace.yml`, and the app never loads
+one. Only name a reporter you trust, the same way you'd only run a script you trust.
 
 ## Validating a flow
 
@@ -1265,6 +1446,7 @@ What it reports:
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them — the sibling's value is not visible |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
+| `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 
 ---
 
@@ -1281,7 +1463,6 @@ What it reports:
 | `strictSchema` | `false` | config, overridable per step |
 | `concurrency` | `5` | config |
 | `cleanupGrace` | `30000` ms | config |
-| `captureRetainRuns` | `10` | config |
 | `maxRunDuration` | unset | config |
 | `retry.maxAttempts` | `1` | config or step |
 | `retry.delay` | `0` ms | config or step |

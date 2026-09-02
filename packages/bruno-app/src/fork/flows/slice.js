@@ -52,7 +52,20 @@ const initialState = {
    * view of a flow, not the thing itself, and an unsaved edit that a tab switch discarded would be
    * the one kind of state loss no editor is allowed.
    */
-  sources: {}
+  sources: {},
+  /**
+   * 002 §4.1a: absolute folder path -> whether the sidebar is showing what is inside it.
+   *
+   * **A folder absent from this map is collapsed**, which is what upstream's collection folders do
+   * (`slices/collections` creates every folder item `collapsed: true`) and therefore what a reader of
+   * this sidebar already expects a folder to do. It also keeps the map to the folders someone has
+   * actually opened rather than a key per directory on disk.
+   *
+   * Held here rather than in the section, because `SidebarSection` unmounts its children when it is
+   * collapsed: state owned by the component would forget every open folder each time the section was
+   * shut, which is the one gesture most likely to precede reopening it.
+   */
+  folderExpansion: {}
 };
 
 /**
@@ -62,9 +75,15 @@ const initialState = {
  */
 const emptySource = () => ({ content: '', saved: '', loading: true, saving: false });
 
-const emptyRun = ({ runId, iterationCount, captureDir, description, params }) => ({
+const emptyRun = ({ runId, iterationCount, captureDir, description, params, origin }) => ({
   runId,
   dir: captureDir,
+  /**
+   * §10: who started this run and against which environments, reported at `run:start` (001 §14.5).
+   * A run recorded before the field existed, or started by a host that supplied none, has none —
+   * the view says nothing rather than guessing which environment it ran against.
+   */
+  origin,
   /**
    * §5.6: what this run was started with, reported at `run:start` rather than read back from the
    * capture. The inputs node switches from boxes to a record the moment a run begins, and a node
@@ -343,7 +362,9 @@ const slice = createSlice({
          */
         params: stored.params,
         /** §5.6: `vars:` as each iteration resolved them, keyed by iteration the way `steps` is. */
-        vars: stored.vars
+        vars: stored.vars,
+        /** A live run's provenance and a stored one's are the same record — 001 §14.5's manifest. */
+        origin: stored.origin
       };
       state.flowByRunId[stored.runId] = pathname;
     },
@@ -383,6 +404,31 @@ const slice = createSlice({
     },
 
     /** `stepId` is null when the selection is cleared — clicking the selected node again (002 §9). */
+    /** §4.1a: one folder row clicked. */
+    folderToggled: (state, action) => {
+      const { key } = action.payload;
+      state.folderExpansion[key] = !state.folderExpansion[key];
+    },
+
+    /**
+     * §4.1a's header actions, over the folders the section is currently showing.
+     *
+     * They take the keys rather than clearing the map, because the store holds every scope watched
+     * since launch (§4.1) and the section shows one workspace's: collapsing what is in front of you
+     * must not silently shut the folders of a workspace you are about to switch back to.
+     */
+    foldersExpanded: (state, action) => {
+      for (const key of action.payload.keys) {
+        state.folderExpansion[key] = true;
+      }
+    },
+
+    foldersCollapsed: (state, action) => {
+      for (const key of action.payload.keys) {
+        delete state.folderExpansion[key];
+      }
+    },
+
     stepSelected: (state, action) => {
       const { pathname, stepId } = action.payload;
       state.selectedStep[pathname] = stepId;
@@ -530,6 +576,9 @@ export const {
   runClosed,
   iterationSelected,
   configurationChanged,
+  folderToggled,
+  foldersExpanded,
+  foldersCollapsed,
   stepSelected,
   requestLogsReceived,
   sourceLoaded,

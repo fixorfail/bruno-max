@@ -13,7 +13,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
 import flowsReducer from 'fork/flows/slice';
 import themes from 'themes/index';
-import FlowScriptTabPane from './index';
+import FlowSourceTabPane from './index';
 
 /**
  * 002 §4.5. The pane edits a `.js` helper with §4.3's editing session and none of its graph.
@@ -32,7 +32,7 @@ const VALID = 'const lastFour = (v) => String(v).slice(-4);\n';
 
 const initialFlowsState = () => flowsReducer(undefined, { type: '@@INIT' });
 
-const renderPane = ({ autoSave = false, flows = [script] } = {}) => {
+const renderPane = ({ autoSave = false, flows = [script], tab = { uid: 'tab-1', type: 'flow-script', pathname } } = {}) => {
   const store = configureStore({
     reducer: {
       flows: flowsReducer,
@@ -46,7 +46,7 @@ const renderPane = ({ autoSave = false, flows = [script] } = {}) => {
     ...render(
       <Provider store={store}>
         <ThemeProvider theme={theme}>
-          <FlowScriptTabPane tab={{ uid: 'tab-1', type: 'flow-script', pathname }} />
+          <FlowSourceTabPane tab={tab} />
         </ThemeProvider>
       </Provider>
     )
@@ -57,7 +57,7 @@ const type = (text) => fireEvent.change(screen.getByTestId('script-editor'), { t
 
 const invoked = (channel) => window.ipcRenderer.invoke.mock.calls.filter((call) => call[0] === channel);
 
-describe('FlowScriptTabPane', () => {
+describe('FlowSourceTabPane', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     window.ipcRenderer = {
@@ -286,5 +286,111 @@ describe('FlowScriptTabPane', () => {
 
     expect(screen.getByText('This script is no longer on disk.')).toBeInTheDocument();
     expect(screen.queryByTestId('script-editor')).not.toBeInTheDocument();
+  });
+
+  /**
+   * 002 §4.6. The same session, over `flows/fixtures/`. What differs is the highlighting and the
+   * absence of a validity gate — a corpus is JSON, YAML, CSV and whatever else an operation takes,
+   * so there is no one question to ask of a draft.
+   */
+  describe('a fixture (§4.6)', () => {
+    const fixture = (filename) => ({
+      pathname: `/home/dev/workspace-one/flows/fixtures/${filename}`,
+      filename,
+      workspaceRoot: '/home/dev/workspace-one',
+      fixture: true
+    });
+
+    const renderFixture = (filename = 'catalog.json', options = {}) => {
+      const entry = fixture(filename);
+      return renderPane({
+        ...options,
+        flows: [entry],
+        tab: { uid: 'tab-1', type: 'flow-fixture', pathname: entry.pathname }
+      });
+    };
+
+    const readResolves = (content) => {
+      window.ipcRenderer.invoke.mockImplementation((channel) =>
+        (channel === 'renderer:flow-read-source' ? Promise.resolve(content) : Promise.resolve(undefined)));
+    };
+
+    it('reads the file and shows it, named and badged as a fixture', async () => {
+      readResolves('{ "items": [] }');
+      renderFixture();
+
+      await act(async () => {});
+
+      expect(screen.getByTestId('flow-fixture-pane')).toBeInTheDocument();
+      expect(screen.getByText('catalog.json')).toBeInTheDocument();
+      expect(screen.getByText('fixture')).toBeInTheDocument();
+      expect(screen.getByTestId('script-editor')).toHaveValue('{ "items": [] }');
+    });
+
+    it('highlights by the extension it was filed under', async () => {
+      readResolves('{}');
+      renderFixture();
+
+      await act(async () => {});
+
+      expect(screen.getByTestId('script-editor')).toHaveAttribute('data-mode', 'application/ld+json');
+    });
+
+    /** The honest answer for a CSV, rather than colouring it as a language it is not. */
+    it('falls back to plain text for a type it does not know', async () => {
+      readResolves('id,name\n');
+      renderFixture('customers.csv');
+
+      await act(async () => {});
+
+      expect(screen.getByTestId('script-editor')).toHaveAttribute('data-mode', 'text/plain');
+    });
+
+    it('reads a .js fixture as JavaScript rather than treating it as a script', async () => {
+      readResolves('module.exports = 1;');
+      const { store } = renderFixture('seed.js');
+
+      await act(async () => {});
+
+      expect(screen.getByTestId('script-editor')).toHaveAttribute('data-mode', 'javascript');
+      expect(invoked('renderer:flow-read-source')[0][1].entry).toBe(
+        '/home/dev/workspace-one/flows/fixtures/seed.js'
+      );
+      expect(store.getState().flows.sources[fixture('seed.js').pathname].content).toBe('module.exports = 1;');
+    });
+
+    /**
+     * §4.5's gate exists because a script has one language and breaks every flow that names it. A
+     * fixture that does not parse fails the flows reading it at start (001 §7.4), which names the
+     * file — so the draft is written and the report comes from the run.
+     */
+    it('saves a draft that does not parse, where a script would not', async () => {
+      readResolves('{ "items": [] }');
+      renderFixture('catalog.json', { autoSave: true });
+      await act(async () => {});
+
+      type('{ "items": [');
+      await settle(500);
+
+      expect(screen.queryByTestId('flow-fixture-invalid')).not.toBeInTheDocument();
+      expect(invoked('renderer:flow-write-source').at(-1)[1].content).toBe('{ "items": [');
+    });
+
+    /**
+     * §4.6 lists the corpus whatever it holds, and 001 §7.4's own example attaches a `.pdf`. The
+     * host refuses to decode one, and the pane reports that rather than showing replacement
+     * characters an autosave would then write back over the file.
+     */
+    it('reports a file the host refused to read as text', async () => {
+      window.ipcRenderer.invoke.mockImplementation((channel) =>
+        (channel === 'renderer:flow-read-source'
+          ? Promise.reject(new Error('this file is not text, and editing it here would corrupt it'))
+          : Promise.resolve(undefined)));
+      renderFixture('contract.pdf');
+      await act(async () => {});
+
+      expect(screen.getByText(/could not be read/)).toHaveTextContent('not text');
+      expect(screen.queryByTestId('script-editor')).not.toBeInTheDocument();
+    });
   });
 });

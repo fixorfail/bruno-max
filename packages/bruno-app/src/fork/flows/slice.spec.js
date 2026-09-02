@@ -2,6 +2,9 @@ import reducer, {
   flowsLoaded,
   flowTreeUpdated,
   describeSucceeded,
+  folderToggled,
+  foldersCollapsed,
+  foldersExpanded,
   runEventsReceived,
   pastRunLoaded,
   requestLogsReceived
@@ -51,6 +54,45 @@ describe('the flows slice', () => {
       const state = started(undefined, { params: {} });
 
       expect(state.runs[pathname].vars).toEqual({});
+    });
+  });
+
+  /**
+   * 002 §10: a run's provenance — the host that started it and the environments it ran against
+   * (001 §14.5). Folded, not derived: the app does not read its own environment dropdown to label a
+   * run, because a run read back from disk may have come from `bru` on a build machine.
+   */
+  describe('where a run came from', () => {
+    const origin = { host: 'app', environment: 'staging', globalEnvironment: 'shared' };
+
+    it('takes it from run:start', () => {
+      const state = started(undefined, { origin });
+
+      expect(state.runs[pathname].origin).toEqual(origin);
+    });
+
+    it('carries a stored run\'s the same way', () => {
+      const state = reducer(
+        undefined,
+        pastRunLoaded({
+          pathname,
+          stored: {
+            runId: 'run-old',
+            dir: '/workspace/.bruno-runs/old',
+            state: 'complete',
+            status: 'passed',
+            capturedSteps: [],
+            origin: { host: 'cli', environment: 'staging' }
+          }
+        })
+      );
+
+      expect(state.runs[pathname].origin).toEqual({ host: 'cli', environment: 'staging' });
+    });
+
+    /** A run recorded before the field existed has none, and the view shows nothing rather than guessing. */
+    it('leaves it undefined where the run recorded none', () => {
+      expect(started().runs[pathname].origin).toBeUndefined();
     });
   });
 
@@ -362,6 +404,45 @@ describe('the flows slice', () => {
       expect(state.requestLogs).toHaveLength(500);
       expect(state.requestLogs[0].attempt).toBe(100);
       expect(state.requestLogs[499].attempt).toBe(599);
+    });
+  });
+
+  /**
+   * 002 §4.1a. Collapsed is the default, matching upstream's collection folders, so the map holds
+   * only the folders someone has opened rather than a key per directory on disk.
+   */
+  describe('folder expansion (§4.1a)', () => {
+    const company = '/workspace/flows/company';
+    const billing = '/workspace/flows/company/billing';
+
+    it('starts with nothing open', () => {
+      expect(reducer(undefined, { type: '@@INIT' }).folderExpansion).toEqual({});
+    });
+
+    it('opens and closes one folder', () => {
+      const opened = reducer(undefined, folderToggled({ key: company }));
+      expect(opened.folderExpansion[company]).toBe(true);
+
+      expect(reducer(opened, folderToggled({ key: company })).folderExpansion[company]).toBe(false);
+    });
+
+    it('opens every key it is given', () => {
+      const state = reducer(undefined, foldersExpanded({ keys: [company, billing] }));
+
+      expect(state.folderExpansion).toEqual({ [company]: true, [billing]: true });
+    });
+
+    /**
+     * The store holds every scope watched since launch (§4.1) while the section shows one
+     * workspace's, so the header's collapse must not reach past the folders in front of the reader.
+     */
+    it('closes only the keys it is given', () => {
+      const other = '/elsewhere/flows/company';
+      const state = reducer(undefined, foldersExpanded({ keys: [company, billing, other] }));
+
+      expect(reducer(state, foldersCollapsed({ keys: [company, billing] })).folderExpansion).toEqual({
+        [other]: true
+      });
     });
   });
 });

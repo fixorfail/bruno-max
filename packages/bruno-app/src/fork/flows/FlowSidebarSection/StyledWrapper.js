@@ -26,16 +26,33 @@ const StyledWrapper = styled.div`
     opacity: 0.8;
   }
 
-  .flow-row {
+  /*
+   * §4.1a: a row's indent is its depth in the folder tree. The custom property is 0 for everything
+   * sitting directly in a bucket, which is the indent every row had before folders existed.
+   */
+  .flow-row,
+  .flow-folder {
     display: flex;
     align-items: center;
     gap: 0.375rem;
-    padding: 0.1875rem 0.75rem 0.1875rem 1.5rem;
+    padding: 0.1875rem 0.75rem 0.1875rem calc(1.5rem + var(--flow-depth, 0) * 0.75rem);
     cursor: pointer;
 
     &:hover {
       background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
     }
+  }
+
+  /* The chevron sits in the row's own indent step, so a folder's name lands close to the left edge
+     of the rows it holds rather than a further step out from them. */
+  .flow-folder {
+    padding-left: calc(0.75rem + var(--flow-depth, 0) * 0.75rem);
+  }
+
+  .flow-folder-chevron {
+    display: flex;
+    align-items: center;
+    color: ${(props) => props.theme.sidebar.dropdownIcon.color};
   }
 
   .flow-name {

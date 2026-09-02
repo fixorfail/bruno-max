@@ -290,3 +290,188 @@ describe('R4p — the corpus still reads the same', () => {
     expect(JSON.stringify(viaEngine)).toEqual(JSON.stringify(viaHelper));
   });
 });
+
+/**
+ * §5.2's `config:` is read key by key, so one the engine no longer knows is inert rather than
+ * fatal. `captureRetainRuns` is the case that matters: it was a real key until retention left the
+ * engine (§14.5), and a flow committed while it existed must not stop running because of it.
+ */
+/**
+ * §5.2's `meta:` is the closed typed block, so the engine fixes each key's shape as it reads it —
+ * the opposite of a step's open `meta:` mapping, which is carried exactly as written.
+ */
+describe('a flow\'s meta.testId', () => {
+  const withMeta = (body) => parse(`version: 1\nmeta:\n${body}\nsteps:\n  - id: only\n    operation: a#b\n`).meta;
+
+  it('is the text the author wrote, whatever YAML made of it', () => {
+    expect(withMeta('  testId: C1000').testId).toBe('C1000');
+    // A bare id is a number to YAML, and a report writes it as text either way.
+    expect(withMeta('  testId: 1000').testId).toBe('1000');
+    expect(withMeta('  testId: "  C1000  "').testId).toBe('C1000');
+  });
+
+  it('is absent when the flow says nothing, or says only blank', () => {
+    expect(withMeta('  name: probe').testId).toBeUndefined();
+    expect(withMeta('  testId: "   "').testId).toBeUndefined();
+    expect(withMeta('  testId:').testId).toBeUndefined();
+  });
+
+  /**
+   * A key written with nothing after it is null in YAML, not the string "null" — the author opened
+   * the field and said nothing. Coercing it would give a flow a name it never chose, and a truthy
+   * one, which is the half that does damage: `describeFlow` falls back to the filename only for a
+   * name that is absent.
+   */
+  it('is not the only key a bare line has to leave unsaid', () => {
+    const bare = parse('version: 1\nmeta:\n  name:\n  description:\n  testId:\nsteps:\n  - id: only\n').meta;
+
+    expect(bare.name).toBeUndefined();
+    expect(bare.description).toBeUndefined();
+    expect(bare.testId).toBeUndefined();
+  });
+
+  /**
+   * §5.3's step `name:` is fixed as a string by the same rule, and for a sharper reason: it reaches
+   * a JUnit testcase property through `StepResult.name` (§14.8.1), so a coerced null would put the
+   * word "null" in a report as the step's human label.
+   */
+  it('applies the same rule to a step name', () => {
+    const steps = parse(`version: 1
+meta:
+  name: probe
+steps:
+  - id: bare
+    name:
+    operation: a#b
+  - id: blank
+    name: "   "
+    operation: a#b
+  - id: padded
+    name: "  Sign in  "
+    operation: a#b
+  - id: absent
+    operation: a#b
+`).steps;
+    const step = (id) => steps.find((entry) => entry.id === id);
+
+    expect(step('bare').name).toBeUndefined();
+    expect(step('blank').name).toBeUndefined();
+    expect(step('absent').name).toBeUndefined();
+    expect(step('padded').name).toBe('Sign in');
+  });
+
+  it('reads a blank string the same way, and trims the rest', () => {
+    const blank = parse('version: 1\nmeta:\n  name: "   "\n  description: "  Does things.  "\nsteps: []\n').meta;
+
+    expect(blank.name).toBeUndefined();
+    // Trimmed here as `readFlowMeta` and `readFlowProperties` have always trimmed, so the engine
+    // and the two readers of the same block cannot disagree about a padded value.
+    expect(blank.description).toBe('Does things.');
+  });
+
+  it('does not disturb the keys beside it', () => {
+    const meta = withMeta('  name: probe\n  testId: C1000\n  tags: [smoke]\n  library: true');
+
+    expect(meta).toEqual({ name: 'probe', description: undefined, testId: 'C1000', tags: ['smoke'], library: true });
+  });
+});
+
+describe('a config: key the engine does not know', () => {
+  const withConfig = (body) =>
+    parse(`version: 1
+meta:
+  name: probe
+config:
+${body}
+steps:
+  - id: only
+    operation: regress-api#getState
+`);
+
+  it('is ignored rather than carried', () => {
+    const document = withConfig('  captureRetainRuns: 10');
+
+    expect(document.config).not.toHaveProperty('captureRetainRuns');
+    // The keys beside it still read, so an unknown one does not poison the block.
+    expect(withConfig('  captureRetainRuns: 10\n  concurrency: 3').config.concurrency).toBe(3);
+  });
+
+  it('never fails validation', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.config = { ...document.config, captureRetainRuns: 10 };
+    });
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics.filter((entry_) => entry_.severity === 'error')).toEqual([]);
+    expect(diagnostics.some((entry_) => JSON.stringify(entry_).includes('captureRetainRuns'))).toBe(false);
+  });
+});
+
+describe('a step\'s meta: is carried verbatim', () => {
+  const parsed = parse(`${wrap(`steps:
+  - id: labelled
+    meta:
+      testId: C1234
+      owner: payments
+      retries: 3
+      tags: [smoke, billing]
+    operation: regress-api#getState
+  - id: numeric
+    meta:
+      testId: 1234
+    operation: regress-api#getState
+  - id: scalar
+    meta: foo
+    operation: regress-api#getState
+  - id: bare
+    meta:
+    operation: regress-api#getState
+  - id: absent
+    operation: regress-api#getState
+`)}`);
+
+  const step = (id) => parsed.steps.find((entry) => entry.id === id);
+
+  // Nothing in the engine reads a key of it, so coercing one would be the engine deciding what a
+  // key means — which is the reporter's decision to make.
+  it('leaves every value as the document wrote it', () => {
+    expect(step('labelled').meta).toEqual({
+      testId: 'C1234',
+      owner: 'payments',
+      retries: 3,
+      tags: ['smoke', 'billing']
+    });
+    expect(step('numeric').meta.testId).toBe(1234);
+  });
+
+  it('is an empty mapping for a step that declares none', () => {
+    expect(step('absent').meta).toEqual({});
+    expect(step('bare').meta).toEqual({});
+  });
+
+  // Every reader gets one shape; the fact that the author wrote another survives only for the
+  // validator, which is the only thing that can do anything about it.
+  it('replaces a non-mapping with one, and remembers that it did', () => {
+    expect(step('scalar').meta).toEqual({});
+    expect(parsed.malformedMeta).toEqual(['scalar']);
+  });
+
+  it('reports the substitution as a warning against the step', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.steps.find((entry_) => entry_.id === 'create').meta = 'foo';
+    });
+
+    expect(await validate(entry, { files })).toContainEqual(
+      expect.objectContaining({ severity: 'warning', code: 'invalid-step-meta', stepId: 'create' })
+    );
+  });
+
+  it('says nothing about a step whose meta: is a mapping', async () => {
+    const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
+      document.steps.find((entry_) => entry_.id === 'create').meta = { testId: 'C1234' };
+    });
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics.filter((entry_) => entry_.code === 'invalid-step-meta')).toEqual([]);
+  });
+});

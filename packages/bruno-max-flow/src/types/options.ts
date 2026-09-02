@@ -7,6 +7,15 @@ import type { FlowEvent, RunResult, RunStatus, StepStatus } from './result';
 
 export type Scope = { workspaceRoot: string; collectionRoot?: string };
 
+/** Who started a run and against what — recorded for readers (002 §10, 001 §14.8), never consulted by the engine. */
+export type RunOrigin = {
+  host: 'app' | 'cli';
+  /** The collection environment's name (§7.3's tier), when one was selected. Display only — its values arrive in `variables`. */
+  environment?: string;
+  /** The workspace (global) environment's name, when one was selected. */
+  globalEnvironment?: string;
+};
+
 /**
  * Variables arrive as tiers, not as a merged map: §7.3's precedence is a flow semantic and belongs
  * to the engine, while *finding* each tier is host knowledge.
@@ -32,11 +41,25 @@ export type RunOptions = {
   variables: VariableTiers;
   /** --param, for a library flow (§12.5). */
   params?: Vars;
+  /**
+   * Optional only because the conformance suite calls `runFlow` directly a few hundred times and a
+   * required field would say those runs came from somewhere; both real hosts always supply it.
+   */
+  origin?: RunOrigin;
   overrides?: {
     concurrency?: number;
     maxRunDuration?: number;
     dataset?: string;
-    /** --no-capture / --capture-dir (§14.5). */
+    /**
+     * --no-capture / --capture-dir (§14.5).
+     *
+     * `dir` means "write run directories directly here, no suite of their own" — for a host that has
+     * already opened a suite for several flows (§14.8.5). With it absent the run opens a suite of
+     * one under the scope's capture root, which is the default layout.
+     *
+     * Nothing under the capture root is ever pruned — it grows with every run and is the user's to
+     * clear (§14.5).
+     */
     capture?: { enabled?: boolean; dir?: string };
   };
   signal?: AbortSignal;
@@ -68,6 +91,16 @@ export type ListRunsOptions = {
 export type RunIndexEntry = {
   runId: string;
   dir: string;
+  /** From run.json, so a selector can show who ran it without opening the run itself. */
+  origin?: RunOrigin;
+  /**
+   * The §14.8.5 suite directory this run sits in, by basename — absent for a run written at the top
+   * level, which is where the app puts its own.
+   *
+   * 002 §10's list is one list over both hosts, so a reader wanting to group an invocation's runs
+   * together needs the name to group them by; the path alone would have to be parsed back out.
+   */
+  suite?: string;
   /** From run.json, so the filter works on unfinished runs. */
   flow: string;
   startedAt: string;

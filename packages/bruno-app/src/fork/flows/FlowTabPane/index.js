@@ -117,6 +117,21 @@ const Warnings = ({ diagnostics }) => {
   );
 };
 
+/**
+ * §10: where the run in the view came from — the host that started it, and the environments it ran
+ * against (001 §14.5's `origin`).
+ *
+ * Read off the run rather than off the app's own environment dropdown, because the two routinely
+ * disagree: a `.bruno-runs/` directory downloaded from a build artifact opens here exactly as a
+ * local run does, and the dropdown would label it with whatever this machine happens to have
+ * selected now.
+ */
+const RunOrigin = ({ origin }) => (
+  <span className="flow-run-origin" data-testid="flow-run-origin" title="Where this run came from">
+    {[origin.host, origin.environment, origin.globalEnvironment].filter(Boolean).join(' · ')}
+  </span>
+);
+
 const FlowTabPane = ({ tab }) => {
   const dispatch = useDispatch();
   // §7.1 decides capture per run rather than storing it here: this is what the run *panel* keeps
@@ -222,6 +237,11 @@ const FlowTabPane = ({ tab }) => {
         </label>
 
         <RunSelector flow={flow} description={description} run={run} />
+
+        {/* Beside the control that says which run is on screen. A run recorded before the field
+            existed has none, and nothing is drawn: an absent origin is not a run that came from
+            here, and naming an environment nobody recorded would be a guess. */}
+        {run?.origin ? <RunOrigin origin={run.origin} /> : null}
 
         {/* §8.3: a dataset flow gets an iteration selector — iterations are independent by
             contract, so the graph shows one at a time. */}

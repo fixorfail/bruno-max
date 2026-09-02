@@ -983,7 +983,6 @@ with, so the layout is asserted without touching disk.
 |---|---|
 | every path passed to `WriteFile` and `RemoveDirectory` | computed by the engine, inside the scope root, and refused before the port is called if it would escape — the host is never asked to make that judgement |
 | the same flow run twice through two different port stubs | identical path sets, so the CLI and app cannot produce different layouts |
-| `captureRetainRuns` exceeded | the oldest run directories are removed through `RemoveDirectory`, newest retained; assert *which* directories, not just the count |
 | `run.json` exists once the first step has started, carrying `runId`, the flow's path and `startedAt` | a run in progress must be attributable to its flow; the app lists it while it is still going |
 | `summary.json` does not exist until the run ends | the two files answer different questions and are written at different times |
 | after a run aborted before completion, `run.json` is present and `summary.json` absent | this is the interrupted state, and it is legible rather than corrupt |

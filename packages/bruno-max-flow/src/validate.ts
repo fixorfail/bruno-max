@@ -214,6 +214,16 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   }
 
   /**
+   * §5.3's `meta:` is an open mapping the engine never reads, so a scalar written where the mapping
+   * belongs cannot fail anything — it simply arrives at the reporter as no metadata at all, which
+   * is indistinguishable from a step that declared none. A warning is the only thing that tells the
+   * author the case id they wrote is not in the report.
+   */
+  for (const stepId of flow.malformedMeta) {
+    warn('invalid-step-meta', `${stepId} declares meta: as something other than a mapping`, stepId);
+  }
+
+  /**
    * §8.6's library. A file that cannot be read is an error rather than a run-time surprise: every
    * script in the flow is composed with it, so one missing helper file fails every script position
    * at once, and `script-error` would name whichever step happened to run first.

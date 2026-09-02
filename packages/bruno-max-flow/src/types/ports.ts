@@ -62,6 +62,12 @@ export type ExecuteRequest = (request: MaterializedRequest, ctx: StepContext) =>
 export type ReadFile = (path: string, ctx: FlowContext) => Promise<Buffer>;
 export type WriteFile = (path: string, data: Buffer, ctx: FlowContext) => Promise<void>;
 export type ListDirectory = (path: string, ctx: FlowContext) => Promise<string[]>;
+/**
+ * Nothing calls this today: §14.5 prunes nothing, so a run is only ever written. It stays a port
+ * because clearing runs (§19) is the engine's to do — it alone knows which entries under the capture
+ * root are runs and suites and which are somebody else's — and dropping it now to restore it then
+ * would cost every host the change twice.
+ */
 export type RemoveDirectory = (path: string, ctx: FlowContext) => Promise<void>;
 export type ReadSpec = (source: string, ctx: FlowContext) => Promise<SpecDocument>;
 export type RunScript = (source: string, args: unknown[], ctx: FlowContext) => Promise<unknown>;

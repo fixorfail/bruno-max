@@ -192,6 +192,17 @@ which mislays some arrangements of parallel edges and throws — during render, 
 and drew nothing at all, for a flow with nothing wrong with it. One route per pair is what the
 drawing was always specified to show, which is why merging them costs it nothing.
 
+### U1.8b An edge's label stays in the corridor between the ranks
+
+A connector named `accountId` draws its label centred on its edge, inside the gap between the two
+columns rather than over the box the edge points at. A name too long for the gap is elided, and the
+edge's hover still names it in full.
+
+*Pins 002 §5.3.* The label was laid out from the midpoint of its edge and ran rightward, so it had
+half the corridor and spent the rest inside the consumer — from about the seventh character, which is
+most output names. Centring is the fix; the elision is what stops a name longer than the whole
+corridor from reaching a box anyway.
+
 ### U1.9 A linear flow renders as a single row, left to right
 
 Every node in the no-`depends` fixture shares one vertical position, and each is further right than
@@ -302,6 +313,21 @@ only appears during a run.
 
 Which boundaries arrive here at all is 001-C's R4q, not this file's: dropping the ones the schedule
 contradicts is a statement about 001 §9.1's graph, and this view draws what it is given.
+
+### U1.14 The interface is drawn at both ends of the flow
+
+A library flow declaring `params:`, `vars:` and `exports:` draws an inputs panel to the **left** of
+rank 0 and an exports panel to the **right** of the last rank. No step moves for either, and no edge
+is drawn to or from them. A flow declaring neither draws neither panel. Each export row shows its
+`steps.<id>.<output>` reference until the step behind it ends, and the value after — still the
+reference while that step is running, and still the reference if it ends without producing the
+output. A stored run whose description predates the panels draws the graph with them absent.
+
+*Pins 002 §5.6, §11.1.* The panels are layers beside the graph, not ranks in it: a box inserted at
+rank -1 or one past the last would renumber every column and make the drawing disagree with the run
+the CLI executes. The mid-run half is the one that fails quietly — a value read before its step is
+terminal is the previous attempt's on any step that retries, which reads as an export that changed
+its mind.
 
 ---
 
@@ -955,6 +981,103 @@ flow, but a script is composed into the prelude of *every* script position in *e
 it (001 §8.6), so one half-typed line fails all of them at once with `script-error` naming whichever
 step happened to run first. The guard is a directory and not an extension because "a `.js` inside the
 scope" would make every npm package the user has installed writable from the renderer.
+
+
+### U4.18 A flow's directory is a folder in the sidebar
+
+With `flows/checkout.flow.yml`, `flows/company/create_company.flow.yml` and
+`flows/company/billing/invoice.flow.yml` on disk, the section shows a **`company` folder row above
+`checkout`** and nothing of what is inside it. Opening `company` reveals `create_company` and a
+`billing` folder — but not `billing`'s own flow until `billing` is opened too. Clicking `company`
+again closes it.
+
+A nested flow opens, runs and carries its run mark exactly as a top-level one does, and its row menu
+holds the same `Edit Yaml` and properties. Two flows named `create.flow.yml` in different folders are
+two distinct rows.
+
+The libraries and the scripts fold the same way. A library in `flows/auth/` appears under an
+**`auth`** folder beneath the `Libraries` label; a `.js` in `flows/scripts/auth/` under an `auth`
+folder beneath `Scripts`, with no `scripts` folder row restating the label. Where one directory holds
+both an ordinary flow and a library, the two `company` rows either side of the `Libraries` label
+**open independently**.
+
+Collapse the **API Flows** section entirely and reopen it: the folders that were open are still open.
+
+*Pins 002 §4.1a.* The watcher already reported these flows — recursion into `flows/` predates this
+scenario — so what is under test is the folder, not the discovery. The reopen is the case the obvious
+implementation fails: `SidebarSection` unmounts its children when collapsed, so expansion held in the
+component is lost on the one gesture most likely to precede reopening it.
+
+### U4.18a The header opens and closes every folder at once
+
+With folders nested two deep and all collapsed, the section header's three-dot menu — beside the `+`,
+not inside it — holds **`Expand All Folders`** and **`Collapse All Folders`**. Expanding reveals every
+flow at every depth in one gesture; collapsing returns the section to folder rows alone. Both items
+are present whichever state the tree is in, and **the menu itself is absent** when the workspace's
+flows sit in no folders at all. The `+` opens the create form directly.
+
+With a second workspace's flows also watched, collapsing here does not touch the folders opened
+there: switching to that workspace shows them still open.
+
+*Pins 002 §4.1a, §4.1.* The last part is the one that fails silently — the store accumulates every
+scope watched since launch, so a collapse-all implemented by clearing the map shuts folders in a
+workspace the reader is not looking at and cannot see change.
+
+### U4.19 Fixtures are listed, and open as editable text
+
+Files under `flows/fixtures/` appear in the sidebar under a `Fixtures` label, **below** the scripts,
+named by their filenames and carrying **no** row menu. A `.json`, a `.csv`, a file with no extension
+at all and a `.js` are all listed; a `.json` sitting anywhere else under `flows/` is not. A scope with
+no fixtures shows no label.
+
+Clicking one opens a fourth tab type showing the file as text — no graph — highlighted by its
+extension, and `text/plain` for a `.csv` or an extensionless file. Editing behaves as §4.3's editor
+does: the draft survives a tab switch, ⌘/Ctrl+S and the Save button write it, `autoSave` writes it on
+the interval, and the file changing underneath a clean editor refreshes it while a dirty one is told
+the two diverged.
+
+**A draft that is not valid JSON is still auto-saved**, where a script's broken JavaScript would not
+be. A `.js` under `flows/fixtures/` opens as a fixture and is written back there, rather than being
+refused for sitting outside `flows/scripts/`.
+
+*Pins 002 §4.6, §4.5.* `!file` still decides what a flow reads — 001 §7.4 resolves the path each flow
+writes out, and putting a file in the folder does not make a flow see it. The section makes the corpus
+findable, which is all it claims to do. The absent gate is the deliberate half: a corpus has no single
+language, so gating the files that happen to be JSON would be a rule that fires by extension.
+
+### U4.19a A fixture that is not text is refused, not decoded
+
+Put a real `.pdf` in `flows/fixtures/` — 001 §7.4's own example attaches one. It is **listed**, and
+clicking it opens a tab saying the file could not be read because it is not text. **No editor is
+shown**, and nothing is written to the file. `renderer:flow-read-source` refuses it directly, and
+refuses any path climbing out of `flows/fixtures/`.
+
+*Pins 002 §4.6, §11.3.* This is the case an extension allowlist gets wrong in both directions, which
+is why content decides it. Decoding the file as UTF-8 would fill the editor with replacement
+characters and the next auto-save would write them back — destroying a file in the repository with
+nothing on screen having said so, and no error anywhere to find afterwards.
+
+### U4.20 A flow is duplicated from its row menu
+
+The flow's row menu holds **`Duplicate`** alongside `Edit Yaml` and the properties. Choosing it opens
+the **Create API Flow** form retitled *Duplicate API Flow*, filled from the flow's own `meta:` — the
+name suffixed `copy`, the file name `<kebab>-copy`, the description, the tags and the library
+checkbox — with the source flow's directory as the location. The API spec list is **absent**, replaced
+by a line naming the file everything else is copied from.
+
+Confirming writes a new flow beside the original. Its `meta:` is what the form said; **everything
+else is the source's, byte for byte** — the `steps:`, the `apis:` block, the comments between them,
+and a `!file` fixture reference, which a serializer of the app's own would have destroyed. The
+original is unchanged, and the new flow appears in the sidebar without a reload.
+
+Duplicating onto a name already taken is refused and says so. Duplicating a flow whose YAML editor
+holds unsaved changes is refused before the form opens, the way the properties dialog is. `Duplicate`
+does **not** appear on a script row or a fixture row.
+
+*Pins 002 §4.7, §4.4.* The byte-for-byte half is the whole feature: rebuilding the document from the
+form would silently drop every step the author is duplicating the flow to keep. The unsaved-editor
+refusal is the case with no other signal — the host copies the file on disk, so the duplicate would
+be missing the author's last edits, in a file they would then go on to edit as though it had them.
 
 ---
 

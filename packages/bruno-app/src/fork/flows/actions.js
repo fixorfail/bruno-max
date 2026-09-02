@@ -204,6 +204,22 @@ export const createFlow = ({ fileName, directory, content }) => async () =>
   ipc().invoke('renderer:flow-create', { directory, filename: `${fileName}.flow.yml`, content });
 
 /**
+ * 002 §4.7 — the same form, over a flow that already exists.
+ *
+ * The document is not sent: the host copies the source's own text and replaces its `meta:` with
+ * these properties, so everything the form does not ask about — the steps, the `apis:`, the comments
+ * — survives the duplicate exactly as written.
+ */
+export const duplicateFlow = ({ flow, fileName, directory, properties }) => async () =>
+  ipc().invoke('renderer:flow-duplicate', {
+    entry: flow.pathname,
+    scope: { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot },
+    directory,
+    filename: `${fileName}.flow.yml`,
+    properties
+  });
+
+/**
  * 002 §4.4 — the `meta:` block and the filename the properties dialog opens with.
  *
  * Read from the file rather than taken from the sidebar row: the watcher's tree entry carries only
