@@ -244,6 +244,7 @@ describe('bru flow run --reporter-junit --reporter-json', () => {
     const entries = fs.readdirSync(captureRoot);
     expect(entries).toHaveLength(1);
     expect(entries[0]).toMatch(SUITE_DIRECTORY);
-    expect(fs.readdirSync(path.join(captureRoot, entries[0]))).toEqual(['report-junit.xml']);
+    // The roster is written even here: it names the invocation, which `--no-capture` did not turn off.
+    expect(fs.readdirSync(path.join(captureRoot, entries[0])).sort()).toEqual(['report-junit.xml', 'suite.json']);
   }, 60000);
 });

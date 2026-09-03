@@ -5,10 +5,17 @@ const {
   runFlow,
   describeFlow,
   listRuns,
+  listSuites,
   readRun,
   readCapture,
   readFlowProperties,
-  writeFlowProperties
+  writeFlowProperties,
+  flowIdentity,
+  writeSuiteManifest,
+  resolveCaptureRoot,
+  resolveSuiteDirectory,
+  ensureCaptureIgnored,
+  SUITE_MANIFEST_FILE
 } = require('@bruno-max/flow');
 const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
@@ -31,6 +38,8 @@ const EVENT_FLUSH_MS = 16;
 
 /** runId -> { controller, done } — `done` is the `runFlow` promise, which quit has to wait on. */
 const running = new Map();
+/** suiteId -> { cancelled, run, done } — `done` spans the whole suite, `suite.json` included. */
+const suites = new Map();
 const pendingEvents = new Map();
 const pendingRequests = [];
 let flushTimer = null;
@@ -414,6 +423,16 @@ const listRunsHandler = ({ scopeRoot, flow }) => {
   return listRuns({ scopeRoot, flow, ports: { readFile, listDirectory } });
 };
 
+/**
+ * 001 §14.5's `suite.json`, or a roster rebuilt from the run directories of a suite that has none —
+ * which is every single-flow run the app has ever made, so this is not a fallback the app reaches
+ * only for the CLI's output.
+ */
+const listSuitesHandler = ({ scopeRoot }) => {
+  const { readFile, listDirectory } = createPorts({});
+  return listSuites({ scopeRoot, ports: { readFile, listDirectory } });
+};
+
 const readRunHandler = ({ dir, stepIds, iteration }) => {
   const { readFile, listDirectory } = createPorts({});
   return readRun({ dir, stepIds, iteration, ports: { readFile, listDirectory } });
@@ -443,6 +462,10 @@ const originFor = (tiers = {}) => ({
  * Resolves as soon as the run has an identity rather than when it finishes, because the renderer
  * needs the `runId` to attach the events already arriving. A failure before `run:start` — a flow
  * that does not parse — has no run to report and rejects instead.
+ *
+ * The record resolves alongside the id for the suite runner, which needs the run's completion to
+ * know when the next flow may start and its controller to cancel this one. Neither crosses the IPC
+ * boundary — `renderer:flow-run` answers with the id alone.
  */
 const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
   requireScope(scope);
@@ -473,7 +496,7 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
         if (event.type === 'run:start') {
           runId = event.runId;
           running.set(runId, record);
-          resolve({ runId });
+          resolve({ runId, record });
         }
         queueEvent(win, runId, event);
       }
@@ -509,6 +532,238 @@ const cancelRun = ({ runId }) => {
 };
 
 /**
+ * 001 §14.2's codes, keyed by the outcome that produced them.
+ *
+ * The app exits nothing, and `suite.json` still records a code because `listSuites` reads the CLI's
+ * suites and the app's through one reader: a rerun asking which flows did not pass keys on the same
+ * numbers whichever host wrote the file. The CLI's `EXIT` is the other copy of this mapping — the
+ * two processes share no module, so the invariant is stated in both places and nowhere enforced.
+ */
+const SUITE_EXIT = { passed: 0, failed: 1, invalid: 2, cancelled: 4 };
+
+/**
+ * The suite stream, beside the per-flow one rather than inside it.
+ *
+ * Unbatched, unlike `main:flow-run-event`: a suite emits two events per flow where a run emits one
+ * per attempt, so there is no storm to coalesce — and by the time a `suite:flow-end` goes out the
+ * flow's own batch has already been flushed by `startRun`'s `finally`, which is what keeps the
+ * sidebar from getting ahead of the tab it summarises.
+ */
+const sendSuiteEvent = (win, suiteId, event) => {
+  if (win.isDestroyed()) {
+    return;
+  }
+  win.webContents.send('main:flow-suite-event', { suiteId, event });
+};
+
+/**
+ * What a roster calls a flow — 001 §5.2's identity and its `meta:`, from the engine's one spelling
+ * of both, so the app's rosters name flows exactly as the CLI's do and a rerun matches across them.
+ *
+ * The text is read here rather than a description asked for, for the CLI reporter's reason: a flow
+ * that will not parse still needs a row, and an unreadable file gives the same answer as one
+ * declaring no `meta:` at all.
+ */
+const rosterIdentity = async (file, scope) => {
+  let source;
+  try {
+    source = await fs.promises.readFile(file, 'utf8');
+  } catch {
+    // `runFlow` refuses it in a moment and says why; the roster still names the file.
+  }
+
+  return flowIdentity(path.resolve(scope.collectionRoot || scope.workspaceRoot), file, source);
+};
+
+/**
+ * One flow of a suite, through the same `runFlow` call a single run makes — which is the whole of
+ * why a rerun needs no second viewer: the flow's tab folds `main:flow-run-event` without learning
+ * that a suite is running it.
+ *
+ * `suite:flow-start` is sent once the run has an identity rather than before, because the event
+ * carries the `runId` a reader would use to open it. A flow refused before `run:start` therefore
+ * gets a `suite:flow-end` and no start — it never ran, and 001 §14.6 calls that `invalid`.
+ */
+const runSuiteFlow = async (win, suite, { suiteId, entry, params, identity, scope, tiers, overrides, dir }) => {
+  let runId;
+  let result;
+
+  try {
+    const started = await startRun(win, {
+      entry,
+      scope,
+      tiers,
+      params,
+      // The suite directory, for every run in it. Without it the engine mints a suite of one per
+      // flow (001 §14.5), and an invocation of five flows would leave five suites behind.
+      overrides: { ...overrides, capture: { ...(overrides && overrides.capture), dir } }
+    });
+
+    runId = started.runId;
+    suite.run = started.record;
+    sendSuiteEvent(win, suiteId, { type: 'suite:flow-start', entry, runId });
+    // A cancel that landed while the run was starting has nothing to abort yet; this closes that
+    // window rather than letting the flow run to completion after the user asked it to stop.
+    if (suite.cancelled) {
+      started.record.controller.abort();
+    }
+    result = await started.record.done;
+  } catch (error) {
+    // 001 §14.6's `invalid`, the same reading the CLI gives a `runFlow` that rejected: a required
+    // param with no value, or a flow that does not parse. The flow produced no verdict, so the one
+    // thing the roster can say is that it did not run.
+  }
+
+  const outcome = result ? result.status : 'invalid';
+  sendSuiteEvent(win, suiteId, { type: 'suite:flow-end', entry, outcome, runId });
+
+  return {
+    ...identity,
+    outcome,
+    ...(result && result.captureDir ? { runDir: path.basename(result.captureDir) } : {})
+  };
+};
+
+/**
+ * The suite itself: every flow in turn, then the roster.
+ *
+ * **A failing flow does not stop the rest.** The point of re-running what did not pass is learning
+ * which of those flows are still broken, and a suite that halted on the first would answer that
+ * question one flow at a time.
+ */
+const runSuiteFlows = async (win, suite, { suiteId, roster, scope, tiers, overrides, retryOf, dir, startedAt, ports }) => {
+  sendSuiteEvent(win, suiteId, {
+    type: 'suite:start',
+    startedAt,
+    flows: roster.map(({ entry, identity }) => ({ entry, id: identity.id, name: identity.name }))
+  });
+
+  const records = [];
+  for (const flow of roster) {
+    if (suite.cancelled) {
+      // Recorded rather than dropped. A roster that quietly omits the flows the cancel never
+      // reached tells its next reader the suite was smaller than it was — and those are exactly the
+      // flows a rerun of this suite has to include.
+      records.push({ ...flow.identity, outcome: 'cancelled' });
+      continue;
+    }
+    records.push(await runSuiteFlow(win, suite, { suiteId, scope, tiers, overrides, dir, ...flow }));
+  }
+
+  const finishedAt = new Date().toISOString();
+  const exitCode = records.reduce((worst, record) => Math.max(worst, SUITE_EXIT[record.outcome]), SUITE_EXIT.passed);
+
+  try {
+    await writeSuiteManifest({
+      dir,
+      manifest: {
+        suiteId,
+        startedAt,
+        finishedAt,
+        exitCode,
+        origin: originFor(tiers),
+        ...(retryOf ? { retryOf } : {}),
+        flows: records
+      },
+      ports,
+      // The writers take a run's context and there is no run here — the roster is a fact about the
+      // invocation rather than about any flow in it, so this is the minimum a `writeFile` reads.
+      context: { runId: '', flow: '', scope, signal: new AbortController().signal }
+    });
+  } catch (error) {
+    // The suite ran; only its index failed to land. Said out loud rather than swallowed, and not
+    // fatal: the run directories are still there for `listSuites` to rebuild a partial roster from.
+    console.error(`flow: could not write ${SUITE_MANIFEST_FILE} to ${dir}: ${error.message}`);
+  }
+
+  sendSuiteEvent(win, suiteId, { type: 'suite:end', finishedAt, exitCode, dir });
+};
+
+/**
+ * A suite of flows run one after another into a single directory — 001 §14.5's invocation, made by
+ * the app rather than by `bru`.
+ *
+ * Returns as soon as the suite has a directory, for `startRun`'s reason: the events are already on
+ * their way and the caller needs somewhere to put them. Everything after that — the runs, the
+ * roster — happens on `done`, which is what quit waits on.
+ *
+ * Sequential, and deliberately so. 001 §7.6 gives the app one process-wide cookie jar, so two flows
+ * running at once would share it; and a rerun is read as a list, top to bottom, which concurrency
+ * would scramble for no gain a user asked for.
+ */
+const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryOf }) => {
+  requireScope(scope);
+  if (typeof suiteId !== 'string' || !suiteId) {
+    throw new Error('a suite needs a suiteId');
+  }
+  if (!Array.isArray(flows) || !flows.length) {
+    throw new Error('a suite needs flows to run');
+  }
+  if (suites.has(suiteId)) {
+    throw new Error(`a suite is already running as ${suiteId}`);
+  }
+
+  const startedAt = new Date().toISOString();
+  const captureDir = overrides && overrides.capture ? overrides.capture.dir : undefined;
+  const dir = resolveSuiteDirectory(resolveCaptureRoot(scope, captureDir), startedAt, suiteId);
+
+  const ports = createPorts({ collectionRoot: scope.collectionRoot, workspaceRoot: scope.workspaceRoot });
+  await ensureCaptureIgnored({ scope, dir: captureDir, ports });
+
+  // Every flow is scope-checked before any of them runs: the preload forwards any channel, and a
+  // selection half-executed before its bad entry was noticed is the state nothing can report.
+  const roster = await Promise.all(
+    flows.map(async (flow) => ({
+      entry: flow.entry,
+      // Per flow rather than per suite: §12.5's params are declared by the flow that consumes them,
+      // so a library flow in a rerun is given whatever its own run panel is holding.
+      params: flow.params,
+      identity: await rosterIdentity(requireFlowInScope(flow.entry, scope), scope)
+    }))
+  );
+
+  const suite = { cancelled: false, run: undefined, done: undefined };
+  suites.set(suiteId, suite);
+  suite.done = runSuiteFlows(win, suite, {
+    suiteId,
+    roster,
+    scope,
+    tiers,
+    overrides,
+    retryOf,
+    dir,
+    startedAt,
+    ports
+  }).finally(() => suites.delete(suiteId));
+
+  return { suiteId, dir };
+};
+
+/**
+ * Stops the flow in flight and runs none of the rest — `false` for a suite this process is not
+ * running, for `cancelRun`'s reason.
+ *
+ * The roster is still written, and the flows that never started are `cancelled` in it: a cancelled
+ * suite is precisely the one somebody re-runs next.
+ */
+const abortSuite = (suite) => {
+  suite.cancelled = true;
+  if (suite.run) {
+    suite.run.controller.abort();
+  }
+};
+
+const cancelSuite = ({ suiteId }) => {
+  const suite = suites.get(suiteId);
+  if (!suite) {
+    return false;
+  }
+
+  abortSuite(suite);
+  return true;
+};
+
+/**
  * 002 §4.2 — quitting with a run in flight cancels it through 001 §11.3's path rather than letting
  * the engine die with the process: in-flight requests are aborted, steps declaring
  * `status: [cancelled]` get their cleanup, and the run is recorded `cancelled`.
@@ -520,15 +775,23 @@ const cancelRun = ({ runId }) => {
  * The comparison that settles the behaviour is the CLI: Ctrl-C on `bru flow run` runs cleanup, and
  * an app that skipped it would be strictly worse than the terminal at the one thing 001 §11.3
  * exists to guarantee.
+ *
+ * A suite is waited on as well as its run, and for a reason of its own: its `done` outlives the
+ * flow it is executing, and what the tail of it writes is the roster naming the flows the quit
+ * never reached (001 §14.5).
  */
 const shutdown = async () => {
   const inFlight = [...running.values()];
+  const inFlightSuites = [...suites.values()];
+  for (const suite of inFlightSuites) {
+    abortSuite(suite);
+  }
   for (const { controller } of inFlight) {
     controller.abort();
   }
 
   await Promise.race([
-    Promise.allSettled(inFlight.map((run) => run.done)),
+    Promise.allSettled([...inFlight.map((run) => run.done), ...inFlightSuites.map((suite) => suite.done)]),
     new Promise((resolve) => setTimeout(resolve, SHUTDOWN_CAP_MS))
   ]);
 
@@ -541,9 +804,17 @@ const registerFlowIpc = (mainWindow) => {
   ipcMain.handle('renderer:flow-describe', (event, request) => describeFlowHandler(request));
   ipcMain.handle('renderer:flow-read-source', (event, request) => readFlowSourceHandler(request));
   ipcMain.handle('renderer:flow-write-source', (event, request) => writeFlowSourceHandler(request));
-  ipcMain.handle('renderer:flow-run', (event, request) => startRun(mainWindow, request));
+  ipcMain.handle('renderer:flow-run', async (event, request) => {
+    // The id alone: `record` is the main process's own handle on the run, and a promise does not
+    // survive the `did-finish-load` JSON roundtrip the renderer's messages go through.
+    const { runId } = await startRun(mainWindow, request);
+    return { runId };
+  });
   ipcMain.handle('renderer:flow-cancel', (event, request) => cancelRun(request));
+  ipcMain.handle('renderer:flow-run-suite', (event, request) => startSuite(mainWindow, request));
+  ipcMain.handle('renderer:flow-cancel-suite', (event, request) => cancelSuite(request));
   ipcMain.handle('renderer:flow-list-runs', (event, request) => listRunsHandler(request));
+  ipcMain.handle('renderer:flow-list-suites', (event, request) => listSuitesHandler(request));
   ipcMain.handle('renderer:flow-read-run', (event, request) => readRunHandler(request));
   ipcMain.handle('renderer:flow-read-capture', (event, request) => readCaptureHandler(request));
   ipcMain.handle('renderer:flow-folder', (event, request) => flowsFolderHandler(request));
@@ -565,6 +836,7 @@ module.exports.describeFlowHandler = describeFlowHandler;
 module.exports.readFlowSourceHandler = readFlowSourceHandler;
 module.exports.writeFlowSourceHandler = writeFlowSourceHandler;
 module.exports.listRunsHandler = listRunsHandler;
+module.exports.listSuitesHandler = listSuitesHandler;
 module.exports.readRunHandler = readRunHandler;
 module.exports.readCaptureHandler = readCaptureHandler;
 module.exports.flowsFolderHandler = flowsFolderHandler;
@@ -575,4 +847,6 @@ module.exports.updateFlowPropertiesHandler = updateFlowPropertiesHandler;
 module.exports.renameFlowScriptHandler = renameFlowScriptHandler;
 module.exports.startRun = startRun;
 module.exports.cancelRun = cancelRun;
+module.exports.startSuite = startSuite;
+module.exports.cancelSuite = cancelSuite;
 module.exports.shutdown = shutdown;

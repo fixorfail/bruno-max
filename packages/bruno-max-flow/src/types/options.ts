@@ -1,6 +1,7 @@
 /**
  * The entry API's options — 001 §13.2, plus 002 §11.1 and §11.2's read-only entries.
  */
+import type { SuiteFlowRecord } from './capture';
 import type { FlowDescription } from './describe';
 import type { Vars, EnginePorts, ReadOnlyPorts, ListDirectory, ReadFile } from './ports';
 import type { FlowEvent, RunResult, RunStatus, StepStatus } from './result';
@@ -167,6 +168,51 @@ export type ReadCaptureOptions = {
   iteration?: number;
   attempt: number;
   ports: { readFile: ReadFile };
+};
+
+export type ListSuitesOptions = {
+  /** Where .bruno-runs/ lives (§14.5), and the root §5.2 measures a flow's identity from. */
+  scopeRoot: string;
+  ports: { readFile: ReadFile; listDirectory: ListDirectory };
+};
+
+export type ReadSuiteOptions = {
+  /** A suite directory, as `listSuites` reports it — or one a user named on the command line. */
+  dir: string;
+  /**
+   * The scope that owns the flows, which is not derivable from `dir`: `--capture-dir` can put a
+   * suite anywhere, and §5.2's identity is measured from the scope root either way.
+   */
+  scopeRoot: string;
+  ports: { readFile: ReadFile; listDirectory: ListDirectory };
+};
+
+/**
+ * A suite as a reader finds it — `SuiteManifest` with the three fields a rebuilt roster cannot
+ * know made optional, plus where it lives and whether it is the whole story.
+ *
+ * `readSuite` returns this rather than a `SuiteManifest` for that reason: a suite with no manifest
+ * is an ordinary state (every single-flow run mints one, §14.5), and a reader that had to promise a
+ * `suiteId` and an `exitCode` for it would have to invent them.
+ */
+export type SuiteIndexEntry = {
+  /** Absolute, the way `listRuns` reports a run's. */
+  dir: string;
+  suiteId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  /** §14.2's code the invocation exited with. */
+  exitCode?: number;
+  origin?: RunOrigin;
+  /** Basename of the suite this one re-ran, when `--retry-failed` produced it. */
+  retryOf?: string;
+  flows: SuiteFlowRecord[];
+  /**
+   * The roster was rebuilt from run directories, so flows that never ran are missing from it — a
+   * flow that failed validation opens no directory to be found. Said out loud rather than left to
+   * be discovered, because the difference is invisible in the list itself.
+   */
+  partial?: boolean;
 };
 
 export type { RunStatus, StepStatus };

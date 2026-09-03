@@ -1,5 +1,7 @@
 import get from 'lodash/get';
 import find from 'lodash/find';
+import { uuid } from 'utils/common';
+import brunoPath from 'utils/common/path';
 import {
   describeStarted,
   describeSucceeded,
@@ -14,7 +16,8 @@ import {
   sourceDescribeFailed,
   sourceSaving,
   sourceSaved,
-  sourceSaveFailed
+  sourceSaveFailed,
+  suiteRunCancelled
 } from './slice';
 
 /**
@@ -321,4 +324,70 @@ export const listFlowRuns = (flow) => async () =>
 export const openPastRun = ({ flow, entry, stepIds }) => async (dispatch) => {
   const stored = await ipc().invoke('renderer:flow-read-run', { dir: entry.dir, stepIds });
   dispatch(pastRunLoaded({ pathname: flow.pathname, stored }));
+};
+
+/**
+ * §10: the suites under `.bruno-runs/` for one scope, newest first — the roster a retry is selected
+ * from.
+ *
+ * A suite's own `suite.json` is what this reads, so a flow whose validation failed is in the roster
+ * with the rest: it never gets a run directory, and a list rebuilt from those alone would silently
+ * drop exactly the flows a retry most wants to re-run. A suite written before the index exists is
+ * rebuilt from its run directories and says so (`partial`) rather than implying it was complete.
+ */
+export const listFlowSuites = (scopeRoot) => async () => ipc().invoke('renderer:flow-list-suites', { scopeRoot });
+
+/**
+ * §10: the flows of a past suite that did not pass, run again in one sequential suite of their own.
+ *
+ * "Did not pass" is `failed`, `cancelled` and `invalid` together. An `invalid` flow usually fails
+ * validation again immediately and cheaply, and excluding it would let a mistyped selection shrink
+ * silently on every retry until there was nothing left to notice.
+ *
+ * The retry is a **new** suite recording the one it re-ran (`retryOf`), never an edit of the old
+ * one — a run is a record of an invocation, and a second invocation is a second record.
+ *
+ * The suite id is minted here rather than taken from the resolved call: the host answers as soon as
+ * the suite directory is open (002 §11.3), so `suite:start` can arrive first, and a stream the
+ * renderer cannot yet name is one it would have to fold blind.
+ */
+export const rerunFailedFlows = ({ scopeRoot, suite }) => async (dispatch, getState) => {
+  const state = getState();
+
+  /**
+   * A collection-scoped suite is one whose root *is* a loaded collection — the same pairing
+   * `main:collection-opened` records when it watches the scope. The distinction is not cosmetic:
+   * §7.2 resolves a collection's environment and its scripts' `require` against `collectionRoot`.
+   */
+  const collection = find(state.collections.collections, (entry) => entry.pathname === scopeRoot);
+
+  const flows = suite.flows
+    .filter((record) => record.outcome !== 'passed')
+    .map((record) => ({
+      entry: record.file,
+      // §12.5: a library flow's params are typed by hand before each run and live in the run panel's
+      // configuration, so a retry runs each flow with what its own panel is holding.
+      params: suppliedParams(get(state.flows.configurations, [record.file, 'params']))
+    }));
+
+  return ipc().invoke('renderer:flow-run-suite', {
+    suiteId: uuid(),
+    scope: { workspaceRoot: scopeRoot, collectionRoot: collection ? scopeRoot : undefined },
+    flows,
+    tiers: tiersFor({ collection, globalEnvironments: state.globalEnvironments }),
+    // The manifest names the suite this one re-ran by its directory's own name, so a record stays
+    // readable after the capture root has been moved or checked out somewhere else.
+    retryOf: brunoPath.basename(suite.dir)
+  });
+};
+
+/**
+ * The suite is stopped, and the flow in flight with it — 001 §11.3's cleanup steps still run.
+ *
+ * The mark is dispatched here rather than folded from `suite:end`, which reports a stopped suite and
+ * an exhausted one identically; this side asked for it, so this side is the one that knows.
+ */
+export const cancelSuiteRun = (suiteId) => async (dispatch) => {
+  await ipc().invoke('renderer:flow-cancel-suite', { suiteId });
+  dispatch(suiteRunCancelled({ suiteId }));
 };

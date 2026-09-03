@@ -6,8 +6,11 @@ jest.mock('@bruno-max/flow', () => ({
   runFlow: jest.fn(),
   describeFlow: jest.fn(),
   listRuns: jest.fn(),
+  listSuites: jest.fn(),
   readCapture: jest.fn()
 }));
+/** Every file the ports were asked to write, so a suite's roster can be read back as bytes. */
+const mockWrites = [];
 // The real port is covered by `ports.spec.js`; here it only has to hand back the reporter so a
 // scenario can drive `onRequest` the way a dispatched request would, and a `readFile` that names
 // what it read so §4.3's draft overlay can be told apart from a read of the disk.
@@ -15,6 +18,10 @@ jest.mock('./ports', () => ({
   createPorts: ({ onRequest }) => ({
     onRequest,
     readFile: async (target) => Buffer.from(`on disk: ${target}`),
+    writeFile: async (target, data) => {
+      mockWrites.push({ target, data });
+    },
+    listDirectory: async () => [],
     readSpec: async () => ({ text: '', from: 'file' })
   })
 }));
@@ -806,5 +813,326 @@ describe('a flow fixture', () => {
     const entry = fixture('unicode.json', '{ "name": "Ünïcødé — ✓" }\n');
 
     expect(await readFlowSourceHandler({ entry, scope })).toContain('Ünïcødé');
+  });
+});
+
+/**
+ * 001 §14.5's invocation, made by the app: several flows, one after another, into one suite
+ * directory — what re-running the flows that did not pass is.
+ */
+describe('a suite of flows', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { runFlow, listSuites } = require('@bruno-max/flow');
+  const { startSuite, cancelSuite, listSuitesHandler, shutdown } = require('./index');
+
+  let scopeRoot;
+  let scope;
+  let checkout;
+  let refund;
+
+  /** A run that announces itself, reports an outcome and returns — the ordinary case. */
+  const finishedRun = (runId, status, captureDir) => (options) => {
+    const result = { runId, status, ...(captureDir ? { captureDir } : {}) };
+    options.onEvent({ type: 'run:start', runId, flow: options.entry, iterationCount: 1 });
+    options.onEvent({ type: 'run:end', result });
+    return Promise.resolve(result);
+  };
+
+  /** A run that keeps going until it is aborted, so a cancel has something to land on. */
+  const runUntilCancelled = (runId, captureDir) => (options) => {
+    options.onEvent({ type: 'run:start', runId, flow: options.entry, iterationCount: 1 });
+    return new Promise((resolve) => {
+      options.signal.addEventListener('abort', () => resolve({ runId, status: 'cancelled', captureDir }));
+    });
+  };
+
+  const windowWatchingForTheEnd = () => {
+    let settle;
+    const ended = new Promise((resolve) => {
+      settle = resolve;
+    });
+    const send = jest.fn((channel, payload) => {
+      if (channel === 'main:flow-suite-event' && payload.event.type === 'suite:end') {
+        settle(payload.event);
+      }
+    });
+    return { win: { isDestroyed: () => false, webContents: { send } }, ended };
+  };
+
+  const suiteEventsOf = (win) =>
+    win.webContents.send.mock.calls
+      .filter(([channel]) => channel === 'main:flow-suite-event')
+      .map(([, payload]) => payload.event);
+
+  const manifestIn = (dir) => {
+    const written = mockWrites.find((write) => write.target === path.join(dir, 'suite.json'));
+    return written && JSON.parse(written.data.toString('utf8'));
+  };
+
+  const flowFile = (name, meta) => {
+    const target = path.join(scopeRoot, 'flows', `${name}.flow.yml`);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `version: 1\nmeta:\n  name: ${meta}\n  tags:\n    - smoke\n\nsteps: []\n`, 'utf8');
+    return target;
+  };
+
+  const request = (overrides) => ({
+    suiteId: 'suite-one',
+    scope,
+    flows: [{ entry: checkout }, { entry: refund }],
+    tiers: {},
+    ...overrides
+  });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    runFlow.mockReset();
+    listSuites.mockReset();
+    mockWrites.length = 0;
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-suite-')));
+    scope = { workspaceRoot: scopeRoot };
+    checkout = flowFile('checkout', 'Checkout');
+    refund = flowFile('refund', 'Refund');
+  });
+
+  afterEach(() => {
+    jest.runOnlyPendingTimers();
+    jest.useRealTimers();
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  /** The defect this exists to prevent: a suite of one per flow, five flows deep in the capture root. */
+  it('opens one suite directory and runs every flow into it', async () => {
+    runFlow.mockImplementationOnce(finishedRun('run-a', 'passed', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { suiteId, dir } = await startSuite(win, request());
+    await ended;
+
+    expect(suiteId).toBe('suite-one');
+    expect(path.dirname(dir)).toBe(path.join(scopeRoot, '.bruno-runs'));
+    expect(path.basename(dir)).toMatch(/^suite-\d{4}-\d{2}-\d{2}T[\d-]+Z-suit$/);
+    expect(runFlow.mock.calls.map(([options]) => options.entry)).toEqual([checkout, refund]);
+    for (const [options] of runFlow.mock.calls) {
+      expect(options.overrides.capture.dir).toBe(dir);
+    }
+  });
+
+  it('announces the roster, each flow as it runs, and the end of the suite', async () => {
+    runFlow.mockImplementationOnce(finishedRun('run-a', 'passed', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'failed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(win, request());
+    await ended;
+
+    const events = suiteEventsOf(win);
+    expect(events.map((event) => event.type)).toEqual([
+      'suite:start',
+      'suite:flow-start',
+      'suite:flow-end',
+      'suite:flow-start',
+      'suite:flow-end',
+      'suite:end'
+    ]);
+    expect(events[0].flows).toEqual([
+      { entry: checkout, id: 'flows/checkout', name: 'Checkout' },
+      { entry: refund, id: 'flows/refund', name: 'Refund' }
+    ]);
+    expect(events[1]).toEqual({ type: 'suite:flow-start', entry: checkout, runId: 'run-a' });
+    expect(events[2]).toEqual({ type: 'suite:flow-end', entry: checkout, outcome: 'passed', runId: 'run-a' });
+    expect(events[4]).toEqual({ type: 'suite:flow-end', entry: refund, outcome: 'failed', runId: 'run-b' });
+    expect(events[5]).toEqual({ type: 'suite:end', finishedAt: expect.any(String), exitCode: 1, dir });
+  });
+
+  /** Each flow's own tab folds this stream without learning that a suite is running it. */
+  it('leaves the per-flow event stream exactly as a single run emits it', async () => {
+    runFlow.mockImplementationOnce(finishedRun('run-a', 'passed', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    await startSuite(win, request());
+    await ended;
+
+    const batches = win.webContents.send.mock.calls.filter(([channel]) => channel === 'main:flow-run-event');
+    expect(batches.map(([, payload]) => payload.runId)).toEqual(['run-a', 'run-b']);
+    expect(batches[0][1].events.map((event) => event.type)).toEqual(['run:start', 'run:end']);
+  });
+
+  /** The point of re-running what did not pass is learning which of them are still broken. */
+  it('keeps going after a flow fails, and writes the roster with both outcomes', async () => {
+    runFlow.mockImplementationOnce(finishedRun('run-a', 'failed', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(win, request());
+    await ended;
+
+    expect(runFlow).toHaveBeenCalledTimes(2);
+    expect(manifestIn(dir).flows).toEqual([
+      { file: checkout, id: 'flows/checkout', name: 'Checkout', tags: ['smoke'], outcome: 'failed', runDir: 'a' },
+      { file: refund, id: 'flows/refund', name: 'Refund', tags: ['smoke'], outcome: 'passed', runDir: 'b' }
+    ]);
+    expect(manifestIn(dir).exitCode).toBe(1);
+  });
+
+  /** §14.6's `invalid`: a flow that produced no verdict is still a line in the roster. */
+  it('records a flow the engine refused, and runs the next one anyway', async () => {
+    runFlow.mockImplementationOnce(() => Promise.reject(new Error('checkout.flow.yml: could not be parsed')));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(win, request());
+    await ended;
+
+    expect(suiteEventsOf(win).map((event) => event.type)).toEqual([
+      'suite:start',
+      'suite:flow-end',
+      'suite:flow-start',
+      'suite:flow-end',
+      'suite:end'
+    ]);
+    expect(manifestIn(dir).flows.map((flow) => [flow.outcome, flow.runDir])).toEqual([
+      ['invalid', undefined],
+      ['passed', 'b']
+    ]);
+    expect(manifestIn(dir).exitCode).toBe(2);
+  });
+
+  describe('cancelled mid-suite', () => {
+    const cancelDuring = async () => {
+      runFlow.mockImplementationOnce(runUntilCancelled('run-a', '/runs/a'));
+      runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+      const { win, ended } = windowWatchingForTheEnd();
+
+      const started = await startSuite(win, request());
+      expect(cancelSuite({ suiteId: 'suite-one' })).toBe(true);
+      await ended;
+
+      return { win, ...started };
+    };
+
+    it('aborts the flow in flight and starts none of the rest', async () => {
+      const { win } = await cancelDuring();
+
+      expect(runFlow).toHaveBeenCalledTimes(1);
+      expect(runFlow.mock.calls[0][0].signal.aborted).toBe(true);
+      expect(suiteEventsOf(win).map((event) => event.type)).toEqual([
+        'suite:start',
+        'suite:flow-start',
+        'suite:flow-end',
+        'suite:end'
+      ]);
+    });
+
+    /**
+     * A roster that quietly dropped the flows the cancel never reached would tell its next reader
+     * the suite was smaller than it was — and a cancelled suite is exactly the one somebody reruns.
+     */
+    it('writes the roster, with the flows that never ran recorded as cancelled', async () => {
+      const { dir } = await cancelDuring();
+
+      expect(manifestIn(dir).flows).toEqual([
+        { file: checkout, id: 'flows/checkout', name: 'Checkout', tags: ['smoke'], outcome: 'cancelled', runDir: 'a' },
+        { file: refund, id: 'flows/refund', name: 'Refund', tags: ['smoke'], outcome: 'cancelled' }
+      ]);
+      expect(manifestIn(dir).exitCode).toBe(4);
+    });
+
+    /** `cancelRun`'s rule, one level up: being asked to cancel a suite that ended is a race, not an error. */
+    it('reports false for a suite this process is not running', () => {
+      expect(cancelSuite({ suiteId: 'a-suite-the-cli-ran' })).toBe(false);
+    });
+  });
+
+  /** 002 §4.2's quit path: the cleanup 001 §11.3 promises, plus the roster naming what never ran. */
+  it('waits for an in-flight suite at shutdown and still writes its roster', async () => {
+    runFlow.mockImplementationOnce(runUntilCancelled('run-a', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(win, request());
+    const quitting = shutdown();
+    await ended;
+    await quitting;
+
+    expect(runFlow).toHaveBeenCalledTimes(1);
+    expect(manifestIn(dir).flows.map((flow) => flow.outcome)).toEqual(['cancelled', 'cancelled']);
+  });
+
+  it('records the host, the environments and the suite it re-ran', async () => {
+    runFlow.mockImplementation(finishedRun('run-a', 'passed', '/runs/a'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(
+      win,
+      request({
+        flows: [{ entry: checkout }],
+        tiers: { environment: { name: 'staging', variables: [] } },
+        retryOf: 'suite-2026-08-05T14-22-01Z-a3f9'
+      })
+    );
+    await ended;
+
+    expect(manifestIn(dir)).toMatchObject({
+      suiteId: 'suite-one',
+      origin: { host: 'app', environment: 'staging' },
+      retryOf: 'suite-2026-08-05T14-22-01Z-a3f9',
+      exitCode: 0
+    });
+  });
+
+  /** §12.5's params are declared by the flow that consumes them, so each carries its own or none. */
+  it('runs each flow with its own params', async () => {
+    runFlow.mockImplementation(finishedRun('run-a', 'passed', '/runs/a'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    await startSuite(win, request({ flows: [{ entry: checkout, params: { orderId: '7' } }, { entry: refund }] }));
+    await ended;
+
+    expect(runFlow.mock.calls.map(([options]) => options.params)).toEqual([{ orderId: '7' }, undefined]);
+  });
+
+  /** Every entry is checked before any of them runs: a half-executed selection is unreportable. */
+  it('refuses a flow outside the scope, and runs nothing at all', async () => {
+    const { win } = windowWatchingForTheEnd();
+
+    await expect(
+      startSuite(win, request({ flows: [{ entry: checkout }, { entry: '/elsewhere/x.flow.yml' }] }))
+    ).rejects.toThrow('outside its scope');
+    expect(runFlow).not.toHaveBeenCalled();
+  });
+
+  it('refuses a suite with no scope, no id and no flows', async () => {
+    const { win } = windowWatchingForTheEnd();
+
+    await expect(startSuite(win, request({ scope: {} }))).rejects.toThrow('workspaceRoot');
+    await expect(startSuite(win, request({ suiteId: '' }))).rejects.toThrow('needs a suiteId');
+    await expect(startSuite(win, request({ flows: [] }))).rejects.toThrow('needs flows to run');
+  });
+
+  /** Two suites under one id would collide in the map the cancel and the quit path both read. */
+  it('refuses a second suite under an id already running', async () => {
+    runFlow.mockImplementation(runUntilCancelled('run-a', '/runs/a'));
+    const { win } = windowWatchingForTheEnd();
+
+    await startSuite(win, request());
+
+    await expect(startSuite(win, request())).rejects.toThrow('already running as suite-one');
+    cancelSuite({ suiteId: 'suite-one' });
+  });
+
+  /** 002 §10's list, one level up — what "the newest suite for this scope" is read from. */
+  it('lists the suites of a scope through the engine', async () => {
+    listSuites.mockResolvedValue([{ dir: '/w/.bruno-runs/suite-a', startedAt: '2026-08-05T14:22:01Z', flows: [] }]);
+
+    await expect(listSuitesHandler({ scopeRoot: '/w' })).resolves.toEqual([
+      { dir: '/w/.bruno-runs/suite-a', startedAt: '2026-08-05T14:22:01Z', flows: [] }
+    ]);
+    expect(listSuites.mock.calls[0][0].scopeRoot).toBe('/w');
+    expect(typeof listSuites.mock.calls[0][0].ports.listDirectory).toBe('function');
   });
 });

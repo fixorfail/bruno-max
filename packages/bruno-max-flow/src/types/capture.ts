@@ -15,6 +15,10 @@
  */
 import type { FlowDescription } from './describe';
 import type { RunOrigin } from './options';
+// A suite's roster names flows and their outcomes in §14.8's vocabulary, deliberately: a manifest
+// with a second spelling of either would let the index and the reports disagree about what a flow
+// is called and about what happened to it.
+import type { FlowIdentity, FlowOutcome } from './reporter';
 import type { AssertionResult, StepResult } from './result';
 
 /** A file part is captured by reference (§7.5): its content is already in the repository. */
@@ -97,6 +101,55 @@ export type RunManifest = {
    * Absent on a run written before it was recorded, and on a host that supplied none.
    */
   origin?: RunOrigin;
+};
+
+/**
+ * One flow's line in an invocation's roster — §14.5's `suite.json`, beside `RunManifest` and there
+ * for the same reason: an index that costs one small read per suite rather than a parse of every
+ * run inside it.
+ */
+export type SuiteFlowRecord = FlowIdentity & {
+  outcome: FlowOutcome;
+  /**
+   * Basename of this flow's run directory inside the suite, absent when the flow never opened one.
+   *
+   * That absence is the whole point of the manifest: a flow that failed validation (§14.3) never
+   * reaches `runFlow`, so a reader scanning run directories cannot see it at all — and it is
+   * exactly the flow a rerun most wants back.
+   */
+  runDir?: string;
+  /** Which attempt produced this outcome. Absent for 1, so a suite that never retried says nothing. */
+  attempt?: number;
+  /**
+   * An earlier attempt failed and a later one passed (§14.8). Only ever set beside
+   * `outcome: 'passed'`, because the final attempt is the flow's outcome and a flaky flow passed.
+   */
+  flaky?: boolean;
+};
+
+/**
+ * `suite.json` — which flows one invocation selected, and what became of each.
+ *
+ * Deliberately slim. This is a discovery index, not a result: the whole result, with every
+ * `RunResult` in it, is what `--reporter-json` writes (§14.8.3), and a second copy here would be a
+ * second thing to keep in step. What it adds that nothing else on disk has is the **roster** — the
+ * report files are optional and a flow that never ran leaves no directory, so without this a reader
+ * asking "what did that invocation run" has to infer the answer from what happens to be there.
+ *
+ * Written by the host that owns the suite directory, through `writeSuiteManifest` — the engine sees
+ * one flow at a time and never the invocation around it (§13.2).
+ */
+export type SuiteManifest = {
+  suiteId: string;
+  startedAt: string;
+  finishedAt: string;
+  /** §14.2's code the invocation exited with. */
+  exitCode: number;
+  origin?: RunOrigin;
+  /** Basename of the suite this one re-ran, when `--retry-failed` produced it. */
+  retryOf?: string;
+  /** In run order (path order, §14.1). */
+  flows: SuiteFlowRecord[];
 };
 
 /**

@@ -65,7 +65,19 @@ const initialState = {
    * collapsed: state owned by the component would forget every open folder each time the section was
    * shut, which is the one gesture most likely to precede reopening it.
    */
-  folderExpansion: {}
+  folderExpansion: {},
+  /**
+   * 002 §10's suite run — the flows of a past suite being re-run, folded from `main:flow-suite-event`.
+   *
+   * **One at a time, and `null` when none is.** The host opens a single suite directory and runs the
+   * roster through it in order, so a second suite started while one is in flight is not a state
+   * anything can produce; the control that starts one becomes Cancel for as long as it runs.
+   *
+   * This holds only what the section header answers — which flow is where, and how far along the
+   * suite is. Each flow's own outcomes arrive on the unchanged per-flow stream and are folded into
+   * `runs` exactly as a single run's are, so there is no second viewer to drift from the first.
+   */
+  suiteRun: null
 };
 
 /**
@@ -216,6 +228,60 @@ const applyEvent = (state, event) => {
   }
 };
 
+/**
+ * 002 §11.3's suite stream, which runs alongside the per-flow one rather than replacing it.
+ *
+ * A suite is a roster and an order; a flow's *result* is the per-flow stream's, and folding an
+ * outcome out of `suite:flow-end` into `runs` would be a second, weaker account of a run beside the
+ * one every flow tab is already showing.
+ */
+const applySuiteEvent = (state, suiteId, event) => {
+  if (event.type === 'suite:start') {
+    state.suiteRun = {
+      suiteId,
+      startedAt: event.startedAt,
+      state: 'running',
+      flows: event.flows.map((flow) => ({ ...flow, state: 'pending' }))
+    };
+    return;
+  }
+
+  // A suite the host is still finishing after this one replaced it has nothing left to say here:
+  // the header reports the suite in flight, and one at a time is what the runner offers.
+  const suite = state.suiteRun;
+  if (!suite || suite.suiteId !== suiteId) {
+    return;
+  }
+
+  if (event.type === 'suite:end') {
+    suite.dir = event.dir;
+    /**
+     * A cancel is the renderer's own fact — `suite:end` reports the same shape whether the suite ran
+     * out of flows or was stopped — so an end must not overwrite it. Everything the cancel did stop
+     * is recorded as `cancelled` in the manifest, which is where a run that was stopped is read back
+     * from; this only keeps the header from calling it complete.
+     */
+    suite.state = suite.state === 'cancelled' ? 'cancelled' : 'complete';
+    return;
+  }
+
+  const flow = suite.flows.find((entry) => entry.entry === event.entry);
+  if (!flow) {
+    return;
+  }
+
+  if (event.type === 'suite:flow-start') {
+    flow.state = 'running';
+    return;
+  }
+
+  if (event.type === 'suite:flow-end') {
+    flow.state = 'done';
+    // 001 §14.6's outcome, unrenamed — R6 asserts the UI paraphrases none of them.
+    flow.outcome = event.outcome;
+  }
+};
+
 const slice = createSlice({
   name: 'flows',
   initialState,
@@ -295,6 +361,24 @@ const slice = createSlice({
     runEventsReceived: (state, action) => {
       for (const event of action.payload.events) {
         applyEvent(state, { ...event, runId: action.payload.runId });
+      }
+    },
+
+    /** One event from `main:flow-suite-event` — §11.3's suite stream, beside the per-flow one. */
+    suiteEventReceived: (state, action) => {
+      const { suiteId, event } = action.payload;
+      applySuiteEvent(state, suiteId, event);
+    },
+
+    /**
+     * The suite was stopped from here. Recorded on the way out rather than waiting for `suite:end`,
+     * which reports a stopped suite and an exhausted one identically — the renderer is the only side
+     * that knows which of the two this was.
+     */
+    suiteRunCancelled: (state, action) => {
+      const suite = state.suiteRun;
+      if (suite && suite.suiteId === action.payload.suiteId) {
+        suite.state = 'cancelled';
       }
     },
 
@@ -572,6 +656,8 @@ export const {
   describeSucceeded,
   describeFailed,
   runEventsReceived,
+  suiteEventReceived,
+  suiteRunCancelled,
   pastRunLoaded,
   runClosed,
   iterationSelected,

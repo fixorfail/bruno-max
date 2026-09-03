@@ -68,11 +68,81 @@ describe('the suite accumulator', () => {
 
     const result = suite.end({ exitCode: 1 });
 
-    expect(result.summary.flows).toEqual({ total: 3, passed: 1, failed: 1, cancelled: 0, invalid: 1 });
+    expect(result.summary.flows).toEqual({ total: 3, passed: 1, failed: 1, cancelled: 0, invalid: 1, flaky: 0 });
     expect(result.summary.steps).toEqual(summary({ total: 5, passed: 4, failed: 1 }));
     expect(result.exitCode).toBe(1);
     expect(result.durationMs).toBe(4000);
     expect(result.flows).toHaveLength(3);
+  });
+
+  describe('under --retries', () => {
+    const finished = (over) => ({
+      ...identity(over),
+      startedAt: '2026-09-02T10:00:00.000Z',
+      finishedAt: '2026-09-02T10:00:01.000Z',
+      durationMs: 1000,
+      diagnostics: [],
+      result: { summary: summary({ total: 1, passed: 1 }) },
+      ...over
+    });
+
+    /**
+     * §14.8: the final attempt is the flow's outcome, so a second attempt replaces the record of the
+     * first rather than adding a row. Replacing in place is also what keeps the roster in path
+     * order — a retry re-runs a flow the suite already listed.
+     */
+    it('replaces a retried flow\'s record in place instead of appending one', () => {
+      const suite = createSuite({ now: clock('2026-09-02T10:00:00.000Z') });
+      suite.start([]);
+      suite.flowFinished(finished({ outcome: 'failed' }));
+      suite.flowFinished(finished({ id: 'flows/refunds', outcome: 'passed' }));
+      suite.flowFinished(finished({ outcome: 'failed' }));
+
+      const result = suite.end({ exitCode: 1 });
+
+      expect(result.flows.map((record) => [record.id, record.attempt])).toEqual([
+        ['flows/checkout', 2],
+        ['flows/refunds', undefined]
+      ]);
+    });
+
+    // A pass that nobody can see was retried is a flake that goes on being rediscovered, so it is
+    // marked — and counted beside `passed`, since the outcome counts still have to add to `total`.
+    it('marks a flow that passed after failing as flaky, and counts it beside passed', () => {
+      const suite = createSuite({ now: clock('2026-09-02T10:00:00.000Z') });
+      suite.start([]);
+      suite.flowFinished(finished({ outcome: 'failed' }));
+      suite.flowFinished(finished({ outcome: 'passed' }));
+
+      const result = suite.end({ exitCode: 0 });
+
+      expect(result.flows[0]).toMatchObject({ outcome: 'passed', attempt: 2, flaky: true });
+      expect(result.summary.flows).toEqual({ total: 1, passed: 1, failed: 0, cancelled: 0, invalid: 0, flaky: 1 });
+    });
+
+    // `flaky` is only ever set when true: every report format renders the value it finds, so a
+    // `false` would put a flakiness note on a flow that was never flaky.
+    it('leaves flaky absent on a flow that failed again', () => {
+      const suite = createSuite({ now: clock('2026-09-02T10:00:00.000Z') });
+      suite.start([]);
+      suite.flowFinished(finished({ outcome: 'failed' }));
+      suite.flowFinished(finished({ outcome: 'failed' }));
+
+      const result = suite.end({ exitCode: 1 });
+
+      expect(result.flows[0]).toMatchObject({ outcome: 'failed', attempt: 2 });
+      expect(result.flows[0]).not.toHaveProperty('flaky');
+      expect(result.summary.flows.flaky).toBe(0);
+    });
+
+    // What ties a retry to what it re-ran — a retry writes its own report, never editing the old one.
+    it('carries the suite this invocation re-ran, and nothing when it re-ran none', () => {
+      const suite = createSuite({ now: clock('2026-09-02T10:00:00.000Z') });
+      suite.start([]);
+      expect(suite.end({ exitCode: 0, retryOf: 'suite-2026-09-02T09-00-00Z-ab12' }).retryOf)
+        .toBe('suite-2026-09-02T09-00-00Z-ab12');
+      expect(suite.end({ exitCode: 0 })).not.toHaveProperty('retryOf');
+    });
   });
 
   it('stamps a flow with the suite\'s clock', () => {

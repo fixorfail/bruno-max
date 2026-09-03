@@ -20,20 +20,27 @@ import {
   RUN_INPUTS_FILE,
   RUN_DIRECTORY,
   SUITE_DIRECTORY,
+  SUITE_MANIFEST_FILE,
   attemptFile,
   flowDigest,
   stepCaptureDir
 } from './capture';
-import type { RunManifest, StepCapture } from './types/capture';
+// §5.2's identity, from the engine's one spelling of it: a rebuilt roster has to name its flows
+// exactly as the roster it stands in for would have, or a rerun matches none of them.
+import { flowIdentity } from './meta';
+import type { RunManifest, StepCapture, SuiteFlowRecord, SuiteManifest } from './types/capture';
 import type { FlowDescription } from './types/describe';
 import type {
   ListRunsOptions,
+  ListSuitesOptions,
   ReadCaptureOptions,
   ReadRunOptions,
+  ReadSuiteOptions,
   RunIndexEntry,
-  StoredRun
+  StoredRun,
+  SuiteIndexEntry
 } from './types/options';
-import type { FlowContext, ReadFile } from './types/ports';
+import type { FlowContext, ListDirectory, ReadFile } from './types/ports';
 import type { RunResult } from './types/result';
 
 /**
@@ -82,11 +89,13 @@ const readJson = async <T>(readFile: ReadFile, file: string, context: FlowContex
   }
 };
 
-/** Windows paths are case-insensitive, so a filter that compared them exactly would miss on it. */
-const samePath = (left: string, right: string): boolean => {
-  const [a, b] = [path.resolve(left), path.resolve(right)];
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+/** Windows paths are case-insensitive, so a comparison or a lookup that was exact would miss on it. */
+const pathKey = (target: string): string => {
+  const resolved = path.resolve(target);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 };
+
+const samePath = (left: string, right: string): boolean => pathKey(left) === pathKey(right);
 
 /**
  * The digest of the flow as it is *now*, read once for the whole listing rather than per run.
@@ -274,4 +283,175 @@ export const readCapture = async (options: ReadCaptureOptions): Promise<StepCapt
   // attempt it saw in a summary or a directory listing, so nothing there means the two disagree.
   if (!capture) throw new Error(`no capture for ${options.stepId} attempt ${options.attempt} in ${options.dir}`);
   return capture;
+};
+
+/**
+ * Reading an invocation back — 001 §14.5's `suite.json` over §14.8.5's suite directory.
+ *
+ * The index/detail split `listRuns` and `readRun` have, one level up: `listSuites` answers which
+ * invocations exist and what each of them selected, `readSuite` answers that for one named
+ * directory. Both are the same read, because a listing that reported a suite differently from the
+ * reader that opens it would be the drift §13.2 keeps the layout in one place to prevent.
+ */
+
+type SuitePorts = { readFile: ReadFile; listDirectory: ListDirectory };
+
+/** One run directory, read for the three things a roster line needs: the flow, when, and how it went. */
+type ReconstructedRun = {
+  runDir: string;
+  manifest: RunManifest;
+  /** Absent for an interrupted run (002 §10) — a run nobody recorded an outcome for. */
+  summary?: RunResult;
+  /** §14.5's snapshot, so a rebuilt line names the flow as the suite ran it, not as it is now. */
+  source?: string;
+};
+
+/**
+ * The roster of a suite with no `suite.json`, rebuilt from the run directories inside it.
+ *
+ * Not a legacy path: a run given no directory of its own mints a suite of one (§14.5) and writes no
+ * manifest, so every single-flow run the app makes produces exactly this shape.
+ *
+ * What it structurally cannot recover is the reason the manifest exists at all — a flow that failed
+ * validation (§14.3) never reaches `runFlow` and opens no directory, so it is absent from a listing
+ * of them. `partial` says so rather than letting the result read as the whole selection.
+ */
+const reconstructSuite = async (
+  dir: string,
+  scopeRoot: string,
+  ports: SuitePorts,
+  context: FlowContext
+): Promise<SuiteIndexEntry | undefined> => {
+  let entries: string[];
+  try {
+    entries = await ports.listDirectory(dir, context);
+  } catch {
+    return undefined;
+  }
+
+  const read = await Promise.all(
+    entries
+      .filter((entry) => RUN_DIRECTORY.test(entry))
+      .map(async (runDir): Promise<ReconstructedRun | undefined> => {
+        const target = path.join(dir, runDir);
+        const manifest = await readJson<RunManifest>(ports.readFile, path.join(target, 'run.json'), context);
+        // Same rule as `listRuns`: §14.5 writes run.json first, so a directory without one is not a
+        // run and has no flow to put in a roster.
+        if (!manifest) return undefined;
+
+        const summary = await readJson<RunResult>(ports.readFile, path.join(target, 'summary.json'), context);
+        const source = await readText(ports.readFile, path.join(target, FLOW_SOURCE_FILE), context);
+        return {
+          runDir,
+          manifest,
+          ...(summary ? { summary } : {}),
+          ...(source ? { source } : {})
+        };
+      })
+  );
+
+  const runs = read
+    .filter((run): run is ReconstructedRun => run !== undefined)
+    // Run order, as closely as run directories can report it: the roster of a suite that has a
+    // manifest is in path order (§14.1), and start order is what actually happened here.
+    .sort((left, right) => left.manifest.startedAt.localeCompare(right.manifest.startedAt));
+
+  // Nothing in here is attributable to a flow, so nothing dates the suite either. The directory
+  // name carries a timestamp, but reading one back would be a second, lossy spelling of §14.5's
+  // naming — it has no sub-second part — and would date a directory holding no evidence it ran.
+  if (!runs.length) return undefined;
+
+  const flows = new Map<string, SuiteFlowRecord>();
+  for (const run of runs) {
+    // An interrupted run has no outcome anybody recorded (002 §10). Left out rather than called
+    // `cancelled`: a rerun would then be re-running a flow on the strength of a guess, and a
+    // reader would be told the suite reached a conclusion it never reached.
+    if (!run.summary) continue;
+    // One line per flow, the last attempt winning — §14.8's rule that the final attempt is the
+    // outcome, applied to what an interrupted `--retries` invocation leaves in a suite. Re-`set`
+    // keeps the flow at the position of its first run, which is where the roster would have it.
+    flows.set(pathKey(run.manifest.flow), {
+      ...flowIdentity(scopeRoot, run.manifest.flow, run.source),
+      outcome: run.summary.status,
+      runDir: run.runDir
+    });
+  }
+
+  return {
+    dir,
+    startedAt: runs[0].manifest.startedAt,
+    // Every run in a suite came from the one invocation, so the first one's `origin` is the suite's
+    // — and without it the app's own single-flow suites would be unattributable in a list where the
+    // runs inside them each say exactly who started them.
+    ...(runs[0].manifest.origin ? { origin: runs[0].manifest.origin } : {}),
+    flows: [...flows.values()],
+    partial: true
+  };
+};
+
+const suiteAt = async (
+  dir: string,
+  scopeRoot: string,
+  ports: SuitePorts,
+  context: FlowContext
+): Promise<SuiteIndexEntry | undefined> => {
+  const manifest = await readJson<SuiteManifest>(ports.readFile, path.join(dir, SUITE_MANIFEST_FILE), context);
+  // Absent, unparseable and parsing to something that is not a roster are one answer, for
+  // `readJson`'s reason: a half-written file from a killed process is not different enough from a
+  // missing one to be worth trusting halfway, and the run directories are still there to rebuild from.
+  if (manifest && Array.isArray(manifest.flows)) {
+    return { dir, ...manifest };
+  }
+  return reconstructSuite(dir, scopeRoot, ports, context);
+};
+
+/**
+ * Which invocations have run in this scope, newest first.
+ *
+ * By `startedAt` rather than by directory name, for `listRuns`'s reason: the name carries a
+ * truncated timestamp, so two suites started in the same second would order by their id suffix. A
+ * capture root that does not exist yet is an empty list, again matching `listRuns` — a scope nobody
+ * has run anything in is the ordinary state, not an error.
+ */
+export const listSuites = async (options: ListSuitesOptions): Promise<SuiteIndexEntry[]> => {
+  const root = path.join(options.scopeRoot, CAPTURE_DIRNAME);
+  const context = readContext(options.scopeRoot);
+
+  let entries: string[];
+  try {
+    entries = await options.ports.listDirectory(root, context);
+  } catch {
+    return [];
+  }
+
+  const suites = await Promise.all(
+    entries
+      .filter((entry) => SUITE_DIRECTORY.test(entry))
+      .map((entry) => suiteAt(path.join(root, entry), options.scopeRoot, options.ports, context))
+  );
+
+  return suites
+    .filter((suite): suite is SuiteIndexEntry => suite !== undefined)
+    .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
+};
+
+/**
+ * One suite by directory — what a user naming a suite to re-run gets.
+ *
+ * Throws for a directory that is not one, the way `readRun` does and for the same reason: a caller
+ * asking about a specific directory has named something, and answering with an empty roster would
+ * report a mistyped path as an invocation that ran nothing.
+ */
+export const readSuite = async (options: ReadSuiteOptions): Promise<SuiteIndexEntry> => {
+  const suite = await suiteAt(
+    options.dir,
+    options.scopeRoot,
+    options.ports,
+    readContext(options.scopeRoot)
+  );
+
+  if (!suite) {
+    throw new Error(`${options.dir} is not a suite directory: no ${SUITE_MANIFEST_FILE} and no runs to rebuild one from`);
+  }
+  return suite;
 };

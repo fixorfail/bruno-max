@@ -1,5 +1,18 @@
 import styled from 'styled-components';
 
+/**
+ * 002 §10's suite progress, in the section header beside the header's controls — which is outside
+ * the section body this file's wrapper styles, so it is a component of its own rather than a rule.
+ *
+ * Tabular figures: the count changes once per flow, and digits of unequal width would shift the
+ * controls beside it sideways on every one of them.
+ */
+export const SuiteProgress = styled.span`
+  color: ${(props) => props.theme.colors.text.muted};
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+`;
+
 const StyledWrapper = styled.div`
   .flows-empty {
     padding: 0.25rem 0.75rem;

@@ -29,9 +29,16 @@ export { readFlowMeta } from './document';
 // 002 §4.4's properties dialog. The format's only writer, for §5.1's reason: a host editing `meta:`
 // with a YAML library of its own would be the second serializer flows being YAML-only bought away.
 export { readFlowProperties, writeFlowProperties } from './meta';
+// §5.2's identity, exported because a roster, a report and a rerun are matched to each other by it:
+// three hosts deriving it separately would be three chances for those three to disagree.
+export { flowIdentity } from './meta';
 export type { FlowProperties } from './meta';
 export { describeFlow } from './describe';
 export { listRuns, readRun, readCapture } from './history';
+// §14.5's `suite.json` — the invocation-level index the run directories cannot supply on their own,
+// since a flow that never ran leaves no directory to be found. Read here and written by the host
+// that owns the suite directory, which is why the two halves are exported separately.
+export { listSuites, readSuite } from './history';
 // §14.5's capture root and the ignore entry that comes with it. Exported because §14.8's report
 // files default into the same directory — under `--no-capture` too, where no capture ever creates
 // it — and a host computing either on its own would be the copy that drifts from §14.5.
@@ -41,3 +48,7 @@ export { CAPTURE_DIRNAME, resolveCaptureRoot, ensureCaptureIgnored } from './cap
 // keeps it out of `RUN_DIRECTORY`, so a CLI spelling the name itself could make a report directory
 // that `listRuns` lists as a run and `prune` deletes.
 export { SUITE_DIRECTORY, resolveSuiteDirectory } from './capture';
+// The roster's format, for the hosts that own a suite: the CLI's spans one command's flows and the
+// app's spans one rerun's, and neither may spell a `suite.json` of its own — `listSuites` reads one
+// format, not two.
+export { SUITE_MANIFEST_FILE, writeSuiteManifest } from './capture';

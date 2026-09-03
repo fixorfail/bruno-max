@@ -3540,6 +3540,14 @@ command — lives in files upstream does not have. **Reporters (§14.8) add no r
 new files, and `--reporter` is a flag on the same `commands/flow.js` builder the table above already
 covers, so the feature costs this manifest nothing further.
 
+**Re-running what did not pass (§14.2) adds no row either, and this is the stronger case:** the
+flags are two more options on that same builder, `suite.json` and its readers are fork-owned files
+in `@bruno-max/flow`, and the app's half of the feature ([002](./002-api-flows-ui.md) §4.1, §11.3)
+reaches the renderer and the main process entirely through delegation points already claimed above.
+A feature spanning the engine, the CLI, the main process and the renderer with an upstream footprint
+of **zero** is what the hooks were bought for; recording that here is what lets the next merge skip
+re-checking it.
+
 **The hooks amortize.** Establishing these delegation points is a one-time cost paid by the first
 fork feature. A second feature registers into the same registry and adds **zero** new upstream
 edits. That is the justification for indirection a non-forked codebase wouldn't need: the cost is
@@ -3582,6 +3590,8 @@ bru flow validate <path...>   Static validation; sends no requests
 | `--max-run-duration <ms>` | Bound the whole run; elapsing takes the cancellation path and exits 4 (§11.3) |
 | `--tags` / `--exclude-tags` | Filter flows by `meta.tags`, matching `bru run`'s existing tag filtering |
 | `--bail` | Stop after the first failing flow when several were selected |
+| `--retry-failed [suite]` | Re-run the flows a past suite did not pass, in a new suite of their own; with no value, the newest suite under the scope's capture root (§14.2) |
+| `--retries <n>` | After the selection completes, re-run flows that did not pass, up to `n` more times. Default 0 (§14.2) |
 | `--reporter <spec>` | Repeatable. `<module>` or `<module>=<path>`; `<module>` is a built-in (`junit`\|`junit-flows`\|`json`\|`html`), a path, or a package name. `=<path>` is optional for a built-in — it defaults into the invocation's suite directory, alongside every selected flow's own run directory (§14.8.5) — and required for a custom module |
 | `--reporter-junit [<path>]` | Sugar for `--reporter junit[=<path>]`; omitted, it defaults into the invocation's suite directory (§14.8.5) |
 | `--reporter-junit-flows [<path>]` | Sugar for `--reporter junit-flows[=<path>]` — one testcase per flow rather than per step (§14.8.1b) |
@@ -3609,7 +3619,8 @@ runner exists to remove rather than introduce. Path order rather than discovery 
 reproducible across machines and filesystems.
 
 `--bail` stops after the first failing flow; without it the whole selection runs and the exit code
-reflects the worst outcome (§14.2).
+reflects the worst of the flows' final outcomes (§14.2). `--retries` re-runs only the flows that
+ran, so `--bail`'s short-circuit narrows that pass as well as this one.
 
 **Discovery** covers both scopes: `bru flow run` walks up for `bruno.json` and `workspace.yml` to
 locate the collection and workspace roots, then resolves paths against whichever contains them. A
@@ -3648,6 +3659,64 @@ API. `4` matters for the same reason — an interrupted run is neither.
 `--strict` promotes every warning listed in §14.3 to an error, so a pipeline can gate on undeclared
 dependencies or shadowed namespaces instead of only on hard failures. It applies to both `run` and
 `validate`.
+
+**The code is the worst of the flows' *final* outcomes, not a maximum accumulated as the invocation
+proceeds.** The two only differ under `--retries` below, where a flow has more than one outcome to
+choose between — and choosing anything but the last would make the flag useless: a retry exists to
+turn a flow that passes on a second try green, and an invocation that re-ran a flow to a pass and
+still exited `1` would be reporting an attempt rather than a result. With no retries there is one
+outcome per flow and this is exactly the running maximum it replaces.
+
+That is not a hole a real failure hides in, because the exit code is not where the evidence lives.
+An exit code has one bit for a whole invocation and cannot say *passed, eventually*; the report can,
+and does — every attempt was dispatched to every reporter, the flow is marked `flaky`, and
+`summary.flows.flaky` counts it beside the pass (§14.8). A flake that goes unnoticed is one nobody
+wrote down, not one CI stayed green for.
+
+#### Re-running what did not pass
+
+Two flags, answering different questions. `--retries <n>` re-runs a flow that did not pass **within
+the same invocation**, after the selection has finished: is this flow actually broken, or was that
+the network. `--retry-failed [suite]` is a **second invocation** over a past one's roster: the suite
+failed, run the part of it that failed again — usually after a fix.
+
+Neither is §11.1's `retry:`, which re-sends one request inside a running flow. These re-run whole
+flows, replaying every side effect the earlier attempt already committed — the reason §12.4 bars
+`retry:` on a `uses:` step applies here at the scale of a whole file — so both are off unless asked
+for, and `--retries` defaults to `0`.
+
+**"Did not pass" is `failed`, `cancelled` *and* `invalid` — everything that is not `passed`.** An
+`invalid` flow re-fails validation immediately and cheaply, so including it costs almost nothing.
+Excluding it is what costs: the flow that failed to parse would drop out of every subsequent retry,
+and a mistyped selection would shrink silently until the suite being re-run is no longer the suite
+anybody chose.
+
+`--retry-failed` reads §14.5's `suite.json` roster — with no value, the newest suite under the
+scope's capture root; with one, that suite directory, named either as a path or as the bare
+`suite-…` name a report and a directory listing both spell. It **replaces** the positional
+selection, so a path argument then locates only the *scope* whose capture root is read; the roster
+names the flows, and they run in path order (§14.1) whatever order the roster is in. `--capture-dir`
+moves that root here exactly as it moves it for a run.
+
+Everything the selection can refuse is refused **before any flow runs** and is a usage error (`3`),
+for the reason `--global-env` and an explicit reporter path are checked up front: no suite to retry
+in the capture root, or a named directory that is neither a manifest nor rebuildable from the runs
+inside it. Two things are deliberately not refusals. A flow the roster names that is no longer on
+disk is a warning on stderr and is skipped — the rest of the retry is still worth running, and
+re-running a file that is gone is not. And a suite that passed entirely is not an error at all:
+nothing is wrong, there is simply nothing to re-run, so the command prints `nothing to retry — every
+flow in <suite> passed` and exits `0`.
+
+**A retry opens its own suite directory and records `retryOf`** — the basename of the suite it
+re-ran — in that suite's `suite.json` (§14.5) and in the `SuiteResult` reporters see (§14.8). It
+never edits the suite it retried, for the reason nothing under the capture root is ever edited: a
+suite is the record of one invocation, and a retry is a second invocation. Without the back-pointer
+the two would be indistinguishable from two invocations that happened to select the same flows,
+which is exactly the pair a reader of a red build is trying to tell apart.
+
+`--retries` is ignored by `validate`, which sends nothing and has no failure a re-run could change.
+`--retry-failed` is not: it replaces the selection for both actions, so `bru flow validate
+--retry-failed` re-validates the flows a suite did not pass.
 
 ### 14.3 `bru flow validate`
 
@@ -3813,6 +3882,7 @@ is one folder either way, and every run sits at the same depth whoever produced 
   suite-2026-08-05T14-22-01Z-a3f9/    # the app running one flow — a suite of one
     2026-08-05T14-22-01Z-a3f9/        # …sharing the run's four hex
   suite-2026-08-05T14-31-07Z-b1c4/    # one `bru flow run` over several flows (§14.8.5)
+    suite.json                        # the roster — below
     report-junit.xml
     report.json
     report.html
@@ -3823,6 +3893,41 @@ is one folder either way, and every run sits at the same depth whoever produced 
 A run directory's contents are identical either way — the nesting decides where a run is, never what
 it holds, and `RunResult.captureDir` and `run:start` (§13.2) name the run directory as they always
 have. Nothing nests below a run: the suite level is exactly one deep.
+
+**A suite directory may also hold `suite.json`, the invocation's roster**: `suiteId`, `startedAt`,
+`finishedAt`, the §14.2 code it exited with, its `origin`, the `retryOf` of a `--retry-failed`
+invocation, and one record per flow in the selection — that flow's §5.2 identity, its outcome, the
+basename of the run directory it opened, and the `attempt` and `flaky` of §14.8 where `--retries`
+re-ran it.
+
+**It exists because neither of the things already on disk can say what an invocation selected.** Run
+directories cannot: a flow that fails validation never reaches `runFlow` and opens none, so a reader
+scanning them silently drops exactly the flows a retry most wants back — the absent `runDir` on a
+record is the whole point of the file. Report files cannot either: every one of them is optional
+(§14.8.5), so anything that has to work against an arbitrary past suite cannot depend on one being
+there.
+
+**It is a discovery index, not a result, and is deliberately slim.** The whole result, every
+`RunResult` in it, is what `--reporter-json` writes (§14.8.2); a copy of that here would be a second
+thing to keep in step with it, and the two questions this file answers — which flows, and how did
+each go — need none of it.
+
+**The host that owns the suite directory writes it, through the engine's `writeSuiteManifest`.**
+This is the one file under the capture root the engine does not write itself, and that follows from
+§13.2 rather than breaking it: the engine sees one flow at a time and never the invocation around
+it, so it has no roster to write. It still owns the *format* and the serialization — the same
+two-space, newline-terminated JSON as every other file here — so one reader (002 §11.2) reads back
+what either host produced, which is the property this section has been protecting all along. `bru
+flow run` writes one whenever it opened a suite directory — capture on, or a built-in reporter
+defaulting into it (§14.8.5), so a `--no-capture` invocation with a report still gets a roster; `bru
+flow validate` opens no suite and writes none. The app's own suite runner (002 §10) is the second
+writer.
+
+**A suite with no `suite.json` is an ordinary state, not a legacy one.** A run given no directory of
+its own mints a suite of one and writes no roster, which is every single-flow run the app makes.
+002 §11.2's reader rebuilds the roster from the run directories inside such a suite and marks it
+`partial` — because a roster made of run directories is precisely the one that cannot name a flow
+that never opened one.
 
 `listRuns` (002 §11.2) reads runs inside suites and reports which suite each belongs to. It also
 still lists run directories sitting **directly** in the capture root: those are runs written before
@@ -4248,10 +4353,15 @@ export type FlowRunRecord = FlowIdentity & {
   result?: RunResult;
   /** Pre-run validation diagnostics, plus a `run-refused` error when `runFlow` rejected. */
   diagnostics: Diagnostic[];
+  /** Which attempt this record is of (§14.2's `--retries`). Absent for 1. */
+  attempt?: number;
+  /** An earlier attempt did not pass and a later one did. Only ever set beside `outcome: 'passed'`. */
+  flaky?: boolean;
 };
 
 export type SuiteSummary = {
-  flows: { total: number; passed: number; failed: number; cancelled: number; invalid: number };
+  /** `flaky` is counted *beside* `passed`, so the four outcome counts still sum to `total`. */
+  flows: { total: number; passed: number; failed: number; cancelled: number; invalid: number; flaky: number };
   /** Every flow's `result.summary`, summed. */
   steps: RunSummary;
 };
@@ -4263,6 +4373,8 @@ export type SuiteResult = {
   /** In run order (path order, §14.1). */
   flows: FlowRunRecord[];
   summary: SuiteSummary;
+  /** Basename of the suite this invocation re-ran, when `--retry-failed` produced it (§14.2). */
+  retryOf?: string;
   /** §14.2's code the process will exit with. */
   exitCode: number;
 };
@@ -4306,6 +4418,24 @@ to no file of its own; §13.2's `WriteFile` port exists for capture (§14.5), an
 produced entirely on the CLI's side of that boundary. `junit.js`, `junit-flows.js`, `json.js`,
 `html.js` and the loader that resolves a `--reporter` spec and calls its factory therefore live in
 `packages/bruno-cli/src/fork/flow/reporters/`, the same fork-owned tree as the rest of the command.
+
+**A reporter sees every attempt; `onSuiteEnd` sees one final record per flow.** Under §14.2's
+`--retries` each attempt dispatches `onFlowStart`, its `onEvent` stream and `onFlowEnd` in full — a
+report that showed only the attempt that stuck would be hiding the flakiness it is the evidence of,
+which is the one thing a green build has no other way to tell anyone. The attempts collapse in the
+suite the CLI accumulates, keyed on §5.2's `id`: a later record **replaces** the flow's earlier one
+rather than being appended, so `SuiteResult.flows` stays one record per flow and stays in path
+order. **A reporter that folds `onFlowEnd` into a list of its own must key that list on `id` too**,
+or it will report a retried flow twice.
+
+`attempt` is set from 2 onwards and `flaky` only when an earlier attempt did not pass and a later
+one did — `false` is never emitted, so a format renders whichever of the two fields is present and
+an invocation that never retried carries neither. `flaky` sits only beside `outcome: 'passed'`,
+because the final attempt is the flow's outcome and a flow that ended flaky ended green.
+`SuiteSummary.flows` therefore gains a fifth key rather than a fifth outcome: `flaky` counts a flow
+that is *already* in `passed`, which is what keeps the four outcome counts summing to `total`.
+`SuiteResult.retryOf` names the suite a `--retry-failed` invocation re-ran, and is the only thing in
+the report tying it to that one.
 
 **Hooks are optional and awaited in declaration order** — one reporter's `onFlowEnd` finishes before
 the next reporter's fires, and a reporter that streams incrementally can rely on that ordering rather
@@ -4385,7 +4515,7 @@ one suite, a flow with a `dataset:` contributes one per row.
   only when the iteration has a row, `iteration` (`N`, matching the suite name's suffix) plus one
   `row.<key>` property per dataset column, each value `String()`-coerced. The first thing a reader of
   a red build asks is which environment it ran against, and `origin` is the one place that answer
-  lives.
+  lives. `attempt` and `flaky` join them when §14.8's fields are set.
 
 **One `<testcase name="<step id>" classname="<flow id>" time=>` per step**, including sub-flow
 internals: a namespaced id like `auth/login` (§13.2) is its own testcase, so a shared sign-in
@@ -4439,7 +4569,20 @@ and no iteration to name a suite after; one case is the closest honest descripti
 could not be tried."
 
 Suite `<system-out>` carries `RunResult.diagnostics` — warnings that did not stop the run — one per
-line, and `captureDir` when present.
+line, `captureDir` when present, and, for a flaky flow, the line naming the attempt it passed on.
+
+**A flow `--retries` turned green is a pass here, and marked.** Making it a `<failure>` would defeat
+the flag entirely — a retry exists to keep a build from going red for a flake — and leaving it
+indistinguishable from a first-attempt pass would throw away the only durable record that it
+flaked. So the counts read as a pass, and the `flaky` property and that `<system-out>` line are
+where the flakiness survives: visible to a person reading the file and to a dashboard that looks for
+it, invisible to the gate. The alternative — a red build for a passing suite — teaches a team to
+stop reading the gate, which loses the failures that matter along with the flake.
+
+**A suite produced by `--retry-failed` names what it re-ran** as a `retry_of` property on the
+document's `<testsuites>` element (§14.2). Two reports over the same flows are otherwise
+indistinguishable from two reports that merely agree, and the second one being a retry is the whole
+of what a reader needs to know about it.
 
 **Every string is sanitized before it reaches `xmlbuilder`**: characters illegal in XML 1.0
 (`\x00`–`\x08`, `\x0B`, `\x0C`, `\x0E`–`\x1F`, and the non-characters `￾`/`￿`) are stripped
@@ -4455,15 +4598,24 @@ than as a silently wrong one.
 
 `junit-flows` reports the same invocation at flow granularity instead of step granularity: one
 `<testsuite name="bru flow run" tests= failures= errors= skipped= time= timestamp= hostname=>` for
-the whole run, no `<testsuites>` wrapper around it — there is never more than one — and **one
-`<testcase name="<flow id>" classname="<flow id>" time=<flow's own duration>>` per flow**, not per
-step.
+the whole run — there is never more than one — and **one `<testcase name="<flow id>"
+classname="<flow id>" time=<flow's own duration>>` per flow**, not per step. The single suite is
+still wrapped in a `<testsuites>` carrying the same totals, because that is the root element a JUnit
+consumer is entitled to find, and because it is where a document-level property such as `retry_of`
+below has to hang.
 
 Testcase `<properties>`, each present only when it applies: `test_id` (from the flow's `meta.testId`,
 §5.2, `String()`-coerced) **first**, `name` (`meta.name`), `file` (§14.8.1's resolution), `tags`
 (comma-joined, present even when empty, for the same reason §14.8.1 keeps it), `host`, `environment`
-and `globalEnvironment` from `RunResult.origin` (§14.8.1), `runId`, `status`, and `iterations` — the
-row count, present only for a `dataset:` flow.
+and `globalEnvironment` from `RunResult.origin` (§14.8.1), `runId`, `status`, `iterations` — the
+row count, present only for a `dataset:` flow — and `attempt`/`flaky` when §14.8's fields are set.
+
+**`--retries` and `--retry-failed` read exactly as they do in §14.8.1**, one granularity down: a
+flaky flow's testcase is a pass carrying the `flaky` property and a `<system-out>` note naming the
+attempt it passed on, and a retried suite names what it re-ran as `retry_of` on `<testsuites>`. The
+two formats share the argument as well as the shape — this is the file a tracker imports one case
+per flow from, so a flow that eventually passed has to import as a pass, and the note is then the
+only place its earlier failure is still visible.
 
 **Outcome maps to element by the same failure/error split §14.8.1 draws per step, applied to
 whichever steps decided the flow's own verdict** — `RunResult.decidedBy` when the flow has one, else
@@ -4517,13 +4669,22 @@ extra to compute for this format, since it is the same object the engine produce
 format this spec governs (§15), it is additive-only: a field is never removed or renamed, and
 `formatVersion` moves only if one has to be.
 
+§14.8's `retryOf`, `attempt`, `flaky` and `summary.flows.flaky` therefore arrive here for free and
+without moving `formatVersion`: they are additive fields on `SuiteResult`, and this format is that
+object. A consumer written before them keeps parsing; one written after finds a flake in the file
+rather than having to reconstruct it from two reports.
+
 #### 14.8.3 HTML
 
 `reporters/html.js` writes one self-contained file — inline CSS and JS, no CDN, no external asset, no
 network access at read time — so it opens correctly offline and survives as a CI artifact fetched
 long after the pipeline that produced it is gone. Header (command, started/finished, duration, exit
 code), summary cards, one section per flow with its iterations' step tables, and an expandable detail
-block per failed or skipped step. **Every interpolated string is HTML-escaped** — a response body or
+block per failed or skipped step. A `--retry-failed` suite names the suite it re-ran once, in that
+header. A flaky flow keeps its ordinary pass badge and gains a second, distinctly coloured **Flaky**
+one beside it, plus the attempt it passed on: a badge that *replaced* the pass would be a third
+outcome in a page whose whole vocabulary is pass and fail, and this flow passed. **Every
+interpolated string is HTML-escaped** — a response body or
 an assertion's `actual` reaches this file and neither is trusted input. Unlike JUnit and JSON, this
 format is **not** part of §15's compatibility contract: it exists to be looked at by a person, not
 parsed by a tool, and its markup is free to change between releases.
@@ -4597,6 +4758,7 @@ one layout, not a CLI-specific one:
       create_payment/
         attempt-1.json
   suite-2026-08-05T15-01-09Z-c02e/       # a `bru flow run` invocation — the CLI opens this one
+    suite.json                           # the roster (§14.5); the suite above has none to write
     report-junit.xml
     report-junit-flows.xml
     report.json
@@ -5089,7 +5251,7 @@ wanted but not now.
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
 | **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
-| **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), and a rule for a run still in flight, which is the question the old per-run bound never answered |
+| **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), a rule for a run still in flight, which is the question the old per-run bound never answered, and an answer for the newest suite, which §14.2's `--retry-failed` and [002](./002-api-flows-ui.md) §4.1's rerun action both select from — a policy that reaches it takes away the ability to re-run what just failed, silently and at exactly the moment somebody wanted it |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an
 oversight to rediscover. An item moves out of this table by being specified, and the row is deleted

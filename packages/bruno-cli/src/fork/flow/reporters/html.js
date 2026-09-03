@@ -9,6 +9,11 @@
  * error message can contain anything a server sent, `escapeHtml` is the only thing standing
  * between that and the page it's rendered into, so every interpolated string goes through it —
  * including JSON already stringified for display.
+ *
+ * A `--retries` flow that passed after failing keeps its ordinary pass badge — the counts already
+ * say it passed — plus a second, distinctly coloured "Flaky" badge and the attempt it passed on,
+ * so a reader scanning for red doesn't stop there but can still see which passes weren't clean. A
+ * `--retry-failed` suite names what it retried once, in the page header, rather than on every flow.
  */
 const fs = require('fs');
 const path = require('path');
@@ -34,6 +39,10 @@ const renderChips = (tags) =>
 /** The flow's own test-management case id — present only when the flow declared one. */
 const renderFlowTestId = (testId) =>
   testId === undefined ? '' : `<span class="chips"><span class="chip">testId: ${escapeHtml(testId)}</span></span>`;
+
+/** Which attempt produced this outcome — present only when `--retries` re-ran the flow. */
+const renderAttempt = (attempt) =>
+  attempt === undefined ? '' : `<span class="chips"><span class="chip">attempt ${escapeHtml(attempt)}</span></span>`;
 
 /** The host that ran the flow — present only when the host supplied it. */
 const renderOrigin = (origin) => {
@@ -164,11 +173,13 @@ const renderFlow = (flow, env) => `
     <h3>
       ${escapeHtml(flow.name)}
       <span class="badge badge-${escapeHtml(flow.outcome)}">${escapeHtml(FLOW_OUTCOME_LABEL[flow.outcome] || flow.outcome)}</span>
+      ${flow.flaky ? '<span class="badge badge-flaky">Flaky</span>' : ''}
     </h3>
     <div class="flow-meta">
       <span class="flow-id"><code>${escapeHtml(flow.id)}</code></span>
       <span class="flow-file">${escapeHtml(forDisplay(flow.file, env.cwd))}</span>
       <span class="flow-duration">${duration(flow.durationMs)}</span>
+      ${renderAttempt(flow.attempt)}
       ${renderFlowTestId(flow.testId)}
       ${renderChips(flow.tags)}
       ${renderOrigin(flow.result?.origin)}
@@ -221,6 +232,7 @@ const STYLE = `
       --cancelled: #9a6700;
       --skipped: #57606a;
       --invalid: #cf222e;
+      --flaky: #0969da;
       --chip-bg: #eef0f2;
     }
     @media (prefers-color-scheme: dark) {
@@ -236,6 +248,7 @@ const STYLE = `
         --cancelled: #d29922;
         --skipped: #8b949e;
         --invalid: #f85149;
+        --flaky: #58a6ff;
         --chip-bg: #21262d;
       }
     }
@@ -272,6 +285,7 @@ const STYLE = `
     .badge-cancelled { color: var(--cancelled); background: color-mix(in srgb, var(--cancelled) 15%, transparent); }
     .badge-invalid { color: var(--invalid); background: color-mix(in srgb, var(--invalid) 15%, transparent); }
     .badge-skipped { color: var(--skipped); background: color-mix(in srgb, var(--skipped) 15%, transparent); }
+    .badge-flaky { color: var(--flaky); background: color-mix(in srgb, var(--flaky) 15%, transparent); }
     .table-scroll { overflow-x: auto; margin: 8px 0 16px; }
     table.steps { width: 100%; border-collapse: collapse; font-size: 13px; }
     table.steps caption { text-align: left; color: var(--muted); font-size: 12px; padding-bottom: 4px; }
@@ -305,6 +319,7 @@ const formatHtml = (suite, env) => `<!doctype html>
       started ${escapeHtml(suite.startedAt)} · finished ${escapeHtml(suite.finishedAt)} ·
       duration ${duration(suite.durationMs)} · exit code ${suite.exitCode}
     </div>
+    ${suite.retryOf ? `<div class="meta">retry of ${escapeHtml(suite.retryOf)}</div>` : ''}
   </header>
   ${renderSummary(suite.summary)}
   <main>

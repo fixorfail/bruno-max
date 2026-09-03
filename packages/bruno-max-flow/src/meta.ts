@@ -16,7 +16,11 @@
  * its value, so padding used to align a column of them collapses. Nothing the format carries meaning
  * in is affected, and there is no serializer option that preserves it.
  */
+import * as path from 'path';
+
 import * as YAML from 'yaml';
+
+import type { FlowIdentity } from './types/reporter';
 
 /** §5.2's `meta:`, as a dialog edits it. */
 export type FlowProperties = {
@@ -163,4 +167,31 @@ export const writeFlowProperties = (text: string, properties: FlowProperties): s
   }
 
   return String(document);
+};
+
+/**
+ * What a reader calls a flow — §5.2's identity, and the `meta:` a roster or a report writes beside it.
+ *
+ * **One spelling, because three readers have to agree on it.** A suite's roster, a report's rows and
+ * a rerun's selection are matched to each other by `id`; a host that derived it with a rule of its
+ * own would produce a report whose flows could not be found in the roster written next to it. The
+ * path transform is the whole of the rule — relative to the scope root, `.flow.yml` removed, posix
+ * separators, so an id is the same string on Windows as on the machine that wrote the run.
+ *
+ * Pure, and `source` is optional, because the hosts read files differently — one synchronously, one
+ * through a port — and because a flow that will not parse still needs a row: no text and text that
+ * declares no `meta:` give the same answer, which is the file's own stem.
+ */
+export const flowIdentity = (scopeRoot: string, file: string, source?: string): FlowIdentity => {
+  const properties = source === undefined ? undefined : readFlowProperties(source);
+
+  return {
+    file,
+    id: path.relative(scopeRoot, file).replace(/\.flow\.yml$/, '').split(path.sep).join('/'),
+    name: (properties && properties.name) || path.basename(file).replace(/\.flow\.yml$/, ''),
+    tags: (properties && properties.tags) || [],
+    // Absent rather than empty when the flow declares none: a report writes the property only for a
+    // flow a tracker actually has a case for.
+    ...(properties && properties.testId ? { testId: properties.testId } : {})
+  };
 };

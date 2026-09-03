@@ -38,17 +38,27 @@ const flowIn = (workspaceRoot, filename, collectionRoot, extra = {}) => ({
   ...extra
 });
 
-const renderSection = ({ flows, workspaces, activeWorkspaceUid, apiSpecs = [], sources = {} }) => {
+const renderSection = ({
+  flows,
+  workspaces,
+  activeWorkspaceUid,
+  apiSpecs = [],
+  sources = {},
+  collections = [],
+  configurations = {},
+  suiteRun = null
+}) => {
   const store = configureStore({
     reducer: {
       flows: flowsReducer,
       tabs: tabsReducer,
       apiSpec: () => ({ apiSpecs }),
-      collections: () => ({ collections: [] }),
+      collections: () => ({ collections }),
+      globalEnvironments: () => ({ globalEnvironments: [], activeGlobalEnvironmentUid: undefined }),
       workspaces: () => ({ workspaces, activeWorkspaceUid })
     },
     preloadedState: {
-      flows: { ...initialFlowsState(), flows, sources }
+      flows: { ...initialFlowsState(), flows, sources, configurations, suiteRun }
     }
   });
 
@@ -939,6 +949,245 @@ describe('FlowSidebarSection', () => {
         fireEvent.click(screen.getByTestId('flows-header-add'));
 
         expect(screen.queryByTestId('flows-header-actions-menu-expand-folders')).not.toBeInTheDocument();
+      });
+    });
+  });
+
+  /**
+   * 002 §10 — re-running the flows of the last suite that did not pass, from the section header.
+   *
+   * The assertions are on what reaches `renderer:flow-run-suite`, because that payload *is* the
+   * retry: what each flow does next arrives on the unchanged per-flow stream, into the flow's own
+   * tab, which this section never draws.
+   */
+  describe('rerunning failed flows (§10)', () => {
+    const workspaceFlows = [
+      flowIn('/home/dev/workspace-one', 'checkout.flow.yml'),
+      flowIn('/home/dev/workspace-one', 'refund.flow.yml'),
+      flowIn('/home/dev/payments', 'invoice.flow.yml', '/home/dev/payments')
+    ];
+
+    const record = (file, outcome) => ({ file, id: file.split('/').pop().replace('.flow.yml', ''), name: file, outcome });
+
+    const suite = ({ dir, startedAt, flows, partial }) => ({ dir, suiteId: dir, startedAt, flows, partial });
+
+    /** `renderer:flow-list-suites` answers per scope root, so a test says what each scope holds. */
+    let invoke;
+    const listing = (byScopeRoot) => {
+      invoke = jest.fn(async (channel, request) =>
+        (channel === 'renderer:flow-list-suites' ? byScopeRoot[request.scopeRoot] || [] : undefined));
+      window.ipcRenderer = { invoke };
+    };
+
+    const openMenu = async (options) => {
+      const rendered = renderSection(options);
+      fireEvent.click(await screen.findByTestId('flows-header-actions'));
+      return rendered;
+    };
+
+    const workspaceSuite = (flows, extras = {}) => ({
+      '/home/dev/workspace-one': [suite({ dir: '/home/dev/workspace-one/.bruno-runs/suite-2', startedAt: '2026-02-03T10:00:00.000Z', flows, ...extras })]
+    });
+
+    it('counts the flows of the newest suite that did not pass', async () => {
+      listing(workspaceSuite([
+        record('/home/dev/workspace-one/flows/checkout.flow.yml', 'passed'),
+        record('/home/dev/workspace-one/flows/refund.flow.yml', 'failed')
+      ]));
+
+      await openMenu({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByTestId('flow-rerun-failed')).toHaveTextContent('Rerun failed flows (1)');
+    });
+
+    /**
+     * "Failed" is everything that did not pass. An `invalid` flow fails validation again immediately
+     * and cheaply, and excluding it would let a mistyped selection shrink on every retry.
+     */
+    it('counts cancelled and invalid beside failed', async () => {
+      listing(workspaceSuite([
+        record('/home/dev/workspace-one/flows/a.flow.yml', 'failed'),
+        record('/home/dev/workspace-one/flows/b.flow.yml', 'cancelled'),
+        record('/home/dev/workspace-one/flows/c.flow.yml', 'invalid'),
+        record('/home/dev/workspace-one/flows/d.flow.yml', 'passed')
+      ]));
+
+      await openMenu({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.getByTestId('flow-rerun-failed')).toHaveTextContent('Rerun failed flows (3)');
+    });
+
+    /** "Nothing to retry" is an answer; an absent control is not one. */
+    it('is disabled, and does nothing, when the last suite passed entirely', async () => {
+      listing(workspaceSuite([record('/home/dev/workspace-one/flows/checkout.flow.yml', 'passed')]));
+
+      await openMenu({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one' });
+
+      const item = screen.getByTestId('flow-rerun-failed').closest('[role="menuitem"]');
+      expect(item).toHaveAttribute('aria-disabled', 'true');
+
+      fireEvent.click(item);
+
+      await waitFor(() => expect(invoke).toHaveBeenCalled());
+      expect(invoke).not.toHaveBeenCalledWith('renderer:flow-run-suite', expect.anything());
+    });
+
+    /** With nothing ever run in the scopes on show there is no suite a retry could name. */
+    it('is not offered when nothing has run', async () => {
+      listing({});
+
+      // Folders, so the overflow menu is drawn at all and the absence being asserted is the item's.
+      renderSection({
+        flows: [...workspaceFlows, flowIn('/home/dev/workspace-one', 'company/nested.flow.yml')],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      fireEvent.click(await screen.findByTestId('flows-header-actions'));
+
+      expect(screen.queryByTestId('flow-rerun-failed')).not.toBeInTheDocument();
+      expect(screen.getByTestId('flows-header-actions-menu-expand-folders')).toBeInTheDocument();
+    });
+
+    /**
+     * A collection's flows record their runs under the collection's own capture root, so the suite
+     * the reader last ran is as likely to be one of those as one of the workspace's.
+     */
+    it('takes the newest suite across the workspace and its collections', async () => {
+      listing({
+        '/home/dev/workspace-one': [suite({
+          dir: '/home/dev/workspace-one/.bruno-runs/suite-1',
+          startedAt: '2026-02-03T09:00:00.000Z',
+          flows: [record('/home/dev/workspace-one/flows/refund.flow.yml', 'failed')]
+        })],
+        '/home/dev/payments': [suite({
+          dir: '/home/dev/payments/.bruno-runs/suite-9',
+          startedAt: '2026-02-03T11:00:00.000Z',
+          flows: [
+            record('/home/dev/payments/flows/invoice.flow.yml', 'failed'),
+            record('/home/dev/payments/flows/credit.flow.yml', 'cancelled')
+          ]
+        })]
+      });
+
+      await openMenu({
+        flows: workspaceFlows,
+        workspaces,
+        activeWorkspaceUid: 'one',
+        collections: [{ pathname: '/home/dev/payments' }]
+      });
+
+      expect(screen.getByTestId('flow-rerun-failed')).toHaveTextContent('Rerun failed flows (2)');
+
+      fireEvent.click(screen.getByTestId('flow-rerun-failed'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-run-suite', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-run-suite');
+      // A collection scope is one whose root is a loaded collection — the pairing the watcher records.
+      expect(request.scope).toEqual({ workspaceRoot: '/home/dev/payments', collectionRoot: '/home/dev/payments' });
+      expect(request.retryOf).toBe('suite-9');
+    });
+
+    it('sends only the flows that did not pass, in the roster\'s order', async () => {
+      listing(workspaceSuite([
+        record('/home/dev/workspace-one/flows/checkout.flow.yml', 'failed'),
+        record('/home/dev/workspace-one/flows/passing.flow.yml', 'passed'),
+        record('/home/dev/workspace-one/flows/refund.flow.yml', 'invalid')
+      ]));
+
+      await openMenu({
+        flows: workspaceFlows,
+        workspaces,
+        activeWorkspaceUid: 'one',
+        // §12.5: a flow's params are typed into its run panel, and a retry runs it with what it holds.
+        configurations: { '/home/dev/workspace-one/flows/checkout.flow.yml': { params: { email: 'qa@example.com', token: '  ' } } }
+      });
+
+      fireEvent.click(screen.getByTestId('flow-rerun-failed'));
+
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-run-suite', expect.anything()));
+      const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-run-suite');
+      expect(request.flows).toEqual([
+        { entry: '/home/dev/workspace-one/flows/checkout.flow.yml', params: { email: 'qa@example.com' } },
+        { entry: '/home/dev/workspace-one/flows/refund.flow.yml', params: {} }
+      ]);
+      expect(request.scope).toEqual({ workspaceRoot: '/home/dev/workspace-one', collectionRoot: undefined });
+      expect(request.retryOf).toBe('suite-2');
+      expect(request.suiteId).toEqual(expect.any(String));
+    });
+
+    /**
+     * A roster rebuilt from run directories cannot name a flow that never ran, so it can only
+     * under-count — and hiding the action would trade a retry of the failures it does name for none.
+     */
+    it('offers a partial roster on the same terms', async () => {
+      listing(workspaceSuite([record('/home/dev/workspace-one/flows/refund.flow.yml', 'failed')], { partial: true }));
+
+      await openMenu({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one' });
+
+      const item = screen.getByTestId('flow-rerun-failed');
+      expect(item).toHaveTextContent('Rerun failed flows (1)');
+      expect(item.closest('[role="menuitem"]')).toHaveAttribute('aria-disabled', 'false');
+    });
+
+    /**
+     * While a suite runs there is one suite directory being written, so starting a second is not a
+     * state to offer — the entry is the way to stop the one in flight.
+     */
+    describe('while a suite is running', () => {
+      const running = {
+        suiteId: 'suite-live',
+        startedAt: '2026-02-03T12:00:00.000Z',
+        state: 'running',
+        flows: [
+          { entry: '/home/dev/workspace-one/flows/a.flow.yml', id: 'a', name: 'A', state: 'done', outcome: 'failed' },
+          { entry: '/home/dev/workspace-one/flows/b.flow.yml', id: 'b', name: 'B', state: 'running' },
+          { entry: '/home/dev/workspace-one/flows/c.flow.yml', id: 'c', name: 'C', state: 'pending' }
+        ]
+      };
+
+      beforeEach(() => {
+        listing(workspaceSuite([record('/home/dev/workspace-one/flows/a.flow.yml', 'failed')]));
+      });
+
+      it('reads how far along it is without opening anything', () => {
+        renderSection({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one', suiteRun: running });
+
+        expect(screen.getByTestId('flow-suite-progress')).toHaveTextContent('1 / 3');
+      });
+
+      it('offers Cancel in place of another retry', async () => {
+        await openMenu({ flows: workspaceFlows, workspaces, activeWorkspaceUid: 'one', suiteRun: running });
+
+        expect(screen.getByTestId('flow-suite-cancel')).toBeInTheDocument();
+        expect(screen.queryByTestId('flow-rerun-failed')).not.toBeInTheDocument();
+      });
+
+      it('stops the suite by its id, and says so once the host has', async () => {
+        const { store } = await openMenu({
+          flows: workspaceFlows,
+          workspaces,
+          activeWorkspaceUid: 'one',
+          suiteRun: running
+        });
+
+        fireEvent.click(screen.getByTestId('flow-suite-cancel'));
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-cancel-suite', { suiteId: 'suite-live' }));
+        await waitFor(() => expect(store.getState().flows.suiteRun.state).toBe('cancelled'));
+      });
+
+      /** Nothing is running once it has stopped, so the progress goes with it. */
+      it('shows no progress for a suite that has finished', () => {
+        renderSection({
+          flows: workspaceFlows,
+          workspaces,
+          activeWorkspaceUid: 'one',
+          suiteRun: { ...running, state: 'complete' }
+        });
+
+        expect(screen.queryByTestId('flow-suite-progress')).not.toBeInTheDocument();
       });
     });
   });

@@ -195,6 +195,28 @@ the piece it is missing, not a new class of interruption. An OS-level notificati
 third surface with a preference to govern it, and §15 records it as the thing to reach for if long
 flows turn out to be the norm.
 
+**The section header's overflow menu carries `Rerun failed flows (N)`** — the flows of the newest
+suite across the scopes the section is showing (§10) that did not pass, run again in one suite of
+their own. `N` is that count, on the item itself, because how much is about to run is the one thing
+a reader wants to know before clicking.
+
+**In the header rather than on a row**, because the thing being re-run is a *suite*: it belongs to
+the scope, and the flow the reader happens to be pointing at may not be in it. It is offered only
+once something has run — with no suite there is nothing a retry could name — and **disabled rather
+than hidden** when that suite passed entirely, because "nothing to retry" is an answer and a control
+that is not there is not one.
+
+A roster the engine had to rebuild from run directories (`partial`, §11.2) is offered on exactly the
+same terms. Such a roster can only ever *under*-count: what is missing from it are the flows that
+never ran at all, so hiding the action there would trade a retry of the failures it does name for no
+retry whatsoever.
+
+**While a suite is running the header shows `done / total` and the menu entry becomes `Cancel`.**
+The app runs one suite at a time (§10), so a second suite started over the first is not a state to
+offer in its place. The progress count sits in the header rather than behind the menu holding
+Cancel: a suite runs for minutes, and a count nobody can read without opening something is not a
+progress indicator.
+
 Discovery mirrors API Specs exactly: a chokidar watcher in the Electron main process over each
 scope's `flows/` directory, emitting tree events the renderer folds into a slice — the shape of
 `bruno-electron/src/app/apiSpecsWatcher.js` and `slices/apiSpec.js`. A flow appears, disappears and
@@ -259,16 +281,19 @@ collapsed, and state owned by the component would forget every open folder on th
 likely to precede reopening it. It is session state, not written to disk, exactly like the collapse
 state of a collection folder.
 
-**The section header carries `Expand All Folders` and `Collapse All Folders`**, in an overflow menu of
-its own beside the `+`. A tree the reader cannot open in one gesture makes folders a cost rather than
+**The section header carries `Expand All Folders` and `Collapse All Folders`**, in the overflow menu
+beside the `+`. A tree the reader cannot open in one gesture makes folders a cost rather than
 a convenience whenever the question is "what is in this workspace at all". They sit apart from the
 `+` because that control adds a flow and these act on the tree already listed — the same split, and
 the same three-dot menu, the collections header uses; with the folder items gone the `+` has one
-thing to do and does it on the click rather than through a menu of one. The menu is not drawn at all
-when the section holds no folders, since these are the only items in it. Both are offered whenever
-there are folders at all, rather than one item that switches to the other once everything is open: an
-item that changes meaning between two openings of the same menu has to be read before it is clicked,
-and it would reflect a state — every folder in every scope — that the reader cannot see. Upstream's
+thing to do and does it on the click rather than through a menu of one. They share that menu with
+§4.1's rerun entry, which is an action on what the section is already showing too, and it is drawn
+only when at least one of the two has something in it: no folders to fold and nothing ever run in
+these scopes leaves a control that opens onto nothing, which is worse than no control at all.
+
+Both folder items are offered whenever there are folders at all, rather than one item that switches
+to the other once everything is open: an item that changes meaning between two openings of the same
+menu has to be read before it is clicked, and it would reflect a state — every folder in every scope — that the reader cannot see. Upstream's
 collection menu carries its own `Collapse` unconditionally for the same reason. They act on the
 folders the section is showing, not on every scope in the store (§4.1).
 
@@ -1754,6 +1779,40 @@ ids it asks about used to come from today's graph — so a renamed step's captur
 since 001 §14.5's directory name is a lossy encoding that cannot be inverted. With a snapshot the
 reader asks about the ids the run actually had.
 
+**The other unit in this history is the suite**, and it is the one a rerun selects from. §11.2's
+`listSuites` answers which invocations have run in a scope and what each of them selected — from 001
+§14.5's `suite.json` where a host wrote one, and from the run directories inside where none exists.
+It is a separate reader from `listRuns` rather than a mode of it because the two answer different
+questions of the same directory: the selector wants runs of *one flow*, and a rerun wants the
+*roster* of one invocation.
+
+**A rebuilt roster (`partial`) can only under-count the flows that did not pass**, because the thing
+a roster made of run directories structurally cannot name is a flow that never opened one. Every
+single-flow run the app makes produces exactly such a suite, so this is the ordinary state of a
+history the app alone wrote, not a degraded one — and §4.1 offers it on the same terms for that
+reason.
+
+**A retry is a new suite that records the one it re-ran, in `retryOf`.** It never edits the suite it
+retried, for the reason nothing in this history is ever edited: a suite is the record of an
+invocation, and re-running part of one is a second invocation. Without the back-pointer, a retry and
+an unrelated invocation that happened to select the same flows would be indistinguishable in a list
+of timestamps — which is the pair somebody scrolling this history is most likely to be trying to
+tell apart.
+
+**One suite runs at a time, and each of its flows reports itself on the per-flow stream unchanged.**
+A flow run by a suite lands in its own tab exactly as a single run does — the same events, the same
+folding, the same graph — and the suite stream beside it (§11.3) carries only the roster and its
+progress. That is this section's own rule applied one level up: a second, weaker viewer of a run is
+what makes two views of it drift, and a suite is not a reason to build one. The sidebar's `done /
+total` is a count of the roster, not a view of any run in it.
+
+**A cancelled suite is remembered on the renderer's side**, because `suite:end` reports a suite that
+was stopped and one that ran out of flows identically, and the side that asked for the stop is the
+only one that knows which happened. What is on disk is not in doubt: the flows a cancel never
+reached are written into the roster as `cancelled` rather than left out of it — a cancelled suite is
+precisely the one somebody re-runs next, and a roster that quietly omitted its untouched flows would
+offer a retry of less than was stopped.
+
 ---
 
 ## 11. The engine boundary
@@ -1857,6 +1916,8 @@ could be built, because §6 requires a broken flow to open.
 declare function listRuns(options: ListRunsOptions): Promise<RunIndexEntry[]>;
 declare function readRun(options: ReadRunOptions): Promise<StoredRun>;
 declare function readCapture(options: ReadCaptureOptions): Promise<StepCapture>;
+declare function listSuites(options: ListSuitesOptions): Promise<SuiteIndexEntry[]>;
+declare function readSuite(options: ReadSuiteOptions): Promise<SuiteIndexEntry>;
 
 type ListRunsOptions = {
   scopeRoot: string;                   // where .bruno-runs/ lives (001 §14.5)
@@ -1895,6 +1956,27 @@ type ReadCaptureOptions = {
   iteration?: number;
   attempt: number;
   ports: { readFile: ReadFile };
+};
+
+type ListSuitesOptions = {
+  scopeRoot: string;                   // where .bruno-runs/ lives, and what 001 §5.2 measures an id from
+  ports: { readFile: ReadFile; listDirectory: ListDirectory };
+};
+
+type ReadSuiteOptions = ListSuitesOptions & {
+  dir: string;                         // a suite directory, from `listSuites` or named by a user
+};
+
+type SuiteIndexEntry = {
+  dir: string;                         // absolute, the way `listRuns` reports a run's
+  suiteId?: string;
+  startedAt: string;
+  finishedAt?: string;
+  exitCode?: number;                   // 001 §14.2's code the invocation exited with
+  origin?: RunOrigin;
+  retryOf?: string;                    // basename of the suite this one re-ran (001 §14.2)
+  flows: SuiteFlowRecord[];            // 001 §14.5's roster line: identity, outcome, runDir, attempt, flaky
+  partial?: boolean;                   // the roster was rebuilt — see below
 };
 
 type StepCapture = {
@@ -2008,6 +2090,38 @@ result sets to render twenty rows.
 It is a separate entry point rather than a flag on `listRuns` because the two return different
 shapes and §10 calls them at different moments — the selector on open, the reader on selection.
 
+**`listSuites` and `readSuite` are that same split one level up**, over 001 §14.5's suite
+directories: which invocations ran here, and the roster of one named directory. `listSuites` orders
+newest first by `startedAt` — the field, not the directory name, for the reason `listRuns` does: the
+name carries a truncated timestamp, so two suites started in the same second would sort by their id
+suffix. A capture root that does not exist yet is an empty list, again matching `listRuns`, because
+a scope nobody has run anything in is the ordinary state rather than an error. `readSuite` *throws*
+for a directory that is neither, exactly as `readRun` does and for the same reason: a caller naming
+a specific directory has named something, and answering a mistyped path with an empty roster would
+report it as an invocation that ran nothing.
+
+**Both return the same shape**, so a listing and a reader can never describe the same suite
+differently — the drift 001 §13.2 keeps every path computation in one place to prevent. That shape
+is 001 §14.5's `SuiteManifest` with the three fields a rebuilt roster cannot know made optional,
+plus where the suite lives and whether it is the whole story. Promising a `suiteId`, a `finishedAt`
+and an `exitCode` for every suite would force the reader to invent them for the suites that have
+none, which is most of the app's own history.
+
+**A suite with no `suite.json` has its roster rebuilt from the run directories inside it.** This is
+not a legacy path: every single-flow run mints a suite of one and writes no manifest (001 §14.5), so
+it is what an app-only history is made of. The rebuild reads each run's `run.json` for the flow and
+the time and its `summary.json` for the outcome, and names the flow from that run's own `flow.yml`
+snapshot, falling back to the file's stem — so a rebuilt line names a flow exactly as a written
+roster would, which is what lets a rerun match the two. A run with no `summary.json` is *interrupted*
+(§10) and is left out of the roster rather than being called `cancelled`: nobody recorded an outcome
+for it, and a rerun that re-ran it would be acting on a guess. It still dates the suite. A directory
+holding no readable `run.json` at all is not listed, because nothing in it is attributable to a flow
+and nothing in it dates the suite either.
+
+Every rebuilt entry sets `partial`. A roster assembled from run directories cannot name a flow that
+never opened one — 001 §14.5's whole argument for the file — so the difference between it and a
+written roster is invisible in the result unless the result says so.
+
 `capturedSteps` is what makes §10's interrupted run render. A run that died before writing
 `summary.json` has no `StepResult` for anything, so the only evidence of what happened is which step
 directories exist; knowing them lets the graph show those steps as having run and the rest as
@@ -2036,7 +2150,7 @@ argument 001 §13.1 makes about request dispatch, applied to the artifact.
 ### 11.3 The IPC surface
 
 Every channel the feature uses. The invokes are listed in the order `registerFlowIpc` registers them;
-the three `main:` pushes follow.
+the four `main:` pushes follow.
 
 | Channel | Direction | Purpose |
 |---|---|---|
@@ -2045,7 +2159,10 @@ the three `main:` pushes follow.
 | `renderer:flow-write-source` | invoke | Write one of those files back |
 | `renderer:flow-run` | invoke | Start a run; resolves with the `runId` |
 | `renderer:flow-cancel` | invoke | Abort a run by `runId` |
+| `renderer:flow-run-suite` | invoke | Run a selection of flows sequentially into one suite directory; resolves as soon as that directory is named |
+| `renderer:flow-cancel-suite` | invoke | Abort a suite by `suiteId` — the flow in flight stops, the rest never start |
 | `renderer:flow-list-runs` | invoke | `listRuns` for a scope |
+| `renderer:flow-list-suites` | invoke | `listSuites` for a scope — the roster §4.1's rerun is selected from |
 | `renderer:flow-read-run` | invoke | One stored run's results |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
 | `renderer:flow-folder` | invoke | A scope's `flows/` path, joined main-side — the location §4.1's form opens on |
@@ -2057,6 +2174,7 @@ the three `main:` pushes follow.
 | `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
 | `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
+| `main:flow-suite-event` | send | One suite-level event: the roster, a flow starting or ending in it, the suite ending |
 | `main:flow-request-log-batch` | send | A batch of requests the dispatch port sent (§8.5) |
 | `main:flow-tree-updated` | send | Watcher: a flow, script or fixture added, changed or removed |
 
@@ -2141,8 +2259,27 @@ type EnvironmentVariable = { name: string; value: unknown; enabled: boolean; sec
 // renderer:flow-cancel  ->  boolean (false when the runId is not executing here)
 type CancelRequest = { runId: string };
 
+// renderer:flow-run-suite  ->  { suiteId: string; dir: string }, as soon as the directory is named
+type RunSuiteRequest = {
+  /** Minted by the renderer, so it can name the stream before the first event arrives. */
+  suiteId: string;
+  scope: FlowScope;
+  /** In the order they run. `params` is per flow, since §12.5 declares them per flow. */
+  flows: { entry: string; params?: Record<string, unknown> }[];
+  tiers: RunRequest['tiers'];
+  overrides?: RunRequest['overrides'];
+  /** Basename of the source suite's directory, when this is a retry (001 §14.2). */
+  retryOf?: string;
+};
+
+// renderer:flow-cancel-suite  ->  boolean (false when the suiteId is not executing here)
+type CancelSuiteRequest = { suiteId: string };
+
 // renderer:flow-list-runs  ->  RunIndexEntry[] (§11.2)
 type ListRunsRequest = { scopeRoot: string; flow?: string };
+
+// renderer:flow-list-suites  ->  SuiteIndexEntry[] (§11.2)
+type ListSuitesRequest = { scopeRoot: string };
 
 // renderer:flow-watch-scope    ->  FlowTreeEntry[], the flows already on disk
 // renderer:flow-unwatch-scope  ->  void
@@ -2156,6 +2293,15 @@ type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; att
 
 // main:flow-run-event
 type RunEventBatch = { runId: string; events: FlowEvent[] };
+
+// main:flow-suite-event — one at a time and unbatched, unlike the run events above: a suite emits
+// two events per flow where a run emits one per attempt, so there is no storm to coalesce.
+type SuiteEventMessage = { suiteId: string; event: SuiteEvent };
+type SuiteEvent =
+  | { type: 'suite:start'; startedAt: string; flows: { entry: string; id: string; name: string }[] }
+  | { type: 'suite:flow-start'; entry: string; runId: string }
+  | { type: 'suite:flow-end'; entry: string; outcome: FlowOutcome; runId?: string }
+  | { type: 'suite:end'; finishedAt: string; exitCode: number; dir: string };
 
 // main:flow-request-log-batch — §8.5. Batched across runs, unlike the events above: the panel is
 // chronological rather than per-run, and two concurrent runs belong interleaved in it.
@@ -2225,7 +2371,33 @@ has no deletion path to copy — its watchers are per opened file rather than ov
 **`renderer:flow-cancel` resolves `false` rather than throwing on an unknown `runId`.** §10 and
 `listRuns` both admit runs this process is not executing (a CLI run, or one from a previous launch),
 and asking to cancel one is an ordinary race between the run ending and the click landing, not an
-error worth a toast.
+error worth a toast. `renderer:flow-cancel-suite` answers the same way, for the same reason.
+
+**The suite stream runs beside the per-flow one rather than instead of it.** Every flow of a suite
+goes through the same `runFlow` call a single run makes and emits `main:flow-run-event` unchanged, so
+the flow tabs fold it without ever learning that a suite is running them — which is the whole of why
+a rerun needs no second viewer (§10). `main:flow-suite-event` carries only what the per-flow stream
+cannot: the roster, which of it is in front, and that the invocation is over.
+
+**Every run of a suite is given the suite's directory as `overrides.capture.dir`.** Without it the
+engine mints a suite of one per flow (001 §14.5), and a rerun of five flows would leave five suite
+directories behind — five things to collect, and nothing on disk naming the invocation that produced
+them.
+
+**A flow that fails does not stop the suite.** The point of re-running what did not pass is learning
+which of those flows are still broken, and a suite that halted on the first would answer that
+question one flow per invocation.
+
+**A flow refused before `run:start` gets a `suite:flow-end` with `outcome: 'invalid'` and no start.**
+`suite:flow-start` carries the `runId` a reader would open, so it is sent once the run has an
+identity rather than before — and a flow that never got one never ran, which 001 §14.6 calls
+`invalid`. The flows a cancel never reached emit nothing at all; they exist only in the roster, and
+there they are `cancelled` rather than absent (§10).
+
+**The roster is written when the suite finishes, a cancelled one included**, which is the second
+thing quitting has to wait for. §4.2 already aborts an in-flight run through 001 §11.3's path and
+waits under `SHUTDOWN_CAP_MS`; a suite's own work outlives the run it is executing by exactly one
+file, and that file is the record of which flows the quit never reached.
 
 ### 11.4 What 002 changed in 001
 
@@ -2334,6 +2506,14 @@ file whose conflicts are already routine. The `jest.config.js` line buys the sam
 registry does: jsdom ships no `structuredClone`, which dagre calls, and the shim lives in
 `src/fork/jest.setup.js` rather than in upstream's `jest.setup.js` — so the fork's *next* test-environment
 gap costs no upstream edit at all.
+
+**Re-running failed flows adds nothing to this table either**, and it is the widest feature yet to
+manage it: §11.3's three invoke channels and its suite stream ride `preload.js`'s pass-through and
+the one fork disposer already counted above, the runner is a new module in the fork's own
+`ipc/flow/`, §4.1's menu entry and progress count are markup inside a fork-owned section header, and
+the rest is 001 §14.5's roster format in `@bruno-max/flow`. 001 §13.4 records the CLI half of the
+same nil return. A feature this shape landing with an upstream footprint of zero is the amortization
+below, observed rather than predicted.
 
 **§4.5 adds nothing at all**, and it is the clearest case the registry has made yet: a third tab
 type, its own pane, its own label, its own editing session and a new sidebar section, reaching the

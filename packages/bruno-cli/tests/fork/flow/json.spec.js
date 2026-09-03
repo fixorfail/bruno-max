@@ -183,3 +183,67 @@ describe('the factory', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('--retries and --retry-failed fields', () => {
+  const retried = {
+    startedAt: '2026-09-01T10:00:00.000Z',
+    finishedAt: '2026-09-01T10:00:03.000Z',
+    durationMs: 3000,
+    retryOf: 'suite-20260901-ab12',
+    flows: [
+      {
+        file: '/repo/flows/checkout.flow.yml',
+        id: 'checkout',
+        name: 'Checkout',
+        tags: [],
+        startedAt: '2026-09-01T10:00:00.000Z',
+        finishedAt: '2026-09-01T10:00:02.000Z',
+        durationMs: 2000,
+        outcome: 'passed',
+        attempt: 2,
+        flaky: true,
+        diagnostics: [],
+        result: {
+          runId: 'r-2',
+          status: 'passed',
+          iterations: [{ index: 0, status: 'passed', steps: [step()] }],
+          summary: { total: 1, passed: 1, failed: 0, skipped: 0, cancelled: 0 },
+          diagnostics: []
+        }
+      }
+    ],
+    summary: {
+      flows: { total: 1, passed: 1, failed: 0, cancelled: 0, invalid: 0, flaky: 1 },
+      steps: { total: 1, passed: 1, failed: 0, skipped: 0, cancelled: 0 }
+    },
+    exitCode: 0
+  };
+
+  // The fields are additive to SuiteResult and FlowRunRecord — this reporter needs no code change
+  // to carry them, only a check that spreading the suite doesn't quietly drop any of them.
+  it('carries retryOf, attempt, flaky and the flaky summary count through untouched', () => {
+    const parsed = JSON.parse(formatJson(retried));
+
+    expect(parsed.retryOf).toBe('suite-20260901-ab12');
+    expect(parsed.flows[0].attempt).toBe(2);
+    expect(parsed.flows[0].flaky).toBe(true);
+    expect(parsed.summary.flows.flaky).toBe(1);
+  });
+
+  // flaky is counted beside passed, not instead of it, so the flow counts must still add up.
+  it('counts a flaky flow beside passed, so the flow counts still sum to total', () => {
+    const parsed = JSON.parse(formatJson(retried));
+    const { total, passed, failed, cancelled, invalid } = parsed.summary.flows;
+
+    expect(passed + failed + cancelled + invalid).toBe(total);
+  });
+
+  it('adds none of the retry fields for a suite that carries none', () => {
+    const parsed = JSON.parse(formatJson(suite));
+
+    expect(parsed).not.toHaveProperty('retryOf');
+    expect(parsed.flows[0]).not.toHaveProperty('attempt');
+    expect(parsed.flows[0]).not.toHaveProperty('flaky');
+    expect(parsed.summary.flows).not.toHaveProperty('flaky');
+  });
+});

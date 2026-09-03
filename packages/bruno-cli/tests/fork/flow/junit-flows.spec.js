@@ -33,6 +33,9 @@ const propertiesIn = (chunk) =>
     [...chunk.matchAll(/<property name="([^"]*)" value="([^"]*)"\/>/g)].map(([, name, value]) => [name, decode(value)])
   );
 
+/** `<testsuites>`' own properties are the ones written before the nested `<testsuite `. */
+const rootProperties = (xml) => propertiesIn(xml.split('<testsuite ')[0]);
+
 const casesOf = (xml) =>
   xml
     .split(/(?=<testcase )/)
@@ -337,5 +340,43 @@ describe('sanitizing', () => {
     expect(propertiesIn(casesOf(xml)[0]).name).toBe('Checkout');
     // Nothing illegal survived anywhere in the document.
     expect(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/.test(xml)).toBe(false);
+  });
+});
+
+describe('--retries and --retry-failed', () => {
+  it('names the retried suite on <testsuites> when the suite retried one', () => {
+    const xml = format([record()], { retryOf: 'suite-20260901-ab12' });
+    expect(rootProperties(xml)).toEqual({ retry_of: 'suite-20260901-ab12' });
+  });
+
+  it('writes no retry_of property for a suite that did not retry', () => {
+    expect(rootProperties(format([record()]))).toEqual({});
+  });
+
+  it('carries the attempt and flaky properties on a flow that passed after retrying', () => {
+    const xml = format([record({ attempt: 2, flaky: true })]);
+    expect(propertiesIn(casesOf(xml)[0])).toMatchObject({ attempt: '2', flaky: 'true' });
+  });
+
+  it('carries attempt alone for a retry that produced no flakiness', () => {
+    const properties = propertiesIn(casesOf(format([record({ attempt: 2 })]))[0]);
+    expect(properties.attempt).toBe('2');
+    expect(properties).not.toHaveProperty('flaky');
+  });
+
+  it('writes neither property for a flow that ran once', () => {
+    const properties = propertiesIn(casesOf(format([record()]))[0]);
+    expect(properties).not.toHaveProperty('attempt');
+    expect(properties).not.toHaveProperty('flaky');
+  });
+
+  // A flaky flow turned CI green on retry, so it has to read as a pass here too — never as an
+  // invented <failure> or <error> for the attempt that missed.
+  it('counts a flaky flow as a pass, and mentions it in system-out', () => {
+    const xml = format([record({ attempt: 2, flaky: true, outcome: 'passed' })]);
+    expect(suiteAttributes(xml)).toMatchObject({ failures: '0', errors: '0', skipped: '0' });
+    expect(xml).not.toContain('<failure');
+    expect(xml).not.toContain('<error');
+    expect(xml).toMatch(/<system-out>[^<]*flaky[^<]*attempt 2[^<]*<\/system-out>/);
   });
 });

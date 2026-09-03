@@ -366,6 +366,10 @@ const report = (result, log, files, ports, readRuns) => {
     files,
     /** 002 §11.2's readers run against the ports this run wrote through — that is the round trip. */
     listRuns: readRuns,
+    /** §14.5's suite readers, over the same ports: a run of its own is a suite of one to read back. */
+    listSuites: (options = {}) => engine.listSuites({ scopeRoot: FIXTURES, ports, ...options }),
+    readSuite: (options = {}) =>
+      engine.readSuite({ dir: path.dirname(result.captureDir), scopeRoot: FIXTURES, ports, ...options }),
     readRun: (options = {}) => engine.readRun({ dir: result.captureDir, ports, ...options }),
     readCapture: (options) => engine.readCapture({ dir: result.captureDir, ports, ...options }),
     captureDir: result.captureDir,

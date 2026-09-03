@@ -419,3 +419,203 @@ describe('R4o — listRuns reports whether the flow has changed since', () => {
     expect((await run.listRuns()).every((candidate) => candidate.flowChanged === undefined)).toBe(true);
   });
 });
+
+/**
+ * §14.5's `suite.json` — reading an invocation back rather than one run.
+ *
+ * The manifest exists because the run directories cannot answer the question on their own: a flow
+ * that failed validation never opens one, so a reader scanning them silently drops exactly the
+ * flows a rerun most wants. Both halves are exercised here — the manifest when a host wrote one,
+ * and the reconstruction when nothing did, which every single-flow run produces.
+ */
+describe('R4o — listSuites', () => {
+  const ENTRY = path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml');
+
+  /** A run directory as §14.5 names one, with whatever files the case is about. */
+  const seedRun = (suite, name, files) =>
+    Object.fromEntries(
+      Object.entries(files).map(([file, content]) => [
+        path.join(CAPTURE_ROOT, suite, name, file),
+        typeof content === 'string' ? content : JSON.stringify(content)
+      ])
+    );
+
+  it('reads a run of its own back as the suite of one it minted', async () => {
+    const run = await simple();
+
+    expect(await run.listSuites()).toEqual([
+      {
+        dir: path.dirname(run.captureDir),
+        startedAt: '1970-01-01T00:00:00.000Z',
+        flows: [
+          {
+            file: ENTRY,
+            // §5.2's identity: relative to the scope root, `.flow.yml` stripped, posix separators.
+            id: 'flows/regressions/r4b-condition-false',
+            name: 'R4b — condition-false does not fail the run',
+            tags: [],
+            outcome: 'passed',
+            runDir: path.basename(run.captureDir)
+          }
+        ],
+        // Rebuilt from run directories, so it cannot claim to be the whole selection.
+        partial: true
+      }
+    ]);
+  });
+
+  it('names a flow by its stem when the run kept no snapshot to read `meta:` from', async () => {
+    const run = await simple();
+    run.files.remove(path.join(run.captureDir, 'flow.yml'));
+
+    expect((await run.listSuites())[0].flows[0]).toMatchObject({
+      name: 'r4b-condition-false',
+      tags: []
+    });
+  });
+
+  /**
+   * The whole reason the manifest is written: an `invalid` flow fails validation before anything
+   * opens a run directory, so it is in the roster or it is nowhere.
+   */
+  it('prefers the manifest, which names flows that never ran', async () => {
+    const suite = 'suite-2020-01-01T00-00-00Z-bb00';
+    const run = await simple({
+      captured: {
+        ...seedRun(suite, '2020-01-01T00-00-00Z-bb00', {
+          'run.json': { runId: 'ran', flow: ENTRY, startedAt: '2020-01-01T00:00:00.000Z' },
+          'summary.json': { status: 'failed' }
+        }),
+        [path.join(CAPTURE_ROOT, suite, 'suite.json')]: JSON.stringify({
+          suiteId: 'bb00',
+          startedAt: '2020-01-01T00:00:00.000Z',
+          finishedAt: '2020-01-01T00:00:09.000Z',
+          exitCode: 1,
+          retryOf: 'suite-2019-01-01T00-00-00Z-aa00',
+          flows: [
+            { file: ENTRY, id: 'flows/regressions/r4b-condition-false', name: 'ran', tags: [], outcome: 'failed', runDir: '2020-01-01T00-00-00Z-bb00' },
+            { file: path.join(FLOWS, 'regressions/r1-dead-service.flow.yml'), id: 'flows/regressions/r1-dead-service', name: 'never ran', tags: ['smoke'], outcome: 'invalid' }
+          ]
+        })
+      }
+    });
+
+    const listed = (await run.listSuites()).find((entry) => entry.dir === path.join(CAPTURE_ROOT, suite));
+    expect(listed).not.toHaveProperty('partial');
+    expect(listed).toMatchObject({ suiteId: 'bb00', exitCode: 1, retryOf: 'suite-2019-01-01T00-00-00Z-aa00' });
+    expect(listed.flows.map((flow) => [flow.name, flow.outcome])).toEqual([
+      ['ran', 'failed'],
+      ['never ran', 'invalid']
+    ]);
+    // The flow that never ran has no directory to point at, which is what the manifest is for.
+    expect(listed.flows[1]).not.toHaveProperty('runDir');
+  });
+
+  it('orders newest first by startedAt', async () => {
+    const seeded = (id, startedAt) => ({
+      [path.join(CAPTURE_ROOT, `suite-2020-01-01T00-00-0${id}Z-cc0${id}`, 'suite.json')]: JSON.stringify({
+        suiteId: `cc0${id}`,
+        startedAt,
+        finishedAt: startedAt,
+        exitCode: 0,
+        flows: []
+      })
+    });
+    const run = await simple({
+      captured: { ...seeded(1, '2020-03-01T00:00:00.000Z'), ...seeded(2, '2020-01-01T00:00:00.000Z'), ...seeded(3, '2020-02-01T00:00:00.000Z') }
+    });
+
+    expect((await run.listSuites()).map((entry) => entry.startedAt)).toEqual([
+      '2020-03-01T00:00:00.000Z',
+      '2020-02-01T00:00:00.000Z',
+      '2020-01-01T00:00:00.000Z',
+      '1970-01-01T00:00:00.000Z'
+    ]);
+  });
+
+  /**
+   * 002 §10's interrupted run: `run.json` with no `summary.json` is what a killed process leaves,
+   * and nobody recorded an outcome for it. Calling it `cancelled` would put a flow in the roster on
+   * the strength of a guess — and a rerun would act on it.
+   */
+  it('leaves an interrupted run out of the rebuilt roster, but still dates the suite by it', async () => {
+    const suite = 'suite-2020-01-01T00-00-00Z-dd00';
+    const run = await simple({
+      captured: seedRun(suite, '2020-01-01T00-00-00Z-dd00', {
+        'run.json': { runId: 'dead', flow: ENTRY, startedAt: '2020-01-01T00:00:00.000Z' }
+      })
+    });
+
+    const listed = (await run.listSuites()).find((entry) => entry.dir === path.join(CAPTURE_ROOT, suite));
+    expect(listed).toMatchObject({ startedAt: '2020-01-01T00:00:00.000Z', flows: [], partial: true });
+  });
+
+  // §14.8.5's reports share the directory with the runs, and on their own they say nothing about
+  // what was selected or when it started.
+  it('skips a suite directory holding nothing that can be attributed to a run', async () => {
+    const suite = 'suite-2020-01-01T00-00-00Z-ee00';
+    const run = await simple({
+      captured: {
+        [path.join(CAPTURE_ROOT, suite, 'report-junit.xml')]: '<testsuites/>',
+        [path.join(CAPTURE_ROOT, suite, 'suite.json')]: 'not json at all'
+      }
+    });
+
+    expect((await run.listSuites()).map((entry) => entry.dir)).toEqual([path.dirname(run.captureDir)]);
+  });
+
+  /**
+   * What an interrupted `--retries` invocation leaves: two run directories for one flow, and no
+   * manifest to say which was final. §14.8's rule is that the last attempt is the outcome.
+   */
+  it('rebuilds one line per flow, the last attempt winning', async () => {
+    const suite = 'suite-2020-01-01T00-00-00Z-ff00';
+    const run = await simple({
+      captured: {
+        ...seedRun(suite, '2020-01-01T00-00-01Z-ff01', {
+          'run.json': { runId: 'first', flow: ENTRY, startedAt: '2020-01-01T00:00:01.000Z' },
+          'summary.json': { status: 'failed' }
+        }),
+        ...seedRun(suite, '2020-01-01T00-00-02Z-ff02', {
+          'run.json': { runId: 'second', flow: ENTRY, startedAt: '2020-01-01T00:00:02.000Z' },
+          'summary.json': { status: 'passed' }
+        })
+      }
+    });
+
+    const listed = (await run.listSuites()).find((entry) => entry.dir === path.join(CAPTURE_ROOT, suite));
+    expect(listed.flows).toHaveLength(1);
+    expect(listed.flows[0]).toMatchObject({ outcome: 'passed', runDir: '2020-01-01T00-00-02Z-ff02' });
+  });
+
+  // The runs each say who started them, so the suite around them is not the place to lose it.
+  it('reports the origin the runs recorded', async () => {
+    const run = await simple({ origin: { host: 'app', environment: 'staging' } });
+
+    expect((await run.listSuites())[0].origin).toEqual({ host: 'app', environment: 'staging' });
+  });
+
+  it('returns an empty list when nothing has been run in the scope yet', async () => {
+    const run = await simple({ overrides: { capture: { enabled: false } } });
+
+    expect(await run.listSuites()).toEqual([]);
+  });
+});
+
+describe('R4o — readSuite', () => {
+  it('answers for one directory exactly what the listing says about it', async () => {
+    const run = await simple();
+
+    expect(await run.readSuite()).toEqual((await run.listSuites())[0]);
+  });
+
+  // A caller naming a directory has named something; an empty roster would report a mistyped path
+  // as an invocation that ran nothing.
+  it('refuses a directory that is not a suite', async () => {
+    const run = await simple();
+
+    await expect(run.readSuite({ dir: path.join(CAPTURE_ROOT, 'suite-2020-01-01T00-00-00Z-0000') })).rejects.toThrow(
+      /is not a suite directory/
+    );
+  });
+});

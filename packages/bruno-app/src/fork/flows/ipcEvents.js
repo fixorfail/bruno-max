@@ -1,4 +1,4 @@
-import { flowTreeUpdated, runEventsReceived, requestLogsReceived } from './slice';
+import { flowTreeUpdated, runEventsReceived, suiteEventReceived, requestLogsReceived } from './slice';
 import { refreshFlowSource, watchScope } from './actions';
 
 /**
@@ -32,6 +32,15 @@ export const registerFlowIpcEvents = (dispatch) => {
     dispatch(runEventsReceived(batch));
   });
 
+  /**
+   * §10's suite stream, beside the per-flow one rather than in place of it. The flows of a suite
+   * report themselves through `main:flow-run-event` exactly as a single run does, so every flow tab
+   * keeps following its own run and this carries only the roster and its progress.
+   */
+  const removeSuiteEventListener = ipcRenderer.on('main:flow-suite-event', (payload) => {
+    dispatch(suiteEventReceived(payload));
+  });
+
   const removeRequestLogListener = ipcRenderer.on('main:flow-request-log-batch', (batch) => {
     dispatch(requestLogsReceived(batch));
   });
@@ -53,6 +62,7 @@ export const registerFlowIpcEvents = (dispatch) => {
   return () => {
     removeTreeListener();
     removeRunEventListener();
+    removeSuiteEventListener();
     removeRequestLogListener();
     removeWorkspaceOpenedListener();
     removeCollectionOpenedListener();

@@ -39,10 +39,29 @@ export type FlowRunRecord = FlowIdentity & {
   result?: RunResult;
   /** Pre-run validation diagnostics, plus a `run-refused` error when `runFlow` rejected. */
   diagnostics: Diagnostic[];
+  /**
+   * Which attempt this record is of — 1 unless `--retries` re-ran the flow. Absent for 1, so a
+   * report of an invocation that never retried carries no attempt numbers at all.
+   *
+   * A reporter sees a record per *attempt*, and `onSuiteEnd` sees one final record per flow: hiding
+   * the attempt that failed would hide the flakiness the retry is evidence of.
+   */
+  attempt?: number;
+  /**
+   * An earlier attempt failed and a later one passed. Only ever set beside `outcome: 'passed'` —
+   * §14.8's rule is that the final attempt is the flow's outcome, so a flaky flow is a pass, and CI
+   * must not go red for it. Marked all the same, because a pass nobody can see was retried is a
+   * flake that goes on being rediscovered.
+   */
+  flaky?: boolean;
 };
 
 export type SuiteSummary = {
-  flows: { total: number; passed: number; failed: number; cancelled: number; invalid: number };
+  /**
+   * `flaky` is counted **beside** `passed`, not instead of it: a flaky flow passed, and the four
+   * outcome counts still have to add up to `total` for a report to be readable as one.
+   */
+  flows: { total: number; passed: number; failed: number; cancelled: number; invalid: number; flaky: number };
   /** Every flow's `result.summary`, summed. */
   steps: RunSummary;
 };
@@ -54,6 +73,12 @@ export type SuiteResult = {
   /** In run order (path order, §14.1). */
   flows: FlowRunRecord[];
   summary: SuiteSummary;
+  /**
+   * Basename of the suite this invocation re-ran, when `--retry-failed` produced it. A retry opens
+   * its own suite directory and its own report — it is a new invocation, never an edit of the old
+   * one — so this is the only thing tying the two together.
+   */
+  retryOf?: string;
   /** §14.2's code the process will exit with. */
   exitCode: number;
 };

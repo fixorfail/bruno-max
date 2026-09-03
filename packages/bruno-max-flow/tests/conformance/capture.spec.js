@@ -637,3 +637,86 @@ describe('the capture root, resolved without a run', () => {
     expect(written.size).toBe(0);
   });
 });
+
+/**
+ * §14.5's `suite.json`, written by the host that owns the suite directory.
+ *
+ * The engine sees one flow at a time and never the invocation around it (§13.2), so the roster is
+ * a host's to write — but only its *format* lives here, because the CLI and the app each open a
+ * suite and `listSuites` reads one format rather than two. These assert the same round trip R4o
+ * asserts for a run: what this writes is what the reader recovers.
+ */
+describe('the invocation roster, written by the host that owns the suite', () => {
+  const { writeSuiteManifest, SUITE_MANIFEST_FILE } = require('../../src/capture');
+  const { readSuite } = require('../../src/history');
+
+  const SUITE = path.join(CAPTURE_ROOT, 'suite-2026-08-05T14-22-01Z-a3f9');
+  const scope = { workspaceRoot: FIXTURES };
+  /** The minimum §13.2 asks of a caller with no run under way — the same one `history.ts` builds. */
+  const context = { runId: '', flow: '', scope, signal: new AbortController().signal };
+
+  const MANIFEST = {
+    suiteId: 'a3f9c1d2',
+    startedAt: '2026-08-05T14:22:01.123Z',
+    finishedAt: '2026-08-05T14:22:09.456Z',
+    exitCode: 1,
+    origin: { host: 'cli' },
+    retryOf: 'suite-2026-08-05T14-00-00Z-0001',
+    flows: [
+      {
+        file: path.join(FLOWS, 'regressions/r4b-condition-false.flow.yml'),
+        id: 'flows/regressions/r4b-condition-false',
+        name: 'R4b',
+        tags: [],
+        outcome: 'passed',
+        runDir: '2026-08-05T14-22-01Z-a3f9',
+        attempt: 2,
+        flaky: true
+      },
+      {
+        file: path.join(FLOWS, 'regressions/r1-dead-service.flow.yml'),
+        id: 'flows/regressions/r1-dead-service',
+        name: 'R1',
+        tags: ['smoke'],
+        outcome: 'invalid'
+      }
+    ]
+  };
+
+  /** No `fs` anywhere: the writer goes through the ports like everything else here (§13.2). */
+  const memoryPorts = () => {
+    const written = new Map();
+    return {
+      written,
+      ports: {
+        readFile: async (target) => {
+          if (!written.has(target)) throw new Error(`no such file: ${target}`);
+          return Buffer.from(written.get(target));
+        },
+        writeFile: async (target, data) => {
+          written.set(target, data.toString('utf8'));
+        },
+        // Empty rather than throwing: a reader falling through to the run directories would find
+        // nothing here and refuse the suite, which fails the round trip below out loud.
+        listDirectory: async () => []
+      }
+    };
+  };
+
+  it('writes the roster into the suite directory, in the shape every file under the capture root has', async () => {
+    const { written, ports } = memoryPorts();
+    await writeSuiteManifest({ dir: SUITE, manifest: MANIFEST, ports, context });
+
+    expect([...written.keys()]).toEqual([path.join(SUITE, SUITE_MANIFEST_FILE)]);
+    expect(written.get(path.join(SUITE, SUITE_MANIFEST_FILE))).toBe(`${JSON.stringify(MANIFEST, null, 2)}\n`);
+  });
+
+  it('round-trips through readSuite, whole', async () => {
+    const { ports } = memoryPorts();
+    await writeSuiteManifest({ dir: SUITE, manifest: MANIFEST, ports, context });
+
+    // Not partial: a roster that was written names the flows that never ran, so nothing is missing
+    // from it — which is the difference the flag exists to report.
+    expect(await readSuite({ dir: SUITE, scopeRoot: FIXTURES, ports })).toEqual({ dir: SUITE, ...MANIFEST });
+  });
+});

@@ -24,6 +24,7 @@ describe('exit codes', () => {
 
   // A broken flow file is an authoring problem, not a failing API, and a usage error is neither.
   it('keeps an invalid file and a usage error distinct from a failing step', () => {
+    expect(exitCodeFor('invalid')).toBe(2);
     expect(EXIT.invalid).toBe(2);
     expect(EXIT.usage).toBe(3);
     expect(new Set(Object.values(EXIT)).size).toBe(5);

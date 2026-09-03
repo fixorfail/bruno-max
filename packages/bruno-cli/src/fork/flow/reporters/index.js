@@ -8,10 +8,17 @@
  * Reporters see `FlowEvent` and `RunResult` and nothing else. The engine masks secrets before it
  * emits either (§14.4), so every report file is redacted by construction and nothing here re-applies
  * the policy — reaching past those two shapes for a request or a capture is what would break it.
+ *
+ * **A reporter sees every attempt, and `onSuiteEnd` sees one final record per flow.** Under
+ * `--retries` a flow that failed runs again, and each attempt dispatches `onFlowStart`, its
+ * `onEvent` stream and `onFlowEnd` in full — a report that hid the attempt that failed would hide
+ * the flakiness the retry is evidence of. The accumulator below is where the attempts collapse:
+ * `onSuiteEnd`'s `flows` carries the last one per flow (§14.8), which is why a reporter that folds
+ * `onFlowEnd` records into a list of its own must key that list on the flow's `id` too.
  */
 const fs = require('fs');
 const path = require('path');
-const { readFlowProperties } = require('@bruno-max/flow');
+const { flowIdentity } = require('@bruno-max/flow');
 
 /** Resolved relative to this file, so a built-in name never depends on where `bru` was typed. */
 const BUILT_INS = { 'junit': './junit', 'junit-flows': './junit-flows', 'json': './json', 'html': './html' };
@@ -39,44 +46,35 @@ const HOOKS = ['onSuiteStart', 'onFlowStart', 'onEvent', 'onFlowEnd', 'onSuiteEn
 
 const EMPTY_STEPS = { total: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 };
 
-/** §5.2: a flow's identity is its path relative to the scope root with `.flow.yml` removed. */
-const identityOf = (file, scope) => {
-  const root = scope.collectionRoot || scope.workspaceRoot;
-  return path.relative(root, file).replace(/\.flow\.yml$/, '').split(path.sep).join('/');
-};
-
 /**
- * What a report calls a flow.
+ * What a report calls a flow — §5.2's identity and its `meta:`, from the engine's one spelling of
+ * both (the roster written beside the report derives them the same way, so the two agree by
+ * construction rather than by two rules happening to match).
  *
- * `meta:` is read from the file's text rather than from a description, because a report is written
- * for flows that never parsed too — an unreadable file has no properties, which is the same answer
- * as one that declares none, and it still needs a row.
+ * The file's text is read here rather than a description asked for, because a report is written for
+ * flows that never parsed too — an unreadable file has no properties, which is the same answer as
+ * one that declares none, and it still needs a row.
  */
 const identify = (file, scope) => {
-  let properties;
+  let source;
   try {
-    properties = readFlowProperties(fs.readFileSync(file, 'utf8'));
+    source = fs.readFileSync(file, 'utf8');
   } catch {
     // Unreadable at this instant; `validateFlow` reports why, and the record still names the file.
   }
 
-  return {
-    file,
-    id: identityOf(file, scope),
-    name: (properties && properties.name) || path.basename(file).replace(/\.flow\.yml$/, ''),
-    tags: (properties && properties.tags) || [],
-    // Absent rather than empty when the flow declares none: a report writes the property only for a
-    // flow a tracker actually has a case for.
-    ...(properties && properties.testId ? { testId: properties.testId } : {})
-  };
+  return flowIdentity(scope.collectionRoot || scope.workspaceRoot, file, source);
 };
 
 const summarize = (records) => {
-  const flows = { total: records.length, passed: 0, failed: 0, cancelled: 0, invalid: 0 };
+  // `flaky` is counted beside `passed` rather than instead of it: a flaky flow passed, and the four
+  // outcome counts have to keep adding up to `total` for a report to be readable as one.
+  const flows = { total: records.length, passed: 0, failed: 0, cancelled: 0, invalid: 0, flaky: 0 };
   const steps = { ...EMPTY_STEPS };
 
   for (const record of records) {
     flows[record.outcome] += 1;
+    if (record.flaky) flows.flaky += 1;
     // A flow that never ran contributes no steps rather than zeroes: the flow counts already say it.
     if (!record.result) continue;
     for (const key of Object.keys(steps)) steps[key] += record.result.summary[key] || 0;
@@ -99,10 +97,29 @@ const createSuite = ({ now = () => new Date() } = {}) => {
       return { startedAt, flows };
     },
     flowStarted: (identity) => ({ ...identity, startedAt: now().toISOString() }),
+    /**
+     * One record per flow, keyed on §5.2's identity: a `--retries` attempt **replaces** the flow's
+     * record rather than adding a second one, because §14.8's rule is that the final attempt is the
+     * flow's outcome. Replacing in place also keeps the roster in path order (§14.1) — a retry is a
+     * re-run of a flow the suite already listed, not a new entry at the end of it.
+     */
     flowFinished: (record) => {
-      records.push(record);
+      const at = records.findIndex((existing) => existing.id === record.id);
+      if (at === -1) {
+        records.push(record);
+        return;
+      }
+
+      const previous = records[at];
+      records[at] = {
+        ...record,
+        attempt: (previous.attempt || 1) + 1,
+        // Only ever set when true, and only against the attempt just before: a flow is retried only
+        // while it has not passed, so the previous outcome is the whole of the history that matters.
+        ...(previous.outcome !== 'passed' && record.outcome === 'passed' ? { flaky: true } : {})
+      };
     },
-    end: ({ exitCode }) => {
+    end: ({ exitCode, retryOf }) => {
       const finishedAt = now().toISOString();
       return {
         startedAt,
@@ -110,6 +127,9 @@ const createSuite = ({ now = () => new Date() } = {}) => {
         durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
         flows: records,
         summary: summarize(records),
+        // The only thing tying a retry to what it re-ran: it opened a suite directory and a report
+        // of its own, being a new invocation rather than an edit of the old one.
+        ...(retryOf ? { retryOf } : {}),
         exitCode
       };
     }

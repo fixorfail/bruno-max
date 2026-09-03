@@ -89,6 +89,21 @@ const originProperties = (origin) =>
     : []);
 
 /**
+ * `--retries`' verdict on a flow, common to both shapes. `attempt` is which attempt produced the
+ * outcome (absent when the flow ran once); `flaky` is only ever set beside a pass, and it stays a
+ * pass in the counts here too — a retry exists to turn CI green, so a flaky flow reading red would
+ * defeat the point. The property and the `<system-out>` line this feeds are what keep the earlier
+ * failure from disappearing entirely.
+ */
+const attemptProperties = (record) => [
+  ['attempt', record.attempt],
+  ['flaky', record.flaky]
+];
+
+const flakyNote = (record) =>
+  (record.flaky ? `flaky: attempt ${record.attempt} passed after an earlier attempt failed` : undefined);
+
+/**
  * The `<error>` a flow that never ran becomes, whichever shape is reporting it. The first
  * diagnostic names it and every one is listed, because a flow with three problems fixed one at a
  * time is three runs nobody needed to make.
@@ -113,5 +128,7 @@ module.exports = {
   failureBody,
   outcomeElement,
   originProperties,
+  attemptProperties,
+  flakyNote,
   diagnosticsError
 };

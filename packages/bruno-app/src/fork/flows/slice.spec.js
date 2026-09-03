@@ -6,6 +6,8 @@ import reducer, {
   foldersCollapsed,
   foldersExpanded,
   runEventsReceived,
+  suiteEventReceived,
+  suiteRunCancelled,
   pastRunLoaded,
   requestLogsReceived
 } from './slice';
@@ -385,6 +387,133 @@ describe('the flows slice', () => {
     expect(state.runs[pathname].status).toBeUndefined();
     expect(state.runs[pathname].steps[0].login).toEqual({ state: 'ran' });
     expect(state.runs[pathname].steps[0].charge).toBeUndefined();
+  });
+
+  /**
+   * 002 §10's suite run, folded from `main:flow-suite-event`. The per-flow stream is untouched and
+   * is still what every flow's own tab reads, so this holds the roster and its progress and nothing
+   * that would be a second account of a run.
+   */
+  describe('a suite run (§10)', () => {
+    const refund = '/workspace/flows/refund.flow.yml';
+    const invoice = '/workspace/flows/invoice.flow.yml';
+
+    const roster = [
+      { entry: pathname, id: 'checkout', name: 'Checkout' },
+      { entry: refund, id: 'refund', name: 'Refund' },
+      { entry: invoice, id: 'invoice', name: 'Invoice' }
+    ];
+
+    const withSuite = (state, event, suiteId = 'suite-1') =>
+      reducer(state, suiteEventReceived({ suiteId, event }));
+
+    const startedSuite = (state = undefined, suiteId = 'suite-1') =>
+      withSuite(state, { type: 'suite:start', startedAt: '2026-02-03T10:00:00.000Z', flows: roster }, suiteId);
+
+    it('starts with nothing running', () => {
+      expect(reducer(undefined, { type: '@@INIT' }).suiteRun).toBeNull();
+    });
+
+    it('opens on the roster the host named, every flow pending', () => {
+      const state = startedSuite();
+
+      expect(state.suiteRun).toEqual({
+        suiteId: 'suite-1',
+        startedAt: '2026-02-03T10:00:00.000Z',
+        state: 'running',
+        flows: [
+          { entry: pathname, id: 'checkout', name: 'Checkout', state: 'pending' },
+          { entry: refund, id: 'refund', name: 'Refund', state: 'pending' },
+          { entry: invoice, id: 'invoice', name: 'Invoice', state: 'pending' }
+        ]
+      });
+    });
+
+    it('moves one flow at a time through running and done', () => {
+      let state = startedSuite();
+      state = withSuite(state, { type: 'suite:flow-start', entry: pathname, runId: 'run-1' });
+
+      expect(state.suiteRun.flows[0]).toMatchObject({ state: 'running' });
+      expect(state.suiteRun.flows[1]).toMatchObject({ state: 'pending' });
+
+      state = withSuite(state, { type: 'suite:flow-end', entry: pathname, outcome: 'failed', runId: 'run-1' });
+
+      expect(state.suiteRun.flows[0]).toMatchObject({ state: 'done', outcome: 'failed' });
+    });
+
+    /** 001 §14.6's outcome, unrenamed — the slice stores what the engine reported. */
+    it('keeps the outcome the host reported', () => {
+      let state = startedSuite();
+      state = withSuite(state, { type: 'suite:flow-end', entry: refund, outcome: 'invalid', runId: 'run-2' });
+
+      expect(state.suiteRun.flows[1].outcome).toBe('invalid');
+    });
+
+    it('completes on suite:end, recording the directory it wrote', () => {
+      let state = startedSuite();
+      state = withSuite(state, {
+        type: 'suite:end',
+        finishedAt: '2026-02-03T10:04:00.000Z',
+        exitCode: 1,
+        dir: '/workspace/.bruno-runs/suite-1770112800000-ab12'
+      });
+
+      expect(state.suiteRun.state).toBe('complete');
+      expect(state.suiteRun.dir).toBe('/workspace/.bruno-runs/suite-1770112800000-ab12');
+    });
+
+    /**
+     * `suite:end` reports a stopped suite and an exhausted one identically, so a cancel that an end
+     * overwrote would leave the header calling a suite that was stopped complete.
+     */
+    it('stays cancelled once it has been stopped from here', () => {
+      let state = startedSuite();
+      state = reducer(state, suiteRunCancelled({ suiteId: 'suite-1' }));
+
+      expect(state.suiteRun.state).toBe('cancelled');
+
+      state = withSuite(state, { type: 'suite:end', finishedAt: '2026-02-03T10:01:00.000Z', exitCode: 2, dir: '/d' });
+
+      expect(state.suiteRun.state).toBe('cancelled');
+      expect(state.suiteRun.dir).toBe('/d');
+    });
+
+    it('cancels nothing when the id names a suite that is not the one running', () => {
+      const state = reducer(startedSuite(), suiteRunCancelled({ suiteId: 'suite-2' }));
+
+      expect(state.suiteRun.state).toBe('running');
+    });
+
+    /** One suite at a time: the runner opens a single suite directory and works through it. */
+    it('replaces the run when a new suite starts', () => {
+      let state = startedSuite();
+      state = withSuite(state, { type: 'suite:flow-end', entry: pathname, outcome: 'passed', runId: 'run-1' });
+      state = startedSuite(state, 'suite-2');
+
+      expect(state.suiteRun.suiteId).toBe('suite-2');
+      expect(state.suiteRun.flows.every((flow) => flow.state === 'pending')).toBe(true);
+    });
+
+    /** A suite the host is still finishing after another replaced it has nothing left to say here. */
+    it('ignores events addressed to a suite it is no longer showing', () => {
+      let state = startedSuite(undefined, 'suite-2');
+      state = withSuite(state, { type: 'suite:flow-end', entry: pathname, outcome: 'failed', runId: 'run-1' }, 'suite-1');
+      state = withSuite(state, { type: 'suite:end', finishedAt: '2026-02-03T10:01:00.000Z', exitCode: 1, dir: '/d' }, 'suite-1');
+
+      expect(state.suiteRun.suiteId).toBe('suite-2');
+      expect(state.suiteRun.state).toBe('running');
+      expect(state.suiteRun.flows[0].state).toBe('pending');
+    });
+
+    /** The per-flow stream is what a flow tab folds, and a suite run must not disturb it. */
+    it('leaves the per-flow runs alone', () => {
+      let state = started();
+      state = startedSuite(state);
+      state = withSuite(state, { type: 'suite:flow-end', entry: pathname, outcome: 'failed', runId: 'run-9' });
+
+      expect(state.runs[pathname].state).toBe('running');
+      expect(state.flowByRunId).toEqual({ 'run-1': pathname });
+    });
   });
 
   describe('the network log (§8.5)', () => {

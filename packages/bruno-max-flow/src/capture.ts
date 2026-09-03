@@ -21,7 +21,8 @@ import type {
   CapturedResponse,
   FlowSnapshot,
   RunManifest,
-  StepCapture
+  StepCapture,
+  SuiteManifest
 } from './types/capture';
 import type { RunOrigin, Scope } from './types/options';
 import type { EnginePorts, FlowContext } from './types/ports';
@@ -45,6 +46,12 @@ export const RUN_DIRECTORY = /^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
  * `prune` refuse to delete them. A suite directory belongs to the CLI; the engine only names it.
  */
 export const SUITE_DIRECTORY = /^suite-\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$/;
+
+/**
+ * The roster of the invocation that owns a suite directory (§14.5) — named here, beside the
+ * directory it sits in, so `history.ts` reads back the file this module's format describes.
+ */
+export const SUITE_MANIFEST_FILE = 'suite.json';
 
 /** §14.5's snapshot of the flow the run executed — the graph a viewer draws, and the text it came from. */
 export const FLOW_DESCRIPTION_FILE = 'flow.json';
@@ -283,6 +290,34 @@ export const resolveCaptureRoot = (scope: Scope, dir?: string): string =>
 export const resolveSuiteDirectory = (captureRoot: string, startedAt: string, suiteId: string): string =>
   path.join(captureRoot, `suite-${pathSafeTimestamp(startedAt)}-${suiteId.slice(0, 4)}`);
 
+/** Every JSON file under the capture root looks the same on disk: two-space, one trailing newline. */
+const jsonBytes = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+
+/**
+ * §14.5's `suite.json`, into the suite directory the host opened.
+ *
+ * **A host's call, not the engine's.** The engine runs one flow and never sees the invocation
+ * around it (§13.2), while the roster is precisely a fact about the invocation — which flows were
+ * selected, including the ones that never ran. So the CLI writes its own and the app's suite runner
+ * writes its own, and what lives here is the *format*: two hosts spelling a roster separately would
+ * produce two `listSuites` has to tell apart.
+ *
+ * Written through the ports like everything else this module writes — the engine touches no `fs`.
+ */
+export const writeSuiteManifest = async ({
+  dir,
+  manifest,
+  ports,
+  context
+}: {
+  dir: string;
+  manifest: SuiteManifest;
+  ports: Pick<EnginePorts, 'writeFile'>;
+  context: FlowContext;
+}): Promise<void> => {
+  await ports.writeFile(path.join(dir, SUITE_MANIFEST_FILE), jsonBytes(manifest), context);
+};
+
 /**
  * §14.5's on-creation write, as a step a host can take on its own.
  *
@@ -336,7 +371,7 @@ const writeJson = (
   setup: CaptureSetup,
   file: string,
   value: unknown
-): Promise<void> => setup.ports.writeFile(file, Buffer.from(`${JSON.stringify(value, null, 2)}\n`), setup.context);
+): Promise<void> => setup.ports.writeFile(file, jsonBytes(value), setup.context);
 
 /**
  * Whether this is the first thing to be written under the capture root, which is the only question

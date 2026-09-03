@@ -1224,6 +1224,8 @@ The options you are most likely to want:
 | `--concurrency n` | Override `config.concurrency` |
 | `--max-run-duration ms` | Bound the whole run; elapsing cancels it and exits 4 |
 | `--bail` | Stop after the first failing flow |
+| `--retry-failed [suite]` | Re-run the flows a past suite did not pass — see [Re-running what failed](#re-running-what-failed) |
+| `--retries n` | Re-run flows that did not pass, up to `n` more times, before the command finishes |
 | `--no-capture` | Do not write `.bruno-runs/` artifacts |
 | `--capture-dir path` | Write captures somewhere other than `<scope>/.bruno-runs` |
 | `--reporter-junit` / `--reporter-json` / `--reporter-html path` | Write a report — see [Reports](#reports) below |
@@ -1233,7 +1235,10 @@ Each run writes a directory holding the flow as it was, every request and respon
 which is what the app's run selector reads back later. Every run opens its own **suite** to hold it:
 a suite of one for a single flow, whether that's a run from the app or `bru flow run` against one
 file, and a suite of many — plus the reports above — when `bru flow run` selects several. See
-[Reports](#reports) for the layout either way. `listRuns` reads every suite, so the app's history
+[Reports](#reports) for the layout either way. A suite `bru flow run` opens also gets a `suite.json`
+listing what the command selected and how each flow went — including the flows that never ran
+because they did not validate, which have no directory of their own. That list is what
+[`--retry-failed`](#re-running-what-failed) reads. `listRuns` reads every suite, so the app's history
 shows a CLI run exactly as it shows one of its own; it also still reads a run directory written flat,
 from before this layout existed, as an older entry. Nothing under `.bruno-runs/` is ever deleted for
 you — it grows by one suite every run, so clearing it out is yours to do when you want the space
@@ -1248,11 +1253,51 @@ What the command exits with, for a CI job that has to tell these apart:
 
 | Code | Means |
 |---|---|
-| `0` | Every flow passed |
+| `0` | Every flow passed — including one that only passed on a `--retries` attempt |
 | `1` | A flow failed |
 | `2` | A flow did not validate, so it was not run |
-| `3` | The command itself was wrong — a bad path, or a `--global-env` that does not exist |
+| `3` | The command itself was wrong — a bad path, a `--global-env` that does not exist, or a `--retry-failed` naming something that is not a past run |
 | `4` | The run was cancelled, including by `--max-run-duration` elapsing |
+
+### Re-running what failed
+
+Two flags, for two different moments.
+
+`--retries` re-runs flows **inside the same command**. Once every selected flow has run, any that
+did not pass run again, up to `n` more times:
+
+```bash
+bru flow run flows/ --retries 2
+```
+
+The **last** attempt is the flow's result, so a flow that failed and then passed counts as a pass
+and the command exits `0` — which is the whole point of a retry. It is not swept under the carpet:
+every attempt reaches the reports, including the one that failed, and the flow is marked **flaky**
+in all of them — a `flaky` property and a note naming the attempt it passed on in the JUnit files, a
+`Flaky` badge in the HTML, a `flaky` field and a `summary.flows.flaky` count in the JSON. So look
+for flakes in your reports rather than in your build history.
+
+`--retry-failed` re-runs a **past command's** failures, as a new run of its own:
+
+```bash
+bru flow run --retry-failed                                    # the newest run in this scope
+bru flow run --retry-failed suite-2026-08-05T15-01-09Z-c02e    # a particular one
+```
+
+It picks up everything that did not pass — failures, cancellations, and flows that did not
+validate — and runs only those. Paths you pass alongside it say only *where* to look for past runs;
+the flows themselves come from that run's own list. A flow that has since been deleted or renamed is
+skipped with a warning. If the run you named passed completely, the command says so and exits `0`.
+
+The retry is a new suite directory with its own reports and never touches the one it re-ran, so both
+records survive; what ties them together is the name of the original, recorded in the retry's
+`suite.json` and in its reports. In the app the same thing is **Rerun failed flows** in the API Flows
+section's three-dot menu, which shows how many flows it is about to run.
+
+> `--retries` is not a step's `retry:` ([Retry, polling and
+> timeouts](#retry-polling-and-timeouts)). That one re-sends **one request** inside a running flow,
+> which is how you poll. These two re-run **whole flows**, replaying every side effect the earlier
+> attempt already caused — so neither is on by default.
 
 ### Reports
 

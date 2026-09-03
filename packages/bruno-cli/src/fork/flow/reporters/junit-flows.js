@@ -12,6 +12,11 @@
  * configuration names a file and a parser, not a mode, and a `--reporter-junit --flow-level` that
  * changed what `report-junit.xml` meant would rewrite the meaning of a path already wired into
  * somebody's pipeline.
+ *
+ * `--retries` and `--retry-failed` read exactly as they do in `junit.js`, since `junit-format.js`
+ * is where that behaviour lives: a flaky flow's testcase is a pass, marked by an `attempt`/`flaky`
+ * property and a `<system-out>` line rather than by an invented `<failure>`; a retried suite names
+ * the one it retried as `retry_of` on `<testsuites>`.
  */
 const fs = require('fs');
 const os = require('os');
@@ -27,6 +32,8 @@ const {
   failureBody,
   outcomeElement,
   originProperties,
+  attemptProperties,
+  flakyNote,
   diagnosticsError
 } = require('./junit-format');
 
@@ -83,7 +90,8 @@ const flowProperties = (record, cwd) => {
     ['runId', result && result.runId],
     ['status', record.outcome],
     // A dataset flow is still one case; the count is what says the case covered more than one row.
-    ['iterations', result && isDataset(result) ? result.iterations.length : undefined]
+    ['iterations', result && isDataset(result) ? result.iterations.length : undefined],
+    ...attemptProperties(record)
   ]);
 };
 
@@ -97,6 +105,11 @@ const testcaseFor = (record, cwd) => {
 
   const props = flowProperties(record, cwd);
   if (props) testcase.properties = props;
+
+  // A pass this reporter has to explain: the counts read exactly like any other pass, and the
+  // note is the only place the earlier failed attempt is still visible.
+  const note = flakyNote(record);
+  if (note) testcase['system-out'] = clean(note);
 
   if (!record.result) {
     Object.assign(testcase, outcomeElement('error', diagnosticsError(record.diagnostics || [])));
@@ -145,10 +158,15 @@ const formatJUnitFlows = (suite, { hostname = os.hostname(), cwd = process.cwd()
     '@timestamp': timestamp(suite.startedAt)
   };
 
+  // Present only on a suite that re-ran another — a name here is what tells a reader two reports
+  // for the same flows apart from two reports that just happen to agree.
+  const retryProperties = properties([['retry_of', suite.retryOf]]);
+
   const document = {
     testsuites: {
       '@name': SUITE_NAME,
       ...totals,
+      ...(retryProperties ? { properties: retryProperties } : {}),
       'testsuite': {
         '@name': SUITE_NAME,
         ...totals,

@@ -1,4 +1,4 @@
-import React, { forwardRef, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import path from 'path';
 import { useDispatch, useSelector } from 'react-redux';
 import {
@@ -11,7 +11,9 @@ import {
   IconEdit,
   IconFoldDown,
   IconFoldUp,
+  IconPlayerStop,
   IconPlus,
+  IconRefresh,
   IconSettings,
   IconSitemap
 } from '@tabler/icons';
@@ -24,13 +26,13 @@ import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
 import { collectionUidForScope } from '../collectionScope';
-import { flowsFolderFor, readFlowProperties } from '../actions';
+import { cancelSuiteRun, flowsFolderFor, listFlowSuites, readFlowProperties, rerunFailedFlows } from '../actions';
 import { buildFlowTree, flowLabel, folderKeysOf, relativePathOf } from '../flowTree';
 import { folderToggled, foldersCollapsed, foldersExpanded } from '../slice';
 import CreateFlow from '../CreateFlow';
 import FlowProperties from '../FlowProperties';
 import RenameScript from '../RenameScript';
-import StyledWrapper from './StyledWrapper';
+import StyledWrapper, { SuiteProgress } from './StyledWrapper';
 
 /**
  * 002 §4.1 — one section, grouped by scope, rather than flows nested inside their collection.
@@ -239,6 +241,18 @@ const groupFlows = (flows) => {
 };
 
 /**
+ * 002 §10: the newest suite of all the scopes the section is showing, with the scope it belongs to.
+ *
+ * Compared as strings because `startedAt` is ISO-8601, which sorts chronologically that way — the
+ * same reason `listSuites` orders on the field rather than on the directory name.
+ */
+const newestOf = (listed) =>
+  listed.reduce(
+    (newest, candidate) => (!newest || candidate.suite.startedAt > newest.suite.startedAt ? candidate : newest),
+    null
+  );
+
+/**
  * §4.1a: one folder of a bucket, and what is inside it when it is open.
  *
  * A closed folder renders none of its children, which is what upstream's collection tree does and is
@@ -310,6 +324,7 @@ const FlowSidebarSection = () => {
   const dispatch = useDispatch();
   const flows = useSelector((state) => state.flows.flows);
   const runs = useSelector((state) => state.flows.runs);
+  const suiteRun = useSelector((state) => state.flows.suiteRun);
   const sources = useSelector((state) => state.flows.sources);
   const folderExpansion = useSelector((state) => state.flows.folderExpansion);
   const collections = useSelector((state) => state.collections.collections);
@@ -424,6 +439,87 @@ const FlowSidebarSection = () => {
   );
 
   /**
+   * §10's capture roots the section can retry from — the scopes it is showing, which the grouping
+   * has already settled. Deriving them a second time from the active workspace would be a second
+   * answer to a question `flowsInWorkspace` has answered, and the two would disagree the first time
+   * either changed.
+   */
+  const scopeRoots = useMemo(() => groups.map((group) => group.root), [groups]);
+
+  /** §10's newest suite across those scopes, or `null` while nothing has been run in any of them. */
+  const [newestSuite, setNewestSuite] = useState(null);
+
+  useEffect(() => {
+    let current = true;
+
+    /**
+     * Listed per scope and compared afterwards, rather than assuming the workspace's own: a
+     * collection's flows record their runs under the collection's capture root, so "the last thing
+     * I ran here" is as likely to be one of those as one of the workspace's.
+     */
+    Promise.all(
+      scopeRoots.map((scopeRoot) =>
+        dispatch(listFlowSuites(scopeRoot))
+          .then((suites) => (suites || []).map((suite) => ({ scopeRoot, suite })))
+          .catch(() => []))
+    ).then((listed) => current && setNewestSuite(newestOf(listed.flat())));
+
+    return () => {
+      current = false;
+    };
+    // Re-listed when a suite ends, so a further retry names the suite that just ran rather than the
+    // one it replaced.
+  }, [dispatch, scopeRoots, suiteRun?.state]);
+
+  const notPassed = newestSuite ? newestSuite.suite.flows.filter((record) => record.outcome !== 'passed') : [];
+
+  /**
+   * §10's retry, in the header rather than on a row: it is about the last *suite*, which belongs to
+   * the scope and to nothing the reader can point at in the list.
+   *
+   * Offered only once something has run — with no suite there is nothing a retry could name — and
+   * **disabled rather than hidden** when that suite passed entirely, because "nothing to retry" is
+   * an answer and an absent control is not one.
+   *
+   * A roster rebuilt from run directories (`partial`) is offered on the same terms. It can only
+   * under-count: what is missing from it are the flows that never ran, and hiding the action would
+   * trade a retry of the failures it does name for no retry at all.
+   *
+   * **While a suite is running the entry is Cancel.** The runner opens one suite directory and works
+   * through it in order, so a second suite started over the first is not a state to offer.
+   *
+   * `MenuDropdown` derives an item's `data-testid` from the menu's own, so the ids §5 names ride the
+   * label.
+   */
+  const suiteActions = () => {
+    if (suiteRun && suiteRun.state === 'running') {
+      return [
+        {
+          id: 'cancel-suite',
+          leftSection: IconPlayerStop,
+          label: <span data-testid="flow-suite-cancel">Cancel</span>,
+          onClick: () => dispatch(cancelSuiteRun(suiteRun.suiteId))
+        }
+      ];
+    }
+
+    if (!newestSuite) {
+      return [];
+    }
+
+    return [
+      {
+        id: 'rerun-failed',
+        leftSection: IconRefresh,
+        label: <span data-testid="flow-rerun-failed">{`Rerun failed flows (${notPassed.length})`}</span>,
+        disabled: notPassed.length === 0,
+        onClick: () =>
+          dispatch(rerunFailedFlows({ scopeRoot: newestSuite.scopeRoot, suite: newestSuite.suite }))
+      }
+    ];
+  };
+
+  /**
    * Both actions are offered whenever there are folders at all, rather than one of them switching to
    * the other once everything is open.
    *
@@ -449,6 +545,11 @@ const FlowSidebarSection = () => {
       ]
     : [];
 
+  const menuActions = [...suiteActions(), ...folderActions];
+  const suiteProgress = suiteRun && suiteRun.state === 'running'
+    ? `${suiteRun.flows.filter((flow) => flow.state === 'done').length} / ${suiteRun.flows.length}`
+    : undefined;
+
   /**
    * Creating is the section's one *additive* action and the folder actions are about the tree that is
    * already there, so they are two controls rather than one menu: the header reads left to right as
@@ -458,18 +559,23 @@ const FlowSidebarSection = () => {
    * entry left, and a dropdown that exists to be dismissed is a click spent on nothing —
    * `MockServersSection` binds its `+` straight to the thing it creates for the same reason.
    *
-   * **The overflow menu is absent rather than empty when the section holds no folders.** An enabled
-   * control that opens onto nothing is a worse answer than no control, and `folderActions` is already
-   * empty in exactly that case.
+   * **The overflow menu is absent rather than empty when there is nothing behind it.** An enabled
+   * control that opens onto nothing is a worse answer than no control, and both lists are already
+   * empty in exactly that case — no folders to fold, and nothing ever run in the scopes on show.
+   *
+   * §10's progress sits in the header rather than in the menu holding Cancel: a suite runs for
+   * minutes and the whole point of the count is to be readable without opening anything.
    */
   const sectionActions = (
     <>
+      {suiteProgress ? <SuiteProgress data-testid="flow-suite-progress">{suiteProgress}</SuiteProgress> : null}
+
       <ActionIcon label="Add new Flow" onClick={openCreateFlow} data-testid="flows-header-add">
         <IconPlus size={14} stroke={1.5} aria-hidden="true" />
       </ActionIcon>
 
-      {folderActions.length ? (
-        <MenuDropdown data-testid="flows-header-actions-menu" items={folderActions} placement="bottom-end">
+      {menuActions.length ? (
+        <MenuDropdown data-testid="flows-header-actions-menu" items={menuActions} placement="bottom-end">
           <ActionIcon label="More actions" data-testid="flows-header-actions">
             <IconDotsVertical size={14} stroke={1.5} aria-hidden="true" />
           </ActionIcon>

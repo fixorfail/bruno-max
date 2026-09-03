@@ -17,6 +17,13 @@
  * the author wrote — so a team's own field costs no change here. `testId` is the single key the
  * reporter renames, to `test_id`: that is the property TestRail's importer reads, and a case id
  * under any other spelling links a result to nothing.
+ *
+ * A flow `--retries` turned green is still a **pass** here — a retry exists to make CI go green,
+ * so a flaky suite going red anyway defeats the entire feature — but it is not a silent one: the
+ * suite carries `attempt`/`flaky` properties and a `<system-out>` line, so the flakiness survives
+ * in the report even though the counts don't show it. A `--retry-failed` invocation is a new suite,
+ * not an edit of the one it re-ran, so what it retried is named on `<testsuites>` as `retry_of`
+ * rather than folded into either suite's own counts.
  */
 const fs = require('fs');
 const os = require('os');
@@ -32,6 +39,8 @@ const {
   failureBody,
   outcomeElement,
   originProperties,
+  attemptProperties,
+  flakyNote,
   diagnosticsError
 } = require('./junit-format');
 
@@ -113,9 +122,11 @@ const testcaseFor = (step, flowId, decidedBy) => {
 const reportedSteps = (steps) =>
   steps.filter((step) => !(step.kind === 'subflow' && steps.some((other) => other.id.startsWith(`${step.id}/`))));
 
-const systemOut = (result) => {
+const systemOut = (record, result) => {
   const lines = (result.diagnostics || []).map((entry) => `${entry.severity} ${entry.code} ${entry.message}`);
   if (result.captureDir) lines.push(`capture ${result.captureDir}`);
+  const flaky = flakyNote(record);
+  if (flaky) lines.push(flaky);
   return lines.length ? clean(lines.join('\n')) : undefined;
 };
 
@@ -140,7 +151,7 @@ const iterationSuite = (record, iteration, result, { cwd, hostname }) => {
     ? record.durationMs
     : iteration.steps.reduce((total, step) => total + (step.durationMs || 0), 0);
 
-  const out = systemOut(result);
+  const out = systemOut(record, result);
 
   return {
     '@name': clean(rowed ? `${record.id} [row ${number}]` : record.id),
@@ -163,6 +174,7 @@ const iterationSuite = (record, iteration, result, { cwd, hostname }) => {
       ['tags', record.tags.join(',')],
       ['runId', result.runId],
       ['status', iteration.status],
+      ...attemptProperties(record),
       // Which environment a suite ran against is the first thing a CI reader asks of a red build.
       ...originProperties(result.origin),
       ...(iteration.row
@@ -197,7 +209,8 @@ const invalidSuite = (record, { cwd, hostname }) => {
       ['name', record.name],
       ['file', forDisplay(record.file, cwd)],
       ['tags', record.tags.join(',')],
-      ['status', record.outcome]
+      ['status', record.outcome],
+      ...attemptProperties(record)
     ]),
     'testcase': [
       {
@@ -220,6 +233,10 @@ const formatJUnit = (suite, { hostname = os.hostname(), cwd = process.cwd() } = 
 
   const total = (attribute) => suites.reduce((sum, entry) => sum + entry[attribute], 0);
 
+  // Present only on a suite that re-ran another — a name here is what tells a reader two reports
+  // for the same flows apart from two reports that just happen to agree.
+  const retryProperties = properties([['retry_of', suite.retryOf]]);
+
   const document = {
     testsuites: {
       '@name': 'bru flow run',
@@ -229,6 +246,7 @@ const formatJUnit = (suite, { hostname = os.hostname(), cwd = process.cwd() } = 
       '@skipped': total('@skipped'),
       '@time': seconds(suite.durationMs),
       '@timestamp': timestamp(suite.startedAt),
+      ...(retryProperties ? { properties: retryProperties } : {}),
       'testsuite': suites
     }
   };

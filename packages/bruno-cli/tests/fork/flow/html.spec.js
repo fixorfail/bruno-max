@@ -293,3 +293,50 @@ describe('the factory', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe('--retries and --retry-failed', () => {
+  const retried = {
+    ...suite,
+    retryOf: 'suite-20260901-ab12',
+    flows: [
+      { ...suite.flows[0], outcome: 'passed', attempt: 2, flaky: true },
+      suite.flows[1]
+    ]
+  };
+
+  it('names the retried suite in the header when retryOf is set', () => {
+    const html = formatHtml(retried, env);
+
+    expect(html).toContain('retry of suite-20260901-ab12');
+  });
+
+  it('writes no retry line for a suite that did not retry', () => {
+    const html = formatHtml(suite, env);
+
+    expect(html).not.toContain('retry of');
+  });
+
+  // The flaky badge sits beside the ordinary pass badge, not in place of it — the counts already
+  // say the flow passed, so this only has to say it wasn't a clean pass. Sliced from the section
+  // start rather than a text search, because `badge-flaky` also names a CSS rule earlier in the page.
+  it('shows a distinct flaky badge beside the pass badge on a flow that passed after retrying', () => {
+    const html = formatHtml(retried, env);
+    const checkoutSection = html.slice(html.indexOf('<section class="flow">'), html.indexOf('<div class="iteration"'));
+
+    expect(checkoutSection).toContain('<span class="badge badge-passed">');
+    expect(checkoutSection).toContain('<span class="badge badge-flaky">Flaky</span>');
+  });
+
+  it('notes the attempt a retried flow passed on', () => {
+    const html = formatHtml(retried, env);
+
+    expect(html).toContain('class="chip">attempt 2');
+  });
+
+  it('shows no flaky badge or attempt note for a flow that ran once', () => {
+    const html = formatHtml(suite, env);
+
+    expect(html).not.toContain('<span class="badge badge-flaky">');
+    expect(html).not.toContain('class="chip">attempt');
+  });
+});
