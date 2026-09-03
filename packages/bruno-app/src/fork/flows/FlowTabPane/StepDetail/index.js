@@ -26,6 +26,17 @@ import StyledWrapper from './StyledWrapper';
 const TABS = ['request', 'response', 'assertions', 'validation'];
 
 /**
+ * The tab a step opens on. **What a reader clicked a node to find out is what came back** — the
+ * request is the thing they wrote and can read in the flow document, while the response is the only
+ * part of the call that did not exist until the run made it. Opening on the request meant a click
+ * on every step was followed by a second click on the same tab.
+ *
+ * The row still reads request-then-response, because that is the order the call happened in; which
+ * one is open is a different question from which one comes first.
+ */
+const DEFAULT_TAB = 'response';
+
+/**
  * What each tab has to say about a step that never dispatched — 001 §11.2's skips, and a step
  * cancelled before it sent anything. There is no capture and never will be one, and every tab is
  * describing the same absence from its own side.
@@ -443,7 +454,7 @@ const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
  */
 const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpandSubflow }) => {
   const dispatch = useDispatch();
-  const [tab, setTab] = useState('request');
+  const [tab, setTab] = useState(DEFAULT_TAB);
   /**
    * `null` is "no attempt chosen", which is not the same as having chosen the one the pane happens
    * to be showing: it is what keeps a running step following its newest settled attempt instead of

@@ -11,7 +11,7 @@ import {
 } from './layout';
 import { assignApiColors } from './apiColors';
 import { assignSubflowColors } from './subflowColors';
-import { useFollowActiveNode } from './follow';
+import { nodeViewportOffset, useFollowActiveNode, useSelectedNodeInView } from './follow';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -523,6 +523,22 @@ const FlowGraph = ({
 
   useFollowActiveNode({ containerRef: viewportRef, nodeRefs, inFlight, enabled: !selectedStep });
 
+  /**
+   * Where the node was on screen when it was clicked. Selecting a step opens §9's pane, which takes
+   * its height out of this box, so the drawing has less room on the frame *after* the click than the
+   * click was aimed at — and the only moment that measurement exists is before the click is
+   * dispatched.
+   */
+  const selectionOffset = useRef(null);
+  useSelectedNodeInView({ containerRef: viewportRef, nodeRefs, selectedStep, offsetRef: selectionOffset });
+
+  const selectNode = (id) => {
+    const selecting = id !== selectedStep;
+    const offset = selecting ? nodeViewportOffset(viewportRef.current, nodeRefs.current.get(id)) : null;
+    selectionOffset.current = offset ? { id, ...offset } : null;
+    onSelectStep(selecting ? id : null);
+  };
+
   return (
     <StyledWrapper>
       {/**
@@ -808,7 +824,16 @@ const FlowGraph = ({
                  about what is being read (§9), and the click that made it is the one that takes it
                  back. Without it the pane below cannot be closed and the graph cannot be returned to
                  following the run (§5.2), since both answer to nothing being selected. */
-                onClick={() => onSelectStep(node.id === selectedStep ? null : node.id)}
+                onClick={(event) => {
+                  /* The second click of a double-click completes the gesture that expands a
+                     sub-flow, and is not a statement about the selection: deselecting on it closed
+                     the pane mid-gesture and handed the graph back the height it had just given
+                     up, which moved the drawing under the pointer twice per double-click. */
+                  if (event.detail > 1) {
+                    return;
+                  }
+                  selectNode(node.id);
+                }}
                 onDoubleClick={() => (node.kind === 'subflow' ? onToggleSubflow(node.id) : undefined)}
               >
                 {/* The tie between the step and the band it opened, drawn *outside* the box rather

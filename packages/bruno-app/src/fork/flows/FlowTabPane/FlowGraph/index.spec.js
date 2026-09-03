@@ -783,6 +783,143 @@ describe('FlowGraph selection', () => {
 
     expect(onSelectStep).toHaveBeenCalledWith('echo');
   });
+
+  /**
+   * The defect: a double-click's two clicks are two selection statements, so the second one
+   * deselected the step the first had selected — closing §9's pane and handing the graph back the
+   * height it had just given up, mid-gesture. The gesture that expands a sub-flow is not a gesture
+   * about the selection.
+   */
+  it('leaves the selection alone on the second click of a double-click', () => {
+    const onSelectStep = jest.fn();
+    renderSelectable('echo', onSelectStep);
+
+    fireEvent.click(screen.getByTestId('flow-node-echo'), { detail: 2 });
+
+    expect(onSelectStep).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 002 §5.2 and §9 — selecting a step opens the pane below the graph, which takes its height out of
+ * the graph's own box. The drawing is therefore a different size on the frame *after* the click than
+ * it was on the frame the click was aimed at.
+ *
+ * The defects this is about: a step clicked low in the drawing ended up behind the pane explaining
+ * it, so the click read as one that had done nothing; and any node that moved took the second half
+ * of a double-click with it, which is how a sub-flow refused to expand.
+ */
+describe('FlowGraph holds the selected step in the box', () => {
+  const VIEWPORT_WIDTH = 400;
+  /** The box with nothing selected, and the box once §9's pane has taken its height. */
+  const OPEN_HEIGHT = 400;
+  const SHRUNK_HEIGHT = 200;
+  const NODE_WIDTH = 220;
+  const NODE_HEIGHT = 84;
+  /** The stubbed drawing stacks its nodes, which is the axis the pane takes its room from. */
+  const NODE_ROW = 100;
+
+  const stacked = {
+    ...description,
+    nodes: [node('first', 0), node('second', 1), node('third', 2)],
+    edges: []
+  };
+
+  const tree = (selectedStep, onSelectStep) => (
+    <ThemeProvider theme={theme}>
+      <FlowGraph
+        description={stacked}
+        nodeStates={{}}
+        running={false}
+        diagnostics={[]}
+        selectedStep={selectedStep}
+        expandedSubflows={[]}
+        showDataEdges
+        showSlotEdges={false}
+        onSelectStep={onSelectStep}
+        onToggleSubflow={() => {}}
+      />
+    </ThemeProvider>
+  );
+
+  /**
+   * jsdom lays nothing out, so the box and the nodes are given the geometry they would have in the
+   * app. The rects answer relative to the current scroll the way real ones do, which is what makes
+   * "where was it when it was clicked" a real question here.
+   */
+  const stubGeometry = (viewport, height) => {
+    viewport.getBoundingClientRect = () => ({ left: 0, top: 0, width: VIEWPORT_WIDTH, height });
+    Object.defineProperty(viewport, 'clientWidth', { value: VIEWPORT_WIDTH, configurable: true });
+    Object.defineProperty(viewport, 'clientHeight', { value: height, configurable: true });
+    viewport.scrollTo = jest.fn(({ left, top }) => {
+      viewport.scrollLeft = left;
+      viewport.scrollTop = top;
+    });
+
+    stacked.nodes.forEach((graphNode, index) => {
+      const element = screen.getByTestId(`flow-node-${graphNode.id}`);
+      element.getBoundingClientRect = () => ({
+        left: -viewport.scrollLeft,
+        top: index * NODE_ROW - viewport.scrollTop,
+        width: NODE_WIDTH,
+        height: NODE_HEIGHT
+      });
+    });
+  };
+
+  /** Click a node, then re-render as the tab does once the pane below has claimed its height. */
+  const selectByClicking = (id, { scrollTop = 0 } = {}) => {
+    const onSelectStep = jest.fn();
+    const { rerender } = render(tree(undefined, onSelectStep));
+    const viewport = screen.getByTestId('flow-graph-viewport');
+    stubGeometry(viewport, OPEN_HEIGHT);
+    viewport.scrollTop = scrollTop;
+
+    fireEvent.click(screen.getByTestId(`flow-node-${id}`));
+    expect(onSelectStep).toHaveBeenCalledWith(id);
+
+    return {
+      viewport,
+      paneOpens: ({ scrolledTo } = {}) => {
+        if (scrolledTo !== undefined) {
+          viewport.scrollTop = scrolledTo;
+        }
+        Object.defineProperty(viewport, 'clientHeight', { value: SHRUNK_HEIGHT, configurable: true });
+        viewport.getBoundingClientRect = () => ({ left: 0, top: 0, width: VIEWPORT_WIDTH, height: SHRUNK_HEIGHT });
+        rerender(tree(id, () => {}));
+      }
+    };
+  };
+
+  it('does not move a step the pane has not covered', () => {
+    const { viewport, paneOpens } = selectByClicking('first');
+
+    paneOpens();
+
+    // Still whole in the smaller box, so it stays exactly under the pointer that selected it — which
+    // is what lets the second click of a double-click land on the same node.
+    expect(viewport.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('scrolls a step the pane has covered back into view', () => {
+    const { viewport, paneOpens } = selectByClicking('third');
+
+    paneOpens();
+
+    expect(viewport.scrollTo).toHaveBeenCalledTimes(1);
+    // The least that shows it whole: its foot at the foot of what is left of the box.
+    expect(viewport.scrollTo.mock.calls[0][0].top).toBe(2 * NODE_ROW + NODE_HEIGHT - SHRUNK_HEIGHT);
+  });
+
+  /** Whatever the box does to its own scroll as it resizes, the node goes back where it was clicked. */
+  it('puts a step back where the click left it when the box scrolls under it', () => {
+    const { viewport, paneOpens } = selectByClicking('third', { scrollTop: 100 });
+
+    paneOpens({ scrolledTo: 0 });
+
+    expect(viewport.scrollTo).toHaveBeenCalledTimes(1);
+    expect(viewport.scrollTo.mock.calls[0][0].top).toBe(100);
+  });
 });
 
 /**

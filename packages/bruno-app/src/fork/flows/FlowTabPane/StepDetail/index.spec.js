@@ -50,9 +50,33 @@ const renderPane = (props) => {
   return { ...utils, update: (extra) => utils.rerender(tree(extra)) };
 };
 
+/**
+ * The pane opens on the response (§9), so a scenario about what was *sent* asks for that tab the way
+ * a reader would.
+ */
+const openRequest = () => fireEvent.click(screen.getByTestId('flow-step-tab-request'));
+
 describe('StepDetail', () => {
   beforeEach(() => {
     window.ipcRenderer = { invoke: jest.fn() };
+  });
+
+  /**
+   * What a reader clicked a step to find out is what came back — the request is the half they wrote
+   * and can already read in the flow document. Opening on it made a click on every step the first of
+   * two.
+   */
+  it('opens on the response', () => {
+    window.ipcRenderer.invoke.mockResolvedValue({
+      response: { status: 200, headers: {}, responseTimeMs: 12 }
+    });
+    renderPane({ iteration: undefined });
+
+    expect(screen.getByTestId('flow-step-tab-response')).toHaveClass('active');
+    expect(screen.getByTestId('flow-step-tab-request')).not.toHaveClass('active');
+    // The row still reads in the order the call happened in.
+    const tabs = [...document.querySelectorAll('.detail-tabs button')].map((button) => button.textContent);
+    expect(tabs).toEqual(['request', 'response', 'assertions', 'validation']);
   });
 
   it('asks for the capture the way a non-dataset run wrote it', async () => {
@@ -565,6 +589,7 @@ describe('StepDetail', () => {
       iteration: undefined,
       node: { state: 'skipped', reason: 'condition-false', attempts: 0, assertions: [], outputs: {} }
     });
+    openRequest();
 
     expect(window.ipcRenderer.invoke).not.toHaveBeenCalled();
     expect(screen.getByText('Nothing was sent')).toBeInTheDocument();
@@ -653,6 +678,7 @@ describe('StepDetail', () => {
       }
     });
     renderPane({ iteration: undefined });
+    openRequest();
 
     const body = await screen.findByTestId('body');
     expect(body).toHaveTextContent('"amount": 100');
@@ -682,6 +708,7 @@ describe('StepDetail', () => {
       sizerHeight(742);
       window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
       renderPane({ iteration: undefined });
+      openRequest();
 
       expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '750px' });
     });
@@ -694,6 +721,7 @@ describe('StepDetail', () => {
       sizerHeight(90000);
       window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
       renderPane({ iteration: undefined });
+      openRequest();
 
       expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '4000px' });
     });
@@ -702,6 +730,7 @@ describe('StepDetail', () => {
       sizerHeight(2);
       window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', ...withBody } });
       renderPane({ iteration: undefined });
+      openRequest();
 
       expect(await screen.findByTestId('flow-step-body-request')).toHaveStyle({ height: '96px' });
     });
@@ -719,6 +748,7 @@ describe('StepDetail', () => {
         }
       });
       renderPane({ iteration: undefined });
+      openRequest();
 
       expect(await screen.findByText('Headers')).toBeInTheDocument();
       expect(screen.getByText('content-type')).toBeInTheDocument();
@@ -728,6 +758,7 @@ describe('StepDetail', () => {
     it('says so when a capture recorded none, rather than showing a gap', async () => {
       window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', headers: {} } });
       renderPane({ iteration: undefined });
+      openRequest();
 
       expect(await screen.findByText('None recorded')).toBeInTheDocument();
     });
@@ -838,6 +869,7 @@ describe('StepDetail', () => {
     it('shows a finished run captures whatever the next run is configured to do', async () => {
       window.ipcRenderer.invoke.mockResolvedValue({ request: { method: 'GET', url: 'https://x', headers: {} } });
       renderPane({ iteration: undefined, captureEnabled: false });
+      openRequest();
 
       expect(await screen.findByText('URL')).toBeInTheDocument();
       expect(screen.queryByText('Captures were disabled for this run')).not.toBeInTheDocument();
