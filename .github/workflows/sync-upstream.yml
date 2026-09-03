@@ -12,7 +12,7 @@ name: Sync with upstream
 
 on:
   schedule:
-    - cron: '0 6 * * 1' # Mondays, 06:00 UTC
+    - cron: '0 6 * * *' # Daily, 06:00 UTC
   workflow_dispatch:
     inputs:
       test_base_ref:
@@ -37,9 +37,38 @@ env:
   HUSKY: 0
 
 jobs:
+  # A daily schedule outruns the human who has to review these. Without this the run would open a
+  # fresh PR from the same base every morning, each one proposing a superset of yesterday's — so one
+  # sync is in flight at a time, and the next run picks up whatever is new once it lands.
+  #
+  # The default GITHUB_TOKEN is fine here: the constraint on it is that PRs it *creates* trigger no
+  # workflows, and this only reads.
+  guard:
+    name: Check for a sync already in flight
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      pending: ${{ steps.pending.outputs.number }}
+    steps:
+      - name: Look for an open sync PR
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Drafts are the workflow_dispatch test runs, which are not waiting on anyone.
+          NUMBER=$(gh pr list --state open --label upstream-sync --json number,isDraft \
+            --jq '[.[] | select(.isDraft | not)] | .[0].number // empty')
+          if [ -n "$NUMBER" ]; then
+            echo "::notice::PR #$NUMBER is still open — leaving today's sync until it lands."
+          fi
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+
   sync:
     name: Merge upstream and open PR
     runs-on: ubuntu-latest
+    needs: guard
+    if: needs.guard.outputs.pending == ''
     permissions:
       contents: write
       pull-requests: write
@@ -239,7 +268,7 @@ jobs:
         run: |
           TITLE="Upstream sync needs manual conflict resolution"
 
-          # Don't stack duplicate issues week over week.
+          # Don't stack duplicate issues run over run.
           if [ -n "$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number')" ]; then
             echo "An open issue already tracks this."
             exit 0
