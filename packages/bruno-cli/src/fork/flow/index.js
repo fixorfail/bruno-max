@@ -1,5 +1,5 @@
 /**
- * `bru flow run` and `bru flow validate` — 001 §14.
+ * `bru flow run`, `bru flow validate` and `bru flow list` — 001 §14.
  *
  * The command owns a *suite*: which flows were selected, what order they run in, and what the
  * process exits with. The engine's unit is one flow and its iterations (§13.2), so everything
@@ -18,6 +18,9 @@ const {
   listSuites,
   readSuite,
   writeSuiteManifest,
+  flowSearchTerms,
+  flowMatches,
+  readFlowSummary,
   CAPTURE_DIRNAME,
   SUITE_DIRECTORY,
   SUITE_MANIFEST_FILE
@@ -66,9 +69,27 @@ const walk = (root) =>
 /** A library flow is excluded from directory and glob runs, and runnable when named (§12.5). */
 const isLibrary = (file) => /^\s*library:\s*true\s*$/m.test(fs.readFileSync(file, 'utf8'));
 
+/**
+ * What the user typed, as paths: each positional split on `,` beside the space-separated form yargs
+ * already gives, so `a.flow.yml,b.flow.yml` names two flows. The spelling is for the places an
+ * argument list is one string — a CI `command:` line, an npm script, a `$FLOWS` variable — where
+ * quoting several paths as one word is easier than assembling an argv.
+ *
+ * The trade is real and one-way: a file whose name genuinely contains a comma cannot be selected
+ * this way, and there is no escape for it. A comma in a `.flow.yml` name is rare, the flow is still
+ * reachable by naming its directory, and the ambiguity has to resolve one way or the other.
+ */
+const expandPaths = (paths) =>
+  [].concat(paths || []).flatMap((entry) =>
+    String(entry)
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean)
+  );
+
 const selectFlows = (paths) => {
   const selected = [];
-  for (const entry of paths) {
+  for (const entry of expandPaths(paths)) {
     const resolved = path.resolve(entry);
     if (!fs.existsSync(resolved)) throw new Error(`no such path: ${entry}`);
 
@@ -107,6 +128,63 @@ const scopeIn = (directory) => {
 const scopeFor = (file) => scopeIn(path.dirname(file));
 
 const scopeRootOf = (scope) => scope.collectionRoot || scope.workspaceRoot;
+
+/**
+ * `--grep` and `--grep-invert`, compiled before anything runs.
+ *
+ * Case-insensitively, always: tags and case ids are typed in whatever case their tracker uses, and
+ * an exact-case miss is an empty run with no explanation — the pattern looked right. A pattern that
+ * is not a regular expression is §14.2's usage error for the reason `--global-env` and an unusable
+ * `--reporter` are: an invocation that cannot be carried out should say so before it has spent ten
+ * minutes sending requests.
+ */
+const compileFilters = ({ grep, grepInvert }) => {
+  const compile = (pattern, flag) => {
+    if (pattern === undefined) return undefined;
+    try {
+      return new RegExp(pattern, 'i');
+    } catch (error) {
+      throw new Error(`${flag} is not a valid regular expression: ${error.message}`);
+    }
+  };
+
+  return { grep: compile(grep, '--grep'), grepInvert: compile(grepInvert, '--grep-invert') };
+};
+
+/**
+ * A selected flow's text, for the engine reads that take it.
+ *
+ * Unreadable at this instant is `undefined` rather than a throw: both callers answer from the path
+ * alone when there is no text, so a flow that cannot be read is still selectable and still listed.
+ * Whether it can be read is `validateFlow`'s question to answer in a report, not one a filter or a
+ * listing should settle by silently dropping it.
+ */
+const readSource = (file) => {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The terms a pattern is matched against — §5.2's identity and §5.3's step metadata, from the
+ * engine's one spelling of both. The app's sidebar search box calls the same extraction, so a flow
+ * a person can find there is a flow they can select here; the two hosts differ only in what they
+ * compile the pattern from.
+ */
+const searchTermsOf = (file) => flowSearchTerms(scopeRootOf(scopeFor(file)), file, readSource(file));
+
+/**
+ * The pattern narrows a selection; it never searches the disk.
+ *
+ * Applied after the paths chose and after §12.5's library exclusion, so `--grep` can only ever
+ * shrink what was already going to run — which is what makes it composable with every other way of
+ * naming flows, `--retry-failed`'s roster included. One rule over whatever the selection turned out
+ * to be beats two selection paths that can disagree.
+ */
+const narrowToPattern = (flows, filters) =>
+  filters.grep || filters.grepInvert ? flows.filter((file) => flowMatches(searchTermsOf(file), filters)) : flows;
 
 /**
  * The invocations already recorded in a scope, newest first.
@@ -213,6 +291,67 @@ const workspaceEnvironment = (name, workspaceRoot) => {
   return getEnvVars(parseEnvironment(fs.readFileSync(file, 'utf8'), { format: 'yml' }));
 };
 
+/**
+ * What an invocation says when the paths were valid, every flow was read, and the pattern kept none
+ * of them. Not a refusal: nothing is wrong, so it exits 0 the way a `--retry-failed` over a suite
+ * that passed entirely does. Both counts are printed because an invocation that did nothing and
+ * exited green is otherwise unexplainable — the pattern that excluded them is on the command line,
+ * but how much it was excluding *from* is not.
+ */
+const nothingKept = (verb, selected) =>
+  `nothing to ${verb} — the paths selected ${selected} ${selected === 1 ? 'flow' : 'flows'}, `
+  + 'the pattern kept none';
+
+/**
+ * `bru flow list` — 001 §14.7's listing, and nothing about running.
+ *
+ * The command exists to answer *what would a `run` with these arguments execute*, so the selection
+ * is `run`'s rather than a second one: the same `expandPaths` → `selectFlows` → `narrowToPattern`,
+ * the same default of the working directory, and the same §14.2 usage errors raised up front. A
+ * listing derived by a rule of its own would describe a run nobody could perform, which is the one
+ * thing this command must not do.
+ *
+ * §12.5 therefore reads as two behaviours and is one rule. A library flow named on the command line
+ * is listed and marked, because naming it is what runs it; one reached through a directory is absent
+ * from the listing because `selectFlows` skips it there exactly as it does for the run.
+ */
+const listFlows = (argv) => {
+  let flows;
+  let selected;
+  try {
+    const filters = compileFilters(argv);
+    const paths = expandPaths(argv.paths);
+    const chosen = selectFlows(paths.length ? paths : [process.cwd()]);
+    if (!chosen.length) throw new Error('no flows matched');
+
+    selected = chosen.length;
+    flows = narrowToPattern(chosen, filters);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(EXIT.usage);
+    return;
+  }
+
+  if (!flows.length) {
+    if (!argv.silent) console.log(nothingKept('list', selected));
+    return;
+  }
+
+  const reporter = createReporter({
+    noColor: argv.color === false,
+    unicode: argv.unicode !== false,
+    verbosity: argv.silent ? 'silent' : 'normal'
+  });
+
+  // The engine's read, because §5.1 buys one parser and the CLI is not allowed to be the second.
+  reporter.listing(
+    flows.map((file) => ({
+      ...readFlowSummary(scopeRootOf(scopeFor(file)), file, readSource(file)),
+      file: forDisplay(file)
+    }))
+  );
+};
+
 const asPairs = (values) =>
   Object.fromEntries(
     [].concat(values || []).map((entry) => {
@@ -224,10 +363,20 @@ const asPairs = (values) =>
 
 const builder = (yargs) =>
   yargs
-    .positional('action', { describe: 'run or validate', choices: ['run', 'validate'] })
+    .positional('action', { describe: 'run, validate or list', choices: ['run', 'validate', 'list'] })
     .positional('paths', { describe: 'flow files or directories', type: 'string' })
     .option('global-env', {
       describe: 'Workspace environment to run with, by name — <workspace>/environments/<name>.yml',
+      type: 'string'
+    })
+    .option('grep', {
+      describe:
+        'Run only the selected flows this case-insensitive regular expression matches, tried against the flow\'s path, name, tags and testId, and each step\'s name and meta: values',
+      type: 'string'
+    })
+    .option('grep-invert', {
+      describe:
+        'Drop the selected flows this case-insensitive regular expression matches, over the same fields as --grep; excluding wins over including',
       type: 'string'
     })
     .option('retry-failed', {
@@ -283,9 +432,14 @@ const builder = (yargs) =>
     .example('$0 flow run flows/checkout.flow.yml', 'Run one flow')
     .example('$0 flow run flows/ --reporter-junit', `Run a suite and write a JUnit report into ${CAPTURE_DIRNAME}/suite-…/`)
     .example('$0 flow run flows/ --global-env staging', 'Run every flow against a workspace environment')
+    .example('$0 flow run flows/ --grep \'smoke|checkout\'', 'Run the selected flows matching a pattern')
+    .example('$0 flow run flows/ --grep-invert slow', 'Run the selected flows a pattern does not match')
+    .example('$0 flow run a.flow.yml,b.flow.yml', 'Name several flows in one argument')
     .example('$0 flow run --retry-failed', 'Re-run the flows of the newest suite that did not pass')
     .example('$0 flow run flows/ --retries 2', 'Re-run a flow that did not pass, up to twice more')
-    .example('$0 flow validate flows/', 'Validate every flow in a directory');
+    .example('$0 flow validate flows/', 'Validate every flow in a directory')
+    .example('$0 flow list flows/', 'Print the flows a run of those paths would execute')
+    .example('$0 flow list --grep smoke', 'Check what a pattern selects without running it');
 
 const verbosityOf = (argv) => {
   if (argv.silent) return 'silent';
@@ -294,6 +448,10 @@ const verbosityOf = (argv) => {
 };
 
 const handler = async (argv) => {
+  // A listing sends nothing, opens no suite directory and writes no report, so none of the run
+  // machinery below applies to it.
+  if (argv.action === 'list') return listFlows(argv);
+
   // Resolved once: the engine owns where a run's artefacts go, and a report defaulting somewhere
   // else would be the second answer to a question that already has one.
   const captureDir = argv.captureDir === undefined ? undefined : path.resolve(argv.captureDir);
@@ -301,14 +459,18 @@ const handler = async (argv) => {
   let flows;
   /** Set by `--retry-failed` alone: which suite this invocation is a re-run of (§14.8). */
   let retryOf;
+  let filters;
   try {
+    filters = compileFilters(argv);
+    const paths = expandPaths(argv.paths);
+
     if (argv.retryFailed === undefined) {
-      flows = selectFlows(argv.paths?.length ? argv.paths : [process.cwd()]);
+      flows = selectFlows(paths.length ? paths : [process.cwd()]);
     } else {
       // A positional path locates the *scope* whose capture root is read rather than the flows to
       // run — the roster names those. Walking up from the path works whether it is a directory or a
       // file, since a file has no `bruno.json` beneath it to find.
-      const scope = scopeIn(path.resolve(argv.paths?.length ? argv.paths[0] : process.cwd()));
+      const scope = scopeIn(path.resolve(paths.length ? paths[0] : process.cwd()));
       const selection = await retrySelection({
         named: argv.retryFailed,
         scope,
@@ -331,6 +493,14 @@ const handler = async (argv) => {
   } catch (error) {
     console.error(error.message);
     process.exit(EXIT.usage);
+    return;
+  }
+
+  const selected = flows.length;
+  flows = narrowToPattern(flows, filters);
+  if (!flows.length) {
+    console.log(nothingKept('run', selected));
+    process.exit(EXIT.pass);
     return;
   }
 
@@ -602,4 +772,14 @@ const handler = async (argv) => {
   process.exit(worst);
 };
 
-module.exports = { builder, handler, selectFlows, retrySelection, workspaceEnvironment, exitCodeFor, EXIT };
+module.exports = {
+  builder,
+  handler,
+  selectFlows,
+  compileFilters,
+  narrowToPattern,
+  retrySelection,
+  workspaceEnvironment,
+  exitCodeFor,
+  EXIT
+};

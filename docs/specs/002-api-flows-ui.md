@@ -3,7 +3,7 @@
 **Status:** Draft — the three questions 001 owed this spec are answered; §14 carries one of its own,
 local to `readCapture`'s options
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-14
+**Last revised:** 2026-09-03
 
 The app surface for [001](./001-api-flows.md): open a `.flow.yml`, see its graph, run it against the
 app's environment and auth, watch it execute, and diagnose a failure down to the attempt that caused
@@ -51,7 +51,7 @@ commitments something outside this feature depends on:
 
 | Contract | Where | Consumed by |
 |---|---|---|
-| `describeFlow`, `listRuns`, `readRun`, `readCapture` | §11.1, §11.2 | `bruno-electron`, and the future builder |
+| `describeFlow`, `listRuns`, `readRun`, `readCapture`, `listSuites`, `readSuite` | §11.1, §11.2 | `bruno-electron`, `bru flow run --retry-failed`, and the future builder |
 | The `ListDirectory` port | §11.2 | Every host of `@bruno-max/flow` |
 | IPC channel names | §11.3 | The renderer, and the e2e suite |
 | Upstream files touched | §12.1 | Re-checked after every merge from upstream |
@@ -229,12 +229,15 @@ as an unknown tag — so a watcher parsing for itself would report every flow ca
 unreadable and name it after its file, a failure with no error anywhere and no sign but a name that
 looks like the one a flow gets when it declares none.
 
-**The watcher reads `meta.name` and nothing else.** `apiSpecsWatcher` parses each file to extract
-`info.title`, and the flow watcher does the same one-field read for the same reason: the sidebar names
-every flow it lists, including the ones nobody has opened. Everything else the app draws still comes
-from `describeFlow` (§11) when the flow is opened, and taking the name from there instead would mean
-resolving each listed flow's sub-flows and OpenAPI documents — which §11.3's `readSpec` will fetch
-over the network — to render a directory listing.
+**The watcher reads `meta.name` and `meta.library`, and indexes what a flow is searchable on
+(§4.1b) — nothing else the file says.** `apiSpecsWatcher` parses each file to extract `info.title`,
+and the flow watcher reads its handful of fields for the same reason: the sidebar names, groups and
+filters every flow it lists, including the ones nobody has opened. All three come out of **one**
+parse of the text the watcher has already read, which is why 001 §13.2's extraction is a parse rather
+than a describe; a watcher reading each flow a second time would spend that saving again. Everything
+else the app draws still comes from `describeFlow` (§11) when the flow is opened, and taking any of
+this from there instead would mean resolving each listed flow's sub-flows and OpenAPI documents —
+which §11.3's `readSpec` will fetch over the network — to render a directory listing.
 
 The read is tolerant, and its failure is ordinary rather than exceptional: a malformed flow must still
 appear in the sidebar so it can be opened and its diagnostics read (§6), and it appears under its
@@ -270,6 +273,9 @@ collection folders do — `slices/collections` creates every folder item collaps
 reader of this sidebar already expects a folder row to do, and it is what makes the folders worth
 having: a section that opened every directory by default would be the flat list again, one indent
 further in. Folders sort above the flows beside them, each set by the name it is listed under.
+
+**That holds while nothing is filtering.** §4.1b draws every surviving folder open and argues there
+why; the stored fold is untouched by it and governs again the moment the box is cleared.
 
 **Collapse state lives in the flows slice, keyed by the folder's bucket and its absolute path.**
 Absolute, because two scopes routinely name a folder alike — a workspace's `company` and a
@@ -307,6 +313,163 @@ folders are unchanged.
 Paths are compared as POSIX text on every platform. A pathname arrives with the separators of the
 platform that reported it, and `path` in the renderer is browserify's POSIX build — which would read
 a Windows `flows\company\create.flow.yml` as one long filename.
+
+### 4.1b Searching, and running what is shown
+
+**A search row sits directly below the section header, and a play button in the header runs what it
+is showing.** Folders answered "where is this flow" for a reader who knows the directory; past some
+tens of flows the question is more often "which of these are the checkout ones", and a directory tree
+is the wrong index for it — the answer is spread across `meta.tags`, a step's tracker id and a name
+nobody put in a path.
+
+**What a flow is matched on is 001 §14.1's list, not the row's text.** The typed text is compiled to
+a case-insensitive pattern and tried against the entry's `terms` (§11.3) — the flow's id, `meta.name`,
+tags and `testId`, and each step's id, name and `meta:` scalars — which is precisely what makes this box
+and `bru flow run --grep` select the same flows. A person who narrows the sidebar to four flows and
+then runs those four on the command line gets those four.
+
+**So a flow matches on text no row displays**, and that is the intended behavior rather than a
+side effect: the row shows one name, and the reader is searching for a flow, not for a label. **The
+row is not annotated with which term found it.** A term arrives as a bare string with no field name
+beside it, so a row reading *matched a tag* would be guessing at exactly the moment the reader leaned
+on it; saying it truthfully means widening §11.3's contract to per-term provenance, which is a larger
+payload per flow on every listing to explain a match the reader can confirm by opening the flow.
+
+**The text is compiled as an escaped literal, where `--grep` compiles the user's own expression.**
+The box is a search field: someone typing `payments (v2)` is naming a flow, and an unescaped pattern
+would either fail to compile or quietly match `payments v2` instead. A command line is where a
+regular expression is worth offering and a sidebar box is not, and this is the whole of the
+difference between the two hosts — 001 §13.2 keeps the extraction itself in one place for that
+reason.
+
+§4.5's scripts and §4.6's fixtures have no `meta:` to read and carry no terms, so they match on their
+filename — which is what their row shows and what a `use:` or a `!file` names them by.
+
+**The listing is filtered before it is grouped**, so what disappears is the whole listing of a thing
+that did not match: a folder whose flows all went is not left behind as an empty row, and neither is
+a `Libraries` label or a scope's group header. What survives is drawn **open**, overriding §4.1a's
+stored fold — a search answered with a folder the reader must click is not an answer, and the play
+button beside it would be counting flows nobody can see. The fold itself is not written to; it takes
+effect again the moment the box is cleared, so a search does not cost the reader the tree they had
+arranged.
+
+**A search that matched nothing says so, and the box stays.** It is a different answer from a scope
+that holds nothing, and the reader has just typed the thing that distinguishes them. The box outlives
+its own results for a blunter reason: one that removed itself with the last row it matched would
+leave a filter in force and no way to clear it.
+
+**The filter is the section's own state rather than the slice's.** Nothing outside the section reads
+it, and a filter is not a thing to restore — one carried by the snapshot would open the app on a
+listing with flows missing and the box that explains it hidden under a section header nobody has
+expanded yet. It sits above `SidebarSection`'s body, which unmounts when the section is collapsed, so
+collapsing and reopening keeps what was typed.
+
+**The play button runs every non-library flow the search is showing, in listing order, as one
+suite** — through §11.3's `renderer:flow-run-suite`, the channel §10's rerun already uses. Libraries
+are excluded because 001 §12.5 keeps them out of a glob run: running one means supplying its
+`params:` first, which is a decision per invocation and not one a button over a list can make. §4.1
+already lists them apart for that reason, so the button and the listing agree.
+
+A filtered set routinely spans a workspace and its collections, which is why the channel takes a
+scope per flow (§11.3): each flow is run against its own, and the suite's directory belongs to the
+first listed flow's — 001 §14.1's rule, where the first selected flow's scope owns the invocation's
+directory. Listing order is therefore load-bearing rather than incidental: the scope that ends up
+owning the record is the one at the top of the list the reader is looking at.
+
+**Disabled with the reason as its tooltip when nothing runnable is showing, and absent while a suite
+runs.** The button's tooltip is what it would do — `Run 4 flows` — or, when it would do nothing, why:
+the two ways to have nothing runnable are undone by different gestures, clear the box or go and write
+a flow, and a control that is merely dim answers neither. The count also covers the one state where
+the header is visible and the listing it describes is not, which is a collapsed section.
+
+It is **absent** rather than disabled while a suite runs, because §4.1's progress count and Cancel
+are already the header's affordances for that suite: a second control over one suite directory is
+either a duplicate of the stop beside it or an offer to start a second suite, which the runner has no
+state for.
+
+### 4.1c Creating a flow
+
+**The section header's `+` writes the file.** A flow's opening document is short and is the part a
+hand-edit gets wrong: the `version`, a `meta:` block whose one required key is the name the sidebar
+will list, and an `apis:` entry per document the flow drives — each of which needs an alias every
+step will type and a path resolved from the directory the file is about to sit in. None of that is
+hard and all of it is looked up, which is the shape of thing a form should answer once. The `+`
+opens it directly rather than through the header's menu (§4.1a): that control adds a flow and has
+nothing else to do.
+
+| Field | Writes |
+|---|---|
+| Flow Name | `meta.name` — required, because §4.1 lists the flow by it |
+| File Name | the file itself; the `.flow.yml` extension is the form's, not the author's. Blank means the flow name in kebab-case |
+| Flow Location | the directory it is written into — the workspace's `flows/` by default, or anywhere Browse leads |
+| Description | `meta.description` |
+| Tags | `meta.tags`, one comma-separated line — 001 §14.1's `--tags` selects on these |
+| Library | `meta.library` — 001 §12.5's flag, which decides whether a glob run includes it |
+| APIs | one `apis:` binding per selected document, aliased and written as a relative path |
+
+§4.4's dialog is this same set once the flow exists, minus the specs and plus `meta.testId`, which
+correlates a flow with a report (001 §14.8.1b) and has nothing to say at the moment one is created.
+§4.7's `Duplicate` is this same *form*, over a flow that already exists.
+
+**The name and the file name are separate fields, and one defaults from the other.** §4.1 lists a
+flow by `meta.name`, which is prose — `Order fulfillment` — while the file it lives in is read in a
+directory listing and named by `uses:` from other flows. Deriving one from the other is only ever
+right by default, so it is exactly that: the file name fills from the name in kebab-case when the
+name field is left, and only while it is still empty — so a file name the author typed is never
+overwritten by a later edit to the name, and one they cleared fills again the next time the name is
+left. That is one rule rather than two, and it is the same rule that decides the submitted value when
+the field is left blank. Kebab-case because it is what the flows already on disk are named by, and
+because it happens to drop every character the filename rules reject — a `meta.name` with a colon in
+it still yields a usable file. Not lodash's `kebabCase`, which splits a letter from a digit: version
+suffixes are everywhere here, and `auth-v-2` is not what anyone typing `Auth V2` meant.
+
+**The filename rules are §4.4's rules, in one module.** A create that accepted a name a rename
+rejects would be two rules where the filesystem has one, so both forms ask the same function and the
+255-character limit is measured on the whole filename rather than on the part the author typed.
+
+**The location defaults to the *workspace's* `flows/`, and browses anywhere.** The section shows
+several scopes and its header belongs to none of them, so there is no collection for the default to
+mean; Browse is how a collection-scoped flow is made, and a workspace with no path on record simply
+opens the form with the field empty. The path is joined by main (§11.3's `renderer:flow-folder`)
+because the renderer's `path` is a POSIX shim and this string is shown to the author before being
+sent back to be written.
+
+**The destination is not scope-checked, and the write refuses only a name already taken.** 001 §5.1
+lets a flow live under any workspace or collection, and a form that refused a directory the app has
+not opened would refuse the ordinary case of starting a scope. What the host does refuse is
+overwriting: the file is written with `wx` rather than after an existence check, because the check
+and the write are not one operation and the race it loses is precisely the one that destroys
+somebody's flow.
+
+**The API list is the sidebar's own** — the workspace's API Specs paired with the specs loaded in
+the store, through upstream's `matchLoadedApiSpecs` — so the two surfaces cannot disagree about what
+belongs to a workspace. It is a multi-select because 001 §6.2's whole reason for alias-qualifying a
+reference is a flow that spans several APIs, and a scope with none says so rather than showing an
+empty box.
+
+**An alias is derived from the document's filename, not from its OpenAPI title.** The alias is typed
+by hand in every step that uses it (`alias#operationId`, 001 §5.3), and a title is prose:
+`Payments API v2 (beta)#createOrder` is not something anyone wants to write, or to type twice the
+same way. Each spec's row shows the alias it would get, so it is read where it is chosen rather than
+discovered after the file is written. Two filenames that slug alike take a `-2`, `-3` suffix, because
+`apis:` is a mapping and the second binding would otherwise replace the first — silently, in a
+document that still parses.
+
+**Sources are written relative to the new file's own directory**, which is where 001 §6.2 resolves
+them from — so a flow created in `flows/company/` and one created in `flows/` bind the same document
+by different paths, and both keep binding it if the tree moves. The `./` prefix is cosmetic:
+`path.resolve` treats a bare `payments.yml` identically, but a source that reads as a bare word
+beside ones that read as paths invites being mistaken for a URL.
+
+**No `steps:` key is written at all.** The app cannot guess a step, and a placeholder is one the
+author has to delete before the flow does anything — a document claiming to describe a request
+nobody asked for, where an absent `steps:` says exactly what is true: a flow nobody has written yet.
+§4.3's editor is where a flow is written; this form exists for the part that is lookup rather than
+authorship.
+
+**The write is the whole of the action: nothing is dispatched.** The watcher is already watching that
+directory (§4.1), so the new row arrives exactly as it would for a flow somebody created outside the
+app — one path into the sidebar rather than two that can disagree.
 
 ### 4.2 The flow tab
 
@@ -528,7 +691,7 @@ using them here is future work.
 
 **The two things that carry a flow's name are edited in one place.** §4.1 lists a flow by its
 `meta.name`, which is prose, and the file it lives in is read in a directory listing and named by
-`uses:` from other flows — §4.1's create form asks for them separately for that reason. Once the flow
+`uses:` from other flows — §4.1c's create form asks for them separately for that reason. Once the flow
 exists there is nowhere to change either: §4.3's editor reaches `meta:` and cannot rename a file at
 all, and nothing else in the app touches a flow's filename.
 
@@ -548,7 +711,7 @@ The dialog holds 001 §5.2's `meta:` block and the filename, and nothing else:
 | Library | `meta.library` — 001 §12.5's flag, which decides whether a glob run includes it |
 
 **A cleared field is written as an absence.** `description: ''`, `tags: []` and `library: false` all
-mean to the engine what the missing key means, so clearing one deletes it. §4.1's create form already
+mean to the engine what the missing key means, so clearing one deletes it. §4.1c's create form already
 writes a new flow that way; the alternative makes edit-and-undo leave a file that no longer matches
 the one it started as.
 
@@ -738,7 +901,7 @@ file in either folder does not make a flow see it.
 
 ### 4.7 Duplicating a flow
 
-**A flow's row menu carries `Duplicate`**, which opens §4.1's create form over the flow that was
+**A flow's row menu carries `Duplicate`**, which opens §4.1c's create form over the flow that was
 clicked and writes a copy of its document under a new name.
 
 **The copy is the source's own text with `meta:` replaced**, rather than a document rebuilt from the
@@ -772,7 +935,7 @@ duplicate of one is a file copy with a new name and nothing this form asks about
 stay as they are.
 
 The source is scope-checked like every read, and the destination is not, like every create — the form
-offers the source's directory and lets the author browse anywhere, exactly as §4.1's does. The write
+offers the source's directory and lets the author browse anywhere, exactly as §4.1c's does. The write
 uses the same `wx` flag, so a duplicate never overwrites a flow that is already there.
 
 
@@ -1928,6 +2091,8 @@ type ListRunsOptions = {
 type RunIndexEntry = {
   runId: string;                       // from run.json — see §10 and §11.4
   dir: string;
+  origin?: RunOrigin;                  // from run.json — §8.4's badge, without opening the run
+  suite?: string;                      // basename of the suite directory this run sits in (001 §14.5)
   flow: string;                        // from run.json, so the filter works on unfinished runs
   startedAt: string;                   // from run.json
   state: 'complete' | 'running' | 'interrupted';
@@ -1948,6 +2113,8 @@ type StoredRun = RunIndexEntry & {
   capturedSteps: string[];             // the steps with a capture — see below
   description?: FlowDescription;       // flow.json — the graph this run executed (001 §14.5)
   source?: string;                     // flow.yml — its text at run time
+  params?: Record<string, unknown>;    // inputs.json — 001 §12.5's params, secrets already masked
+  vars?: Record<number, Record<string, unknown>>;  // likewise, keyed by iteration (§5.6)
 };
 
 type ReadCaptureOptions = {
@@ -2137,6 +2304,18 @@ the names would answer confidently and sometimes wrongly. The caller already hol
 about — the graph `describeFlow` returned — so the decidable question is which of *those* have a
 capture, and the id-to-segment mapping stays in the engine, where §14.5 puts every path computation.
 
+**`params` and `vars` are absent rather than empty when a run did not record them**, and the
+distinction is `flowChanged`'s: absent is *unknown*, not "none were supplied", and §5.6 draws no
+panel at all for such a run rather than an empty one, which would be a claim. A run recorded before
+001 §14.5's `inputs.json` existed has neither. An interrupted run has its `params` and no `vars` —
+the params are written at run start precisely so a run that never finished still says what it was
+started with, and the vars do not exist until the run resolves them.
+
+They arrive here rather than through `result` for that reason: an interrupted run has no
+`summary.json` and is exactly the run whose inputs a reader is trying to reconstruct. `vars` is keyed
+by iteration because §7.3 resolves them per row — under a `dataset:` every iteration resolves its own
+`{{$guid}}`, and one map for the run would report the last row's as though it had been all of them.
+
 **A run's own snapshot supersedes that input.** 001 §14.5's `flow.json` holds the graph the run
 executed, so its node ids are the ids that could have captures — and they are the right ones to ask
 about, because the caller's list is *today's* graph and a step renamed since would leave its captures
@@ -2165,8 +2344,8 @@ the four `main:` pushes follow.
 | `renderer:flow-list-suites` | invoke | `listSuites` for a scope — the roster §4.1's rerun is selected from |
 | `renderer:flow-read-run` | invoke | One stored run's results |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
-| `renderer:flow-folder` | invoke | A scope's `flows/` path, joined main-side — the location §4.1's form opens on |
-| `renderer:flow-create` | invoke | Write a new flow, refusing a name already taken (§4.1) |
+| `renderer:flow-folder` | invoke | A scope's `flows/` path, joined main-side — the location §4.1c's form opens on |
+| `renderer:flow-create` | invoke | Write a new flow, refusing a name already taken (§4.1c) |
 | `renderer:flow-duplicate` | invoke | Copy one flow's document under a new `meta:` and name (§4.7) |
 | `renderer:flow-read-properties` | invoke | One flow's `meta:` and filename, for §4.4's dialog |
 | `renderer:flow-update-properties` | invoke | Write that `meta:` back, renaming the file if its name changed (§4.4) |
@@ -2263,9 +2442,11 @@ type CancelRequest = { runId: string };
 type RunSuiteRequest = {
   /** Minted by the renderer, so it can name the stream before the first event arrives. */
   suiteId: string;
+  /** The suite's own — whose capture root holds the directory, and whose roster is written there. */
   scope: FlowScope;
-  /** In the order they run. `params` is per flow, since §12.5 declares them per flow. */
-  flows: { entry: string; params?: Record<string, unknown> }[];
+  /** In the order they run. `params` is per flow, since §12.5 declares them per flow; `scope`
+   *  defaults to the suite's, and a §4.1b selection spanning two scopes sends one per entry. */
+  flows: { entry: string; scope?: FlowScope; params?: Record<string, unknown> }[];
   tiers: RunRequest['tiers'];
   overrides?: RunRequest['overrides'];
   /** Basename of the source suite's directory, when this is a retry (001 §14.2). */
@@ -2334,9 +2515,14 @@ type RequestLog = {
 // main:flow-tree-updated — two arguments, matching `main:apispec-tree-updated`
 type FlowTreeEvent = 'addFile' | 'changeFile' | 'unlinkFile';
 // `name` is the flow's `meta.name` and `library` its `meta.library`, each absent when the flow
-// declares none or does not parse (§4.1) — both read by one cheap parse that resolves nothing
+// declares none or does not parse (§4.1); `terms` is what §4.1b matches it on. All three come from
+// one cheap parse that resolves nothing, and none of the three appears on a script's or a fixture's
+// entry — those are files rather than documents, and `script` / `fixture` is the whole of what the
+// watcher says about one. The three kinds arrive on one channel and are told apart by the flag,
+// which is why it is present-or-absent rather than false: a flow is the entry with neither.
 type FlowTreeEntry = {
-  pathname: string; filename: string; name?: string; library?: boolean;
+  pathname: string; filename: string; name?: string; library?: boolean; terms?: string[];
+  script?: true; fixture?: true;
   workspaceRoot: string; collectionRoot?: string
 };
 ```
@@ -2364,6 +2550,15 @@ against is the same thing `bru` does, which is one fewer way for the two hosts t
 reaches the engine. It is Bruno's request-path convention rather than a variable an author declared,
 and leaving it in would make `{{__name__}}` resolve in the app and not in `bru`.
 
+**`terms` is indexed at watch time so that no cost falls on the typing path.** §4.1b filters a list
+of strings the renderer already holds, which is what lets the box answer per keystroke over a
+workspace's whole listing. The price is paid once per scope opened and again per file changed, and it
+is not nothing: indexing roughly **triples** the watcher's parse cost, at 0.3–0.7 ms per flow —
+200 flows of 3 steps went 53 ms to 117 ms, and of 8 steps 92 ms to 231 ms. That is the trade being
+made, deliberately and unoptimised: a scope opens tens of milliseconds later once, in exchange for a
+search that never reads a file. Collapsing the two parses `flowSearchTerms` performs (001 §13.2's
+identity read, then the steps) is where the saving is if that ever stops being true.
+
 **`main:flow-tree-updated` reports `unlinkFile`, which `apiSpecsWatcher` does not.** §4.1 requires a
 flow to leave the sidebar when the file is deleted or a branch is switched, and the API-spec watcher
 has no deletion path to copy — its watchers are per opened file rather than over a directory.
@@ -2378,6 +2573,27 @@ goes through the same `runFlow` call a single run makes and emits `main:flow-run
 the flow tabs fold it without ever learning that a suite is running them — which is the whole of why
 a rerun needs no second viewer (§10). `main:flow-suite-event` carries only what the per-flow stream
 cannot: the roster, which of it is in front, and that the invocation is over.
+
+**A suite spans scopes, so each entry carries its own.** §4.1b's selection is whatever the search
+matched, and that routinely crosses a workspace and one of its collections; the channel took a single
+`scope` for the whole invocation and validated every entry against it, which would have refused the
+selection outright. An entry's `scope` defaults to the suite's, so §10's rerun — one suite's roster,
+therefore one scope — sends none and is unchanged.
+
+Each entry is **validated, run and named** against its own scope rather than merely checked against
+it. §7.2 layers a scope's `.env` files over `process.env` and resolves a script's `require` against
+its collection root, and 001 §5.2's `id` — what the roster names the flow by — is relative to it. A
+collection flow run under the workspace's scope would therefore read the wrong `.env` and be recorded
+under a path it does not sit at, neither of which says anything about itself in the report.
+
+What stays the suite's is the invocation: its directory, the `suite.json` written into it, and the
+environment tiers the run panel chose, which belong to the run configuration rather than to a scope.
+001 §14.1 gives an invocation one directory, owned by the first selected flow's scope.
+
+That check remains **containment, not membership**. It guarantees an entry resolves inside the root
+sent *with* it, and cannot say the root is one the app has open — no check on this side could. A
+per-flow scope therefore widens an invocation to several roots rather than to none: every entry is
+still refused unless it sits inside the one it was checked against.
 
 **Every run of a suite is given the suite's directory as `overrides.capture.dir`.** Without it the
 engine mints a suite of one per flow (001 §14.5), and a rerun of five flows would leave five suite
@@ -2440,24 +2656,48 @@ packages/bruno-app/src/fork/
   registry.js                          # the delegation surface upstream calls into
   tabTypes.js                          # leaf: the fork's tab types, imported by upstream's strip
   tabGroup.js                          # leaf: §4.2's grouping rule
+  jest.setup.js                        # the fork's own test environment — see §12.1
   hooks/
     useVerticalSplit/index.js          # §9's draggable graph/detail split
+    useAutoSave/index.js               # §4.3's interval save, on the app's own preference
   flows/
     slice.js                           # flows, describe results, run state keyed by flow path
+    actions.js                         # the invokes of §11.3, as thunks
     ipcEvents.js                       # registers the listeners in the table above
     collectionScope.js                 # which collection a flow's tab and rows belong to
     networkRequests.js                 # §8.5's merged devtools list
     flowTree.js                        # §4.1a's folder derivation, shared by every bucket
+    flowFileName.js                    # what a flow file may be called — §4.1c and §4.4, one rule
+    retargetTabs.js                    # §4.4's rename, followed to every tab keyed on the old path
+    yamlSchema.js                      # 001 §5.4's tags, taught to the renderer's own parser (§4.3)
     FlowSidebarSection/index.js
-    FlowTabHeader/index.js             # §4.2's "API Flows" header, replacing CollectionHeader
+    CreateFlow/
+      index.js                         # §4.1c's form, and §4.7's duplicate over a source
+      flowDocument.js                  # the text a created flow starts as
+    FlowProperties/index.js            # §4.4's dialog
+    RenameScript/index.js              # §4.5's rename, the one thing a script's row menu offers
+    ForkSpecialTab/
+      index.js                         # the strip's fork tabs, and their unsaved marker
+      ConfirmFlowYamlClose/index.js    # §4.4's close guard
+    FlowTabLabel/index.js              # one label per tab type — flow, YAML, script, fixture —
+    FlowYamlTabLabel/index.js          # each reached through the tab-label registry
+    FlowScriptTabLabel/index.js
+    FlowFixtureTabLabel/index.js
+    FlowTabHeader/
+      index.js                         # §4.2's "API Flows" header, replacing CollectionHeader
+      EnvironmentPicker/index.js       # §7.2's selector, the one workspace control it keeps
     FlowTabPane/
       index.js
       FlowGraph/
         index.js
         layout.js                      # ranks -> coordinates
+        follow.js                      # §8.2's view, following the step in flight
+        apiColors.js                   # §5.1's colour per `apis:` binding
+        subflowColors.js               # §5.4's colour per expanded sub-flow
       StepDetail/index.js
       RunControls/index.js
       RunSelector/index.js
+    FlowYamlTabPane/index.js           # §4.3's raw editor
     FlowSourceTabPane/index.js         # §4.5's script and §4.6's fixture, one editing pane
 ```
 
@@ -2487,7 +2727,8 @@ The watcher starts from inside `registerFlowIpc`, so it rides 001's existing ent
 
 ### 12.1 The manifest delta
 
-001 §13.4's table is the contract for the whole feature. Run & observe adds **three files** to it:
+001 §13.4's table is the contract for the whole feature. Run & observe adds **six files** to it, and
+grows one row that was already there:
 
 | Upstream file | Edit | Lines |
 |---|---|---|
@@ -2514,6 +2755,21 @@ the one fork disposer already counted above, the runner is a new module in the f
 the rest is 001 §14.5's roster format in `@bruno-max/flow`. 001 §13.4 records the CLI half of the
 same nil return. A feature this shape landing with an upstream footprint of zero is the amortization
 below, observed rather than predicted.
+
+**§4.1b adds nothing either**, and its one temptation was `components/SearchInput`. Reuse would have
+been the rule (`.claude/rules/conventions.md`) and is wrong here on the component's own terms: it
+autofocuses, and carries a fixed DOM `id` any second instance on the page would share. This row is
+rendered for as long as the section is open rather than toggled on by a gesture, so it would take the
+caret from whatever the reader was typing every time the section came back. Upstream's own
+`Sidebar/Collections/CollectionSearch` is bespoke for that reason too, so the fork's row is a sibling
+of that rather than a divergence — and is styled to read as one. The play button rides §11.3's
+existing suite channel, and the section header is fork-owned markup.
+
+The app also does **not** import `@bruno-max/flow` for the matching. The engine's entry reaches
+`runFlow` and `@usebruno/js`'s Node sandbox, which has no business in a browser bundle, and
+`bruno-app` declares no dependency on it. Only the predicate — two lines over an array of strings — is
+spelled in the fork directory; the extraction the two hosts must agree on stays in the engine and
+arrives on the tree entry (§11.3), which is the half that would actually drift.
 
 **§4.5 adds nothing at all**, and it is the clearest case the registry has made yet: a third tab
 type, its own pane, its own label, its own editing session and a new sidebar section, reaching the

@@ -27,7 +27,7 @@ jest.mock('./ports', () => ({
 }));
 
 const { ipcMain } = require('electron');
-const { runFlow } = require('@bruno-max/flow');
+const { runFlow, SUITE_DIRECTORY } = require('@bruno-max/flow');
 const registerFlowIpc = require('./index');
 const { startRun, cancelRun, shutdown } = require('./index');
 
@@ -878,6 +878,18 @@ describe('a suite of flows', () => {
     return target;
   };
 
+  /**
+   * A flow filed under a collection inside the workspace — the second scope a selection can span,
+   * and the one an entry names when the suite's is the workspace.
+   */
+  const collectionFlow = () => {
+    const collectionRoot = path.join(scopeRoot, 'payments');
+    const entry = path.join(collectionRoot, 'flows', 'settle.flow.yml');
+    fs.mkdirSync(path.dirname(entry), { recursive: true });
+    fs.writeFileSync(entry, 'version: 1\nmeta:\n  name: Settle\n\nsteps: []\n', 'utf8');
+    return { entry, scope: { workspaceRoot: scopeRoot, collectionRoot } };
+  };
+
   const request = (overrides) => ({
     suiteId: 'suite-one',
     scope,
@@ -914,7 +926,15 @@ describe('a suite of flows', () => {
 
     expect(suiteId).toBe('suite-one');
     expect(path.dirname(dir)).toBe(path.join(scopeRoot, '.bruno-runs'));
-    expect(path.basename(dir)).toMatch(/^suite-\d{4}-\d{2}-\d{2}T[\d-]+Z-suit$/);
+    /**
+     * Against the engine's own pattern rather than a hand-written one. This assertion used to spell
+     * out the suffix, which meant it asserted `suit` — the first four characters of this test's
+     * `suite-one` — and so passed while the app was naming directories `listRuns` refuses to descend
+     * into. The contract is that the name is listable, and `SUITE_DIRECTORY` is the only thing that
+     * says so.
+     */
+    expect({ name: path.basename(dir), listable: SUITE_DIRECTORY.test(path.basename(dir)) })
+      .toEqual({ name: path.basename(dir), listable: true });
     expect(runFlow.mock.calls.map(([options]) => options.entry)).toEqual([checkout, refund]);
     for (const [options] of runFlow.mock.calls) {
       expect(options.overrides.capture.dir).toBe(dir);
@@ -1094,6 +1114,77 @@ describe('a suite of flows', () => {
     await ended;
 
     expect(runFlow.mock.calls.map(([options]) => options.params)).toEqual([{ orderId: '7' }, undefined]);
+  });
+
+  /**
+   * A selection can span a workspace and the collections inside it, and §7.2 resolves a flow's
+   * environment, its `.env` and its scripts' `require` against the scope it belongs to — so an entry
+   * runs in its own. The invocation still has one directory, in the suite's scope.
+   */
+  it('runs a flow in the scope its entry named, into the suite scope\'s directory', async () => {
+    const settle = collectionFlow();
+    runFlow.mockImplementation(finishedRun('run-a', 'passed', '/runs/a'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(
+      win,
+      request({ flows: [{ entry: checkout }, { entry: settle.entry, scope: settle.scope }] })
+    );
+    await ended;
+
+    expect(runFlow.mock.calls.map(([options]) => options.scope)).toEqual([scope, settle.scope]);
+    expect(path.dirname(dir)).toBe(path.join(scopeRoot, '.bruno-runs'));
+    for (const [options] of runFlow.mock.calls) {
+      expect(options.overrides.capture.dir).toBe(dir);
+    }
+    // Identity is relative to the flow's own scope, so the roster calls a flow what its sidebar does.
+    expect(manifestIn(dir).flows.map((flow) => flow.id)).toEqual(['flows/checkout', 'flows/settle']);
+  });
+
+  /** §10's retry sends `{ entry, params }` and no scope at all: every entry belongs to the suite's. */
+  it('runs every flow in the suite scope when no entry names one', async () => {
+    runFlow.mockImplementation(finishedRun('run-a', 'passed', '/runs/a'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    const { dir } = await startSuite(win, request());
+    await ended;
+
+    expect(runFlow.mock.calls.map(([options]) => options.scope)).toEqual([scope, scope]);
+    expect(manifestIn(dir).flows).toEqual([
+      { file: checkout, id: 'flows/checkout', name: 'Checkout', tags: ['smoke'], outcome: 'passed', runDir: 'a' },
+      { file: refund, id: 'flows/refund', name: 'Refund', tags: ['smoke'], outcome: 'passed', runDir: 'a' }
+    ]);
+  });
+
+  /**
+   * Against its own scope rather than the suite's — otherwise a per-flow scope would be a way to
+   * name a narrow root and still run whatever the wider one contains.
+   */
+  it('refuses an entry outside the scope its own entry named', async () => {
+    const settle = collectionFlow();
+    const { win } = windowWatchingForTheEnd();
+
+    await expect(
+      startSuite(
+        win,
+        request({
+          flows: [
+            { entry: settle.entry, scope: settle.scope },
+            { entry: checkout, scope: settle.scope }
+          ]
+        })
+      )
+    ).rejects.toThrow('outside its scope');
+    expect(runFlow).not.toHaveBeenCalled();
+  });
+
+  it('refuses an entry whose own scope has no workspaceRoot', async () => {
+    const { win } = windowWatchingForTheEnd();
+
+    await expect(startSuite(win, request({ flows: [{ entry: checkout, scope: {} }] }))).rejects.toThrow(
+      'workspaceRoot'
+    );
+    expect(runFlow).not.toHaveBeenCalled();
   });
 
   /** Every entry is checked before any of them runs: a half-executed selection is unreportable. */

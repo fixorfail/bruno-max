@@ -45,7 +45,7 @@ const uniqueAlias = (alias, taken) => {
 };
 
 /**
- * §12.3: a binding's source is resolved against the flow's own directory, so it is written relative
+ * §6.2: a binding's source is resolved against the flow's own directory, so it is written relative
  * to where the file is about to be created rather than to the workspace.
  *
  * The `./` prefix is cosmetic — `path.resolve` treats a bare `foo.yml` identically — but a source
@@ -66,8 +66,8 @@ export const buildFlowDocument = ({ name, description, tags = [], library, direc
   const meta = {
     name,
     ...(trimmedDescription ? { description: trimmedDescription } : {}),
-    // Written only when there are any, for the same reason `library` is: `tags: []` is what §14.1's
-    // `--tags` filtering already does with a flow that declares none.
+    // Written only when there are any, for the same reason `library` is: an empty `tags: []` selects
+    // exactly as an absent key does under §14.1's `--grep`, so writing it says nothing.
     ...(tags.length ? { tags } : {}),
     // 001 §12.5's flag is written only when it is set: `library: false` and an absent key mean the
     // same thing to the engine (`Boolean(meta.library)`), and a flow that spells out the default

@@ -122,31 +122,72 @@ Import Options:
 
 ## API Flows
 
-Flows are multi-step, spec-driven API test sequences defined in `.flow.yml` files. Run or validate them with `bru flow`:
+Flows are multi-step, spec-driven API test sequences defined in `.flow.yml` files. Run, validate or list them with `bru flow`:
 
 ```bash
 bru flow run flows/checkout.flow.yml       # run one flow
 bru flow run flows/                        # run every flow in a directory
+bru flow run a.flow.yml,b.flow.yml         # name several in one argument
 bru flow validate flows/                   # validate without sending requests
+bru flow list flows/                       # print what a run of those paths would execute
 ```
+
+Paths may be separated by spaces or by commas, so a whole selection fits in one shell word.
 
 Flow Options:
 
-| Option                        | Details                                                            |
-| ------------------------------ | ------------------------------------------------------------------ |
-| --global-env [string]          | Workspace environment to run with, by name                        |
-| --env-var [string]             | Override a single variable, multiple usages possible               |
-| --param [string]               | Supply a declared params value, multiple usages possible           |
-| --concurrency [number]         | Override `config.concurrency`                                      |
-| --max-run-duration [number]    | Bound the whole run in ms                                          |
-| --bail                         | Stop after the first failing flow                                  |
-| --no-capture                   | Do not write `.bruno-runs/` artifacts                              |
-| --capture-dir [string]         | Write captures somewhere other than `<scope>/.bruno-runs`          |
-| --verbose, --quiet, --silent   | Control how much the reporter prints                                |
-| --no-color                     | Disable colourized output                                          |
-| --no-unicode                   | Use ASCII rather than box-drawing status markers                   |
+| Option                        | Details                                                                                |
+| ------------------------------ | -------------------------------------------------------------------------------------- |
+| --global-env [string]          | Workspace environment to run with, by name                                             |
+| --env-var [string]             | Override a single variable, multiple usages possible                                   |
+| --param [string]               | Supply a declared params value, multiple usages possible                               |
+| --grep [string]                | Run only the selected flows this case-insensitive regular expression matches           |
+| --grep-invert [string]         | Drop the selected flows it matches; excluding wins over including                      |
+| --concurrency [number]         | Override `config.concurrency`                                                          |
+| --max-run-duration [number]    | Bound the whole run in ms                                                              |
+| --bail                         | Stop after the first failing flow                                                      |
+| --retry-failed [string]        | Re-run the flows of a past suite that did not pass; defaults to the newest suite       |
+| --retries [number]             | Re-run flows that did not pass, up to n more times, before the command finishes        |
+| --no-capture                   | Do not write `.bruno-runs/` artifacts                                                  |
+| --capture-dir [string]         | Write captures somewhere other than `<scope>/.bruno-runs`                              |
+| --reporter [string]            | Write a report with `<module>[=<path>]`, multiple usages possible                       |
+| --reporter-junit [string]      | Write a JUnit XML report, one testcase per step; the path is optional                  |
+| --reporter-junit-flows [string]| Write a JUnit XML report counting flows rather than steps; the path is optional        |
+| --reporter-json [string]       | Write a JSON suite report; the path is optional                                        |
+| --reporter-html [string]       | Write a self-contained HTML report; the path is optional                               |
+| --reporter-option [string]     | Pass `key=value` to every reporter, multiple usages possible                            |
+| --verbose, --quiet, --silent   | Control how much the reporter prints                                                    |
+| --no-color                     | Disable colourized output                                                              |
+| --no-unicode                   | Use ASCII rather than box-drawing status markers                                        |
 
-`bru flow run` exits `0` on success, `1` if a flow failed, `2` if a flow failed validation, `3` on a usage error, and `4` if the run was cancelled (for example, `--max-run-duration` elapsing). `bru flow validate` never exits `1`, since it sends no requests.
+A `--grep` pattern is tried against the flow's path-relative id, `meta.name`, each `meta.tags` entry and `meta.testId`, and against every step's `id`, `name` and `meta:` values. It narrows the flows the paths already selected and never searches the disk.
+
+Reports and the run directories they describe land together in one `suite-<timestamp>-<id>/` folder under the capture root, so a CI job collects a single directory. A built-in reporter needs no path; give one only to write somewhere of your own choosing.
+
+`bru flow run` exits `0` on success, `1` if a flow failed, `2` if a flow did not run (it failed validation, or was refused for a missing required param), `3` on a usage error, and `4` if the run was cancelled (for example, `--max-run-duration` elapsing). A `--grep` that matches nothing exits `0` — the paths were valid and nothing matched. `bru flow validate` never exits `1`, since it sends no requests.
+
+### Listing what would run
+
+`bru flow list` prints the flows a `bru flow run` with the same arguments would execute, and sends nothing — it is how you check a `--grep` pattern before spending a CI job on it.
+
+```bash
+bru flow list flows/                          # what a run of this directory would do
+bru flow list flows/ --grep 'smoke|checkout'  # what the pattern actually selects
+bru flow list                                 # the whole collection or workspace
+```
+
+```
+id        kind     steps  tags             file
+checkout  flow         6  checkout, smoke  flows/checkout.flow.yml
+refunds   flow         4  refunds          flows/refunds.flow.yml
+login     library      1  —                flows/shared/login.flow.yml
+
+3 flows · 1 library
+```
+
+The selection is the run's — the same paths, spaced or comma-separated, the same default of the current directory, the same `--grep` and `--grep-invert`. It takes `--grep`, `--grep-invert`, `--silent`, `--no-color` and `--no-unicode`, and nothing about running: no environments, no reporters, and nothing written to `.bruno-runs/`. A library flow is listed and marked `library` when you name it and absent when you name only the directory holding it, which is exactly how a run treats it. The `id` column is the last segment of the flow's path, widened to as much of the path as tells two flows apart.
+
+`bru flow list` exits `0`, or `3` for the up-front mistakes a run refuses — a path that does not exist, a `--grep` that will not compile. A pattern that matched nothing exits `0`.
 
 For the full `.flow.yml` authoring guide — steps, scripts, `functions:`, `pre:`, and diagnostics — see [Writing Flows](../../docs/writing-flows.md).
 

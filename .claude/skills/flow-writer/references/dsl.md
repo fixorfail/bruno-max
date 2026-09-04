@@ -16,7 +16,8 @@ version: 1                     # required
 meta:
   name: Checkout happy path
   description: What this proves, and anything it needs.
-  tags: [checkout, smoke]      # edited in the properties dialog; nothing selects on them yet
+  testId: C1000                # this flow's case id — emitted as a flow-level report's `test_id`
+  tags: [checkout, smoke]      # `--grep` and the app's flow search select on them
   library: false               # true = reusable sub-flow, excluded from glob runs
 
 apis:                          # alias -> OpenAPI document; required to send anything
@@ -64,9 +65,15 @@ shared:                        # slots; the list form means writers: all
 
 dataset: ./fixtures/customers.csv         # one iteration per row
 
+stages:                        # names for regions of the graph; presentation only
+  setup: sign_in               #   a stage name -> the step it BEGINS at, covering steps
+  test: create_payment         #   from there to the next stage's step
+  teardown: refund
+
 params:                        # library flows only
   tenantId: { required: true }
   region:   { required: false, default: eu }
+  apiToken: { required: true, secret: true }   # value masked in the run record
 exports:                       # library flows only — FULL references
   token: steps.sign_in.token
 
@@ -75,12 +82,23 @@ steps: [ ... ]
 
 Only `version` and `steps` are required.
 
+`stages:` is presentation only — it changes no schedule, no status and no capture, and a boundary is
+not a barrier. A stage names the step it *begins* at and covers the run of `steps:` up to the next
+stage's, so editing steps inside a stage is never an edit to `stages:`. A boundary the run order
+contradicts is dropped and reported as a warning rather than the graph rearranging itself:
+`unknown-stage-step` (the named step is not a step of this flow), `stage-boundary-order` (it does not
+come after the one before it) and `stage-out-of-order` (a step listed above it does not run before
+it).
+
 ## Step
 
 ```yaml
 steps:
   - id: create_payment                       # required; ^[a-zA-Z_][a-zA-Z0-9_]*$
     name: Create a pending payment           # optional label, shown on the graph node
+    meta:                                    # optional, free-form; rides into reports key for key
+      testId: C1234                          #   the one key a reporter knows — JUnit's `test_id`
+      owner: payments-team                   #   anything else becomes a property of the same name
     operation: payments-api#createPayment    # required — or `uses:`, never both
     auth: user-token                         # an authProfiles name, or `none`
 
@@ -490,7 +508,7 @@ meta: { name: Sign in, library: true }
 
 params:
   email:    { required: true }
-  password: { required: false, default: "{{DEFAULT_PASSWORD}}" }
+  password: { required: false, default: "{{DEFAULT_PASSWORD}}", secret: true }
 
 exports:
   token: steps.authenticate.accessToken     # a full reference, not <step>.<output>
@@ -514,6 +532,14 @@ Caller:
 Its exports read like any step's outputs: `{{steps.sign_in.token}}`. A step declares `operation:`
 or `uses:`, never both. Recursion is refused.
 
+**`secret: true` on a param keeps its *value* out of the run record.** Every run writes down what it
+was started with, so a graph can show a past run its own inputs; a secret param is masked there and
+in every report and event, and the mask is not length-preserving. The value is still sent to the API
+in full — the flag governs what is reported, not what is requested. Mark any param that carries a
+credential. There is no equivalent on `vars:`: a run records the entry flow's `vars:` as each
+iteration resolved them and does not mask them, so a credential written directly into `vars:` is
+recorded verbatim. Pass it as a secret param, or read it from the environment.
+
 ## Running
 
 ```bash
@@ -523,14 +549,26 @@ bru flow run flows/checkout.flow.yml
 
 | Option | Does |
 |---|---|
+| `--global-env name` | Run against a workspace environment — `<workspace>/environments/<name>.yml` |
 | `--env-var name=value` | Override one variable (repeatable) |
 | `--param name=value` | Supply a library flow's param (repeatable) |
+| `--grep pattern` | Run only the selected flows the pattern matches |
+| `--grep-invert pattern` | Drop the selected flows it matches; excluding wins |
 | `--concurrency n` | Override `config.concurrency` |
 | `--max-run-duration ms` | Bound the run; elapsing cancels it and exits 4 |
 | `--bail` | Stop after the first failing flow |
+| `--retry-failed [suite]` | Re-run the flows a past suite did not pass |
+| `--retries n` | Re-run flows that did not pass, up to `n` more times |
 | `--no-capture` | Do not write `.bruno-runs/` artifacts |
 | `--capture-dir path` | Write captures elsewhere |
+| `--reporter-junit` / `--reporter-junit-flows` / `--reporter-json` / `--reporter-html` | Write a report; the path is optional |
 | `--verbose` / `--quiet` / `--silent` | Reporter volume |
+
+`--grep` is a case-insensitive regular expression, tried whole against each of the flow's terms —
+its path-relative id, `meta.name`, each `meta.tags` entry, `meta.testId`, and every step's `id`,
+`name` and `meta:` value. There is no separate tag filter: `--grep '^smoke$'` is the exact-match
+form. Exit codes are `0` pass, `1` a flow failed, `2` a flow did not run, `3` a bad command, `4`
+cancelled.
 
 ## Diagnostics
 
@@ -562,6 +600,11 @@ bru flow run flows/checkout.flow.yml
 | `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion — the step accepts any status, including the 500 it did not mean |
 | `undeclared-dependency` *(warning)* | Reads `steps.x.body…` rather than a declared output |
 
+Two codes come from a *run* rather than from validation, so no amount of checking the file predicts
+them: `capture-write-failed` *(warning)*, a step whose capture could not be written — the verdict
+still stands, but that step has nothing to open afterwards — and `run-failed`, something escaping the
+engine, which reports the run as failed with no steps at all.
+
 ## Step outcomes
 
 | Reason | Failure? |
@@ -581,4 +624,7 @@ Do not write a flow that depends on these:
 - **The document schema** — unknown and misspelled keys are silently ignored.
 - **Connector files (`connectors.yml`)** — declare `outputs:` on the step. For shared *code*,
   `functions:` is built and works.
-- **`--tags` filtering** — the properties dialog edits `meta.tags`, but nothing selects on them yet.
+- **`--env`, `--dataset`, `--dry-run`, `--strict`, `--show-sensitive`** — specified but not flags;
+  `bru flow run` rejects each as unknown. On the command line a collection environment's values come
+  from `--env-var` or the process environment.
+- **`bru flow schema`** — the command takes `run`, `validate` and `list` only.

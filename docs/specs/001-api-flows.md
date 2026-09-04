@@ -244,8 +244,8 @@ forcing users to edit them by hand.
 **A flow's identity is its path**, relative to the scope root with `.flow.yml` removed:
 `flows/shared/login.flow.yml` is `flows/shared/login`. There is no `id:` field, because a second
 source of identity can disagree with the first — a file renamed without its id, or an id duplicated
-across two files — and every consumer of a flow's identity (§14.1's `--tags` filtering and
-selection, §14.7's listing, [002](./002-api-flows-ui.md) §4.1's sidebar) is already naming it by
+across two files — and every consumer of a flow's identity (§14.1's `--grep` selection, §14.7's
+listing, [002](./002-api-flows-ui.md) §4.1's sidebar) is already naming it by
 path. `bru flow list` and the sidebar **display** the final segment, falling back to the fuller path
 only when two flows share a stem. Nothing persists an identity across runs, so renaming a file is
 just a rename.
@@ -910,8 +910,11 @@ discrepancy and is not. Two of those fields are not tiers, and one tier is not a
 two commands and the app cannot end up naming three different things. `bru` resolves it per flow's
 scope, because a selection can span two workspaces, and a name matching no file is a usage error
 reported before the first request rather than after it. A `secret: true` value is not in that file
-(002 §7.2 records why), so from `bru` it arrives empty and `--env-var`, a `.env` or the process
-environment is the answer for one.
+(002 §7.2 records why), so from `bru` it arrives empty and `--env-var` or the process environment is
+the answer for one. **A scope's `.env` is the app's tier and not `bru flow run`'s** — the app reads
+`<scope>/.env` when it assembles the tiers (002 §7.2) and the CLI does not, so a variable a flow
+resolves in the app can be missing under `bru` with nothing saying why. That is a divergence rather
+than a decision, and §19 carries it.
 
 **`--env-var` overrides a variable; it does not outrank a scope.** It merges into the **environment**
 tier and wins inside it, which is exactly what `bru run` does today
@@ -3110,11 +3113,25 @@ authority rather than inferring it from a rejection it caused.
 
 #### The entry API
 
-Two entry points execute and validate. Four more are **read-only** — `describeFlow`, which returns
-the resolved graph, and `listRuns` / `readRun` / `readCapture`, which read `.bruno-runs/` back. They exist for
-the app and are specified in [002](./002-api-flows-ui.md) §11.1 and §11.2 rather than here, because
-nothing in this document consumes them; they are named here so the boundary's readers know the
-package's surface is six functions and not two.
+Two entry points execute and validate. **Seven more take the same ports and only read.** Six of them
+exist for the app and are specified in [002](./002-api-flows-ui.md) §11.1 and §11.2 rather than here,
+because nothing in this document consumes them: `describeFlow`, which returns the resolved graph,
+`listRuns` / `readRun` / `readCapture`, which read a run out of `.bruno-runs/`, and `listSuites` /
+`readSuite`, which read the invocation around it (§14.5). The seventh is this document's own —
+`resolveFunctions`, which is what §8.6 promises when it says `bru flow validate` lists what resolved
+and where each came from. They are named here so the boundary's readers know the package's surface is
+not the two functions that run a flow.
+
+**The count is of what needs ports, because that is what the boundary is about.** Everything else
+the package exports is a pure function over text or paths and carries none of §13.2's risk: the
+reads that take a flow's source (`readFlowMeta`, `readFlowProperties`, `flowIdentity`, §14.1's
+`flowSearchTerms` / `flowMatches`, and §14.3b's `readFlowSummary`), the format's one writer (`writeFlowProperties`, which returns
+text rather than writing it, for §5.1's reason), and the path and policy helpers §14.5 and §14.8.5
+export so a host never spells a capture path itself (`resolveCaptureRoot`,
+`resolveSuiteDirectory`, `createRedactor`). Two port-taking exports write rather than read and are
+named where the files they write are specified — `ensureCaptureIgnored` and `writeSuiteManifest`
+(§14.5) — which is the whole of the surface, and the reason to list it here is that a boundary
+nobody can enumerate is one nothing can be re-checked against.
 
 ```ts
 declare function runFlow(options: RunOptions): Promise<RunResult>;
@@ -3332,6 +3349,47 @@ it lists, including the ones nobody has opened, and `describeFlow` is the wrong 
 it resolves sub-flows and OpenAPI documents, over the network where a binding names a URL.
 
 ```ts
+declare function flowSearchTerms(scopeRoot: string, file: string, source?: string): string[];
+declare function flowMatches(terms: string[], filters: { grep?: RegExp; grepInvert?: RegExp }): boolean;
+```
+
+**Selection is one extraction and two patterns.** §14.1's `--grep` and
+[002](./002-api-flows-ui.md) §4.1b's search box have to agree about what a flow *contains*, so what a
+flow is matchable on is decided once, here, and only the pattern belongs to the host. That split is
+why `flowMatches` takes compiled `RegExp`s rather than strings: neither host's spelling of a pattern
+is the other's, and case-insensitivity is a flag on the host's regex rather than a normalisation the
+engine performs. Splitting it the other way — a `flowSelects(text)` taking the user's string — would
+put the compiling in the engine and the field list back in two hosts, which is the half that actually
+drifts.
+
+Like `readFlowMeta` it is a parse rather than a resolve: no ports, no file reads, no `describeFlow`.
+That is the constraint, not an optimisation — this runs over every flow in a workspace on every
+listing, and [002](./002-api-flows-ui.md) §11.3 pays for it once per file change. Two consequences
+follow from it. A `uses:` sub-flow's own steps are **not** reached: that is another file, itself a
+flow with terms of its own, and a selection matches whole files. And text that does not parse yields
+the path-derived terms alone rather than throwing, so a flow the author is midway through editing
+stays findable by the name and path it already has — the same tolerance, for the same reason, that
+makes a broken flow ordinary in §14.3 and in [002](./002-api-flows-ui.md) §6.
+
+`source` is optional because a host may hold only a path: the file was unreadable at that instant, or
+was gone by the time the watcher looked. Terms come back either way, and deciding whether the file
+can be read is `validateFlow`'s job to answer in a report — not a filter's to settle by silently
+dropping it from the selection.
+
+```ts
+declare function readFlowSummary(
+  scopeRoot: string, file: string, source?: string
+): FlowIdentity & { library: boolean; steps: number };
+```
+
+§14.3b's row: §5.2's identity, plus the two facts a listing needs that identity does not carry —
+§12.5's `library` flag and how many steps the file declares. Here for §5.1's reason and not at the
+host: `bru flow list` parsing `.flow.yml` for itself would be the second parser flows being YAML-only
+bought away, and it would have to know §5.4's local tags to read a perfectly good flow. It is a read
+in `flowSearchTerms`' sense — text in, summary out, with the same tolerance and the same optional
+`source`, for the same reasons as the paragraphs above.
+
+```ts
 type ValidateOptions = {
   entry: string;
   scope: { workspaceRoot: string; collectionRoot?: string };
@@ -3372,8 +3430,10 @@ running graph.
 ```ts
 type FlowEvent =
   | { type: 'run:start';       runId: string; flow: string; iterationCount: number; captureDir?: string;
-                               description?: FlowDescription; origin?: RunOrigin }
+                               description?: FlowDescription; origin?: RunOrigin;
+                               params: Record<string, unknown> }
   | { type: 'iteration:start'; index: number; row?: Vars }
+  | { type: 'iteration:vars';  index: number; vars: Vars }
   | { type: 'step:start';      id: string; index: number; operation?: string }
   | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
   | { type: 'step:end';        id: string; index: number; result: StepResult }
@@ -3419,6 +3479,25 @@ that drew the *current* file instead would redraw the run it is watching the mom
 edited, and [002](./002-api-flows-ui.md) §4.3 makes editing one a two-second operation. It is the one
 payload in this list that is not small, and it is bounded the way the others are not by being *per
 run* rather than per step — the same size argument as bodies, read the other way round.
+
+**`run:start` also carries `params`** — §12.5's values the run was started with, already masked
+(§14.4) — the same values §14.5's `inputs.json` records. It is not optional, and that is deliberate:
+a run started with nothing says so with an empty object rather than by omitting the field,
+because [002](./002-api-flows-ui.md) §5.6's inputs node switches from declarations to a record the
+moment a run begins, and *absent* and *empty* would render identically while meaning opposite things.
+It is reported under `--no-capture` too — this is the run saying what it is doing, not a copy of an
+artifact — and a consumer that waited for the capture to be read back would show the run it is
+watching as having been started with nothing at all.
+
+**`iteration:vars` is its own event rather than a field on `iteration:start`**, because the values do
+not exist when that one is emitted: §7.3 resolves `vars:` *inside* the iteration, against a scope that
+already includes its dataset row, so folding them into the start event would mean either delaying it
+until after the resolution or emitting it twice. It is sent once per iteration, after
+`iteration:start` and before that iteration's first step. Reported rather than recomputed for the
+reason §14.5 records it rather than recomputing it: `{{$guid}}` yields a different value on a second
+evaluation, so a consumer that re-resolved would display an id no step ever sent. The entry flow's
+`vars:` only — a sub-flow's are its internals (§12.3), and a stream that carried them would let a
+caller read what §12.3 says it cannot.
 
 **Events are small and structured-clone-safe.** They carry ids, statuses and durations; bodies and
 uploaded files are not included, only the `capturePath` that holds them (§14.5). In the app the
@@ -3471,8 +3550,13 @@ implementation detail (goal 6).
 
 **What the design avoids entirely.** Flows require **no** change to `bruno-lang`'s grammar,
 `bruno-filestore`'s serializers, or `bruno-schema`'s Yup schemas — the layers upstream changes most
-often. Flows own their format and validation (§15). The CLI needs **zero** upstream edits:
-`yargs.commandDir('commands')` auto-registers `commands/flow.js`.
+often. Flows own their format and validation (§15). **The CLI needs no wiring edit at all:**
+`yargs.commandDir('commands')` auto-registers `commands/flow.js`, so `bru flow` reaches the command
+line without a line in any file upstream also writes. It is not free of upstream *files*: it takes a
+dependency line in its `package.json` and a section in its readme, because a command a user cannot
+find documented is one they do not have. That distinction is what the table below is built on — a
+wiring edit puts fork logic where upstream's own code runs, a manifest entry and a readme section do
+not — and it is a reason to count them, not to leave them out.
 
 **The complete upstream touchpoint manifest.** This table is the contract — it is the list to
 re-check after every upstream merge, and a change that adds to it needs justifying:
@@ -3480,25 +3564,51 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | Upstream file | Edit | Lines |
 |---|---|---|
 | `package.json` (root) | add `packages/bruno-max-flow` to `workspaces` | 1 |
-| `package.json` (root) | add `build:bruno-max-flow`, and call it from `scripts/setup.js` | 2 |
+| `package.json` (root) | add the `build:bruno-max-flow` script | 1 |
+| `scripts/setup.js` | call `build:bruno-max-flow` | 1 |
 | `.github/actions/common/setup-node-deps/action.yml` | build the engine in CI | 1 |
 | `eslint.config.js` | add the package to `mainLintFiles` | 1 |
+| `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
 | `packages/bruno-cli/package.json` | add engine dependency | 1 |
 | `packages/bruno-electron/package.json` | add engine dependency | 1 |
+| `packages/bruno-app/package.json` | add the graph-layout dependency ([002](./002-api-flows-ui.md) §5.2) | 1 |
 | `bruno-electron/src/index.js` | `require` + call `registerFlowIpc` | 2 |
 | `bruno-electron/src/index.js` | `await ipc/flow.shutdown()` in the `before-quit` chain (002 §4.2) | 1 |
 | `bruno-app/jsconfig.json` | add the `fork/*` path alias | 1 |
+| `bruno-app/jest.config.js` | add `src/fork/jest.setup.js` to `setupFilesAfterEnv` | 1 |
 | `bruno-app/…/RequestTabPanel/index.js` | import + delegate to the fork pane registry | 2 |
-| `bruno-app/…/RequestTabs/RequestTab/index.js` | import + spread fork types into `specialTabs`, and pass `tabName` on the fallback branch | 3 |
+| `bruno-app/…/RequestTabs/index.js` | 3 imports + the fork tab header, and the strip's grouping rule | 5 |
+| `bruno-app/…/RequestTabs/RequestTab/index.js` | 2 imports + spread fork types into `specialTabs`, delegate the fork label, and pass `tabName` on the fallback branch | 6 |
 | `bruno-app/…/RequestTabs/RequestTab/SpecialTab.js` | import + a `default:` case delegating the label | 4 |
 | `bruno-app/…/providers/ReduxStore/index.js` | import + spread fork reducers into the map | 2 |
+| `bruno-app/…/providers/App/useIpcEvents.js` | import + register the fork's IPC listeners and tear them down | 3 |
 | `bruno-app/…/components/Sidebar/index.js` | import + spread fork sidebar sections | 2 |
-| `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
+| `bruno-app/…/Devtools/Console/index.js` | import + read the request list through the fork selector (002 §8.5) | 2 |
+| `bruno-app/…/Devtools/Console/NetworkTab/index.js` | the same two lines, for the same selector | 2 |
+| `packages/bruno-cli/readme.md` | an `API Flows` section — the commands, the flag table and the exit codes (§14.1, §14.2) | 47 |
+| `readme.md` (root) | one clause pointing at the authoring guide | 1 |
 
 **The counts include the `import` line**, which the first version of this table did not — every
 delegation needs one, and a manifest that undercounts by a third is not the thing to re-check a merge
 against. `SpecialTab.js` is four because its switch had no `default:` to extend, so the delegation is
 a three-line case rather than an expression.
+
+**The two Devtools rows are the only ones that *replace* upstream code rather than sit beside it**,
+and they are the ones to look at hardest after a merge. Each drops a twenty-line `useMemo` that built
+the request list from collection timelines and reads `selectDevtoolsRequests` instead, because a
+flow's requests leave through the dispatch port (002 §7.3) and never reach a collection's timeline —
+so the panel could not see them at all. Two identical deletions in two files is what makes this worth
+a note: upstream owns that `useMemo`, and an upstream change to how a timeline entry is shaped lands
+as a silent behavioural divergence rather than as a conflict, since the code it would have conflicted
+with is gone. The fork selector is where the shape now lives, and it is one place rather than the two
+the panel had.
+
+**The two readme rows are documentation, and they are here because the manifest is a merge
+checklist rather than a code inventory.** Upstream edits both files, so both conflict on their own
+schedule whatever the lines say; leaving them off would mean a merge that silently dropped the only
+description of `bru flow` a CLI user ever sees. They are the cheapest rows on the table to resolve —
+prose, appended at the end of a section, never interleaved with upstream's own — and the reason to
+count them is that a contract with an exception in it is not one.
 
 **A tab type needs two registrations in the tab strip, not one.** `SpecialTab.js` supplies the label,
 but `RequestTab/index.js` decides whether a tab is *special at all* — a type missing from its
@@ -3571,24 +3681,32 @@ paid once, the saving recurs at every merge.
 
 ```
 bru flow run <path...>        Run one or more flows (file, glob, or directory)
-bru flow list [path]          List discovered flows with their ids, tags, step counts and kind
+bru flow validate <path...>   Static validation; sends no requests
+bru flow list [path...]       List the flows a run of the same paths would execute
+
+                              — not built —
 bru flow schema [--out <p>]   Emit the JSON Schema for the flow document (§5.4)
                               --version <n> selects a format version; --editor adds editor settings
-bru flow validate <path...>   Static validation; sends no requests
 ```
+
+`run`, `validate` and `list` are the three the command accepts; anything else is a usage error
+(§14.2). `schema` is marked for the reason §14.1's flags are: it is specified, it is argued for
+below (§5.4), and a reader who typed it and got a usage error should find that out here rather than
+from the shell.
 
 ### 14.1 `bru flow run`
 
 | Flag | Purpose |
 |---|---|
-| `--env <name>` | Bruno environment to run against |
+| `--env <name>` | **Not built.** Bruno environment to run against |
 | `--global-env <name>` | Workspace environment to run against — `<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses; the name is recorded as the run's origin (§14.8.1) |
 | `--env-var k=v` | Override a single variable (repeatable) |
 | `--param k=v` | Supply a declared `params` value (repeatable); for running a library flow directly |
-| `--dataset <path>` | Override the flow's dataset |
+| `--dataset <path>` | **Not built.** Override the flow's dataset — the engine already takes it as `overrides.dataset` (§13.2); only the flag is missing |
 | `--concurrency <n>` | Override `config.concurrency` |
 | `--max-run-duration <ms>` | Bound the whole run; elapsing takes the cancellation path and exits 4 (§11.3) |
-| `--tags` / `--exclude-tags` | Filter flows by `meta.tags`, matching `bru run`'s existing tag filtering |
+| `--grep <pattern>` | Run only the selected flows this case-insensitive regular expression matches |
+| `--grep-invert <pattern>` | Drop the selected flows it matches, over the same fields; excluding wins over including |
 | `--bail` | Stop after the first failing flow when several were selected |
 | `--retry-failed [suite]` | Re-run the flows a past suite did not pass, in a new suite of their own; with no value, the newest suite under the scope's capture root (§14.2) |
 | `--retries <n>` | After the selection completes, re-run flows that did not pass, up to `n` more times. Default 0 (§14.2) |
@@ -3598,15 +3716,79 @@ bru flow validate <path...>   Static validation; sends no requests
 | `--reporter-json [<path>]` | Sugar for `--reporter json[=<path>]` |
 | `--reporter-html [<path>]` | Sugar for `--reporter html[=<path>]` |
 | `--reporter-option k=v` | Repeatable; passed to every reporter's `ReporterContext.options` (§14.8) |
-| `--strict` | Promote §14.3's warnings to errors (exit 2) |
-| `--show-sensitive` | Disable masking **for stdout only**; never affects reporter files or captures (§14.4) |
+| `--strict` | **Not built.** Promote §14.3's warnings to errors (exit 2) |
+| `--show-sensitive` | **Not built.** Disable masking **for stdout only**; never affects reporter files or captures (§14.4) |
 | `--verbose` / `--quiet` / `--silent` | Console detail level (§14.7) |
 | `--no-color` / `--no-unicode` | Disable ANSI colour or box-drawing glyphs (§14.7) |
 | `--no-capture` / `--capture-dir <path>` | Disable capture, or relocate the capture root (§14.5) that each invocation's suite directory (§14.8.5) is written under |
-| `--dry-run` | Materialize and validate every step, send nothing |
+| `--dry-run` | **Not built.** Materialize and validate every step, send nothing |
+
+**Five rows are marked because this document runs ahead of the builder, and an unmarked row reads as
+a promise.** `--env`, `--dataset`, `--strict`, `--show-sensitive` and `--dry-run` are specified, argued
+for below and in §14.2, §14.4 and §17, and not implemented — `bru flow run` rejects each as an unknown
+flag today. They stay in the table rather than moving to §19 because each is a decision already taken
+that the rest of this section depends on: §7.1's spec-coupling argument rests on `--dry-run`, §14.4's
+masking rule is stated as the thing `--show-sensitive` may not override, and the environment tiers
+below are what `--env` would select across. Deleting the rows would delete the reasoning with them
+and leave a reader to re-derive it. The marker is the honest form: the design is settled, the flag is
+not there.
+
+**`--tags` / `--exclude-tags` was specified here and has been removed** — `--grep` and `--grep-invert`
+now cover it, and better. A tag was only ever one of the fields a person searches by, so a flag that
+matched `meta.tags` alone would sit beside a pattern that matches tags *and* the flow's id, name,
+`testId` and every step's `meta:` — two selection mechanisms, one a strict subset of the other,
+differing in whether they anchor. Keeping both would have meant two filters to compose with
+`--retry-failed`'s roster, two things for [002](./002-api-flows-ui.md) §4.1b's search box to be
+consistent with, and a standing question about which one a user should reach for. What is genuinely
+lost is exact matching: `--grep prod` selects a flow tagged `production`, where `--tags prod` would
+not have. That is a real difference, and the answer is an anchored pattern rather than a second flag —
+each term is tested whole, so `--grep '^prod$'` is the same query with the anchoring written down. It
+is not identical: an anchored pattern still matches a *step* named `prod`, because a pattern is tried
+against every term rather than against a field the caller picked (below). Narrowing to one field is
+the thing being given up, and it buys back less than a second selection mechanism costs. §17 records the
+alternative that was not taken.
 
 Directory and glob arguments **skip library flows** (§12.5). Naming a library flow explicitly runs
 it.
+
+**A positional path may name several flows separated by `,`**, beside the space-separated form. The
+spelling is for the places an argument list is one string — a CI `command:` line, an npm script, a
+`$FLOWS` variable — where quoting several paths as one word is easier than assembling an argv. The
+trade is one-way and has no escape: a `.flow.yml` whose filename genuinely contains a comma cannot be
+named this way. It is still reachable by naming its directory, and the ambiguity has to resolve in
+one direction or the other.
+
+**`--grep` narrows a selection; it never searches the disk.** It applies after the paths have chosen
+and after the library exclusion above, so it can only ever shrink a set that was already going to
+run — which is what makes it compose with every other way of naming flows, including
+`--retry-failed`'s roster. One rule over whatever the selection turned out to be beats two selection
+paths that can disagree about what a library is. It is deliberately not `bru run`'s `--tags`, an
+exact-match filter over one field; this is a pattern over everything a flow says about itself, and it
+is why the tag flags are no longer specified here.
+
+A pattern is tried against the flow's scope-relative `id`, its `meta.name`, each of its `meta.tags`
+and its `meta.testId` (§5.2), and per step the step's `id`, its `name` and **every scalar value at
+any depth in its open `meta:`** (§5.3). Values only: `meta:` is open, so its keys are vocabulary
+rather than content, and greping `testId` would otherwise select every step that declares one — which
+is every step in a flow written for a tracker. **The absolute file path is deliberately not a term.**
+It carries the machine's directory layout, so a pattern matching a segment of the user's home
+directory would select an entire workspace; the scope-relative `id` is the name a flow is known by
+everywhere else, and it is the one that travels.
+
+**The extraction is the engine's; only the pattern is the host's.**
+[002](./002-api-flows-ui.md) §4.1b puts a search box over the same flows, and a person who finds a
+flow in the sidebar and cannot select it here has found a bug with no explanation. So there is one
+implementation of what a flow is matchable on (§13.2's `flowSearchTerms`) and the hosts differ only
+in what they compile from: `bru` the user's own regular expression, the app an escaped literal. Both
+compile case-insensitively, because the engine normalises no case and a tag typed in whichever case
+its tracker uses is otherwise an empty run that looked right.
+
+`--grep-invert` is applied after `--grep`, and a flow matching both is excluded — the only reading
+under which adding it can never widen a selection.
+
+Neither reaches a library a directory run already skipped, and neither is recorded anywhere: §14.5's
+roster and §14.8's reports describe what actually *ran*, and a field naming the pattern would be a
+second account of a selection the flow list already is.
 
 **Selected flows run one at a time, in path order.** `config.concurrency` bounds steps *within* the
 running flow (§9.2) and never spans flows, so the number of in-flight requests is the same whether
@@ -3641,24 +3823,49 @@ workspace connector file — which is what keeps §8.5's shared declarations dis
 
 ### 14.2 Exit codes
 
-Shared by `run` and `validate`:
+Shared by `run`, `validate` and `list`, each reaching the subset it can produce — `validate` never
+returns `1`, since it sends nothing, and `list` returns only `0` or `3` (§14.3b):
 
 | Code | Meaning |
 |---|---|
 | `0` | All flows passed (or validated clean) |
 | `1` | A step, assertion, or schema validation failed |
-| `2` | Flow file invalid — parse error, cycle, unresolved operation, visibility violation; also warnings under `--strict` |
+| `2` | The flow did not run — parse error, cycle, unresolved operation, visibility violation, or a run refused before it started; also warnings under `--strict` |
 | `3` | Usage error — bad flags, no flows matched |
 | `4` | Run cancelled — Ctrl-C, `SIGTERM`, CI timeout (§11.3) |
 
 Separating `1` from `2` matters in CI: a broken flow file is an authoring problem, not a failing
 API. `4` matters for the same reason — an interrupted run is neither.
 
-`bru flow validate` only ever returns `0`, `2` or `3`, since it sends nothing.
+**`2` is *this flow never ran*, not *this file failed validation*, and the difference is one route
+only the `run` path can take.** §12.5's required param with no value is refused before `run:start` is
+emitted, so the flow produces no verdict at all — `runFlow` rejects rather than resolving, and there
+is no `RunResult` to take a status from. That refusal is reported as a `run-refused` diagnostic
+(§14.6) on the flow's `FlowRunRecord` (§14.8) and counted with the validation failures, because both
+mean the identical thing to whoever reads the exit code: this flow did not execute, and a diagnostic
+says why. Grading it `1` would put a flow that never sent a request in the same bucket as an API that
+answered wrongly, which is the distinction the code exists to draw.
+
+`bru flow validate` only ever returns `0`, `2` or `3`, since it sends nothing — and its `2` is the
+narrower one, validation alone, there being no run for anything to refuse.
 
 `--strict` promotes every warning listed in §14.3 to an error, so a pipeline can gate on undeclared
 dependencies or shadowed namespaces instead of only on hard failures. It applies to both `run` and
 `validate`.
+
+**A `--grep` or `--grep-invert` that is not a valid regular expression is a usage error (`3`), raised
+before any flow runs.** Both are compiled before a path is even resolved, joining the checks
+`--global-env`'s name and an explicit reporter path already get, and for their reason: an invocation
+that cannot be carried out should say so before it has spent ten minutes sending requests.
+
+**A selection narrowed to nothing is not an error.** The paths were valid, every flow was read, and
+none of them matched — which is an answer rather than a refusal, so it exits `0`, exactly as a
+`--retry-failed` over a suite that passed entirely does. The command prints both counts (`nothing to
+run — the paths selected 4 flows, the pattern kept none`), because an invocation that ran nothing and
+exited green is otherwise unexplainable: the pattern is on the command line, but how much it was
+excluding *from* is not. No suite directory is opened and no `suite.json` is written, there being no
+invocation to record. The table's `3` for *no flows matched* is the other case: paths that named
+nothing at all, which is a mistake in the invocation rather than a fact about the flows.
 
 **The code is the worst of the flows' *final* outcomes, not a maximum accumulated as the invocation
 proceeds.** The two only differ under `--retries` below, where a flow has more than one outcome to
@@ -3793,6 +4000,112 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   read. Warnings rather than errors, because an empty slot is a legal outcome (§11.2) — the check
   catches the typo case without outlawing a slot only some runs populate
 
+#### The codes a check emits
+
+The list above is the rules; this is their vocabulary. A code names the rule and never the
+occurrence (§14.6), which is the property that lets a `--strict` list, a future per-rule suppression
+or a host filtering its gutter address one check by name — so a rule with no name here is a rule
+none of them can address, and this table is where a reader shown a code looks it up. A check
+specified above but not yet built carries no code until it lands.
+
+Rows are errors; a warning says so. What is warned rather than refused is either a rule about how a
+flow is drawn or reported and never about what it does (§6.2), or a file that runs exactly as
+written and not at all as meant — the silences of §8.1, §8.7 and §10.3, where nothing else would
+ever tell the author.
+
+| Code | Meaning |
+|---|---|
+| `parse-error` | The document did not parse. Nothing below is checked: a file that did not parse has no model to check (§5.4) |
+| `invalid-step-id` | A step id is not an identifier (§5.3); the message gives the underscored form |
+| `unknown-dependency` | `depends:` names a step the flow does not have (§9.1) |
+| `cyclic-dependency` | Steps depend on one another in a cycle, or a `uses:` target is already on the call path (§9.1, §12.4) |
+| `body-and-body-file` | A step declares both `body:` and `bodyFile:` — two sources for one value, with no precedence (§7.4) |
+| `operation-and-uses` | A step declares both `operation:` and `uses:` (§12.4) |
+| `unresolved-alias` | An `apis:` document did not load, or a step names an alias nothing binds (§6.2) |
+| `unknown-operation` | The operation id is not in the bound document (§6.1) |
+| `unknown-auth-profile` | `auth:` names a profile no `authProfiles:` block declares (§6.4) |
+| `unknown-step-reference` | A `{{steps.*}}` reference names a step the flow does not have (§8.4) |
+| `non-ancestor-reference` | A `{{steps.*}}` reference names a step that is not a transitive ancestor of the one reading it (§8.4) |
+| `invalid-var-reference` | A `vars:` entry references a step or a slot, neither of which exists when `vars:` are evaluated (§7.3) |
+| `undeclared-slot` | A `{{shared.*}}` reference reads a slot no `shared:` block declares (§9.1) |
+| `slot-not-downstream` | A slot is read off the branch that writes it; `writers: any` is how alternatives are declared (§9.1) |
+| `unknown-pre-value` | An output takes `from: pre` naming a value the step does not compute (§8.7) |
+| `unresolved-function-library` | A `functions.use:` entry did not resolve — one unreadable file fails every script position in the flow (§8.6) |
+| `invalid-function-name` | A `functions:` name is not a JavaScript identifier, so the prelude it becomes does not parse (§8.6) |
+| `unknown-param` | `with:` passes a param the sub-flow does not declare (§12.2) |
+| `missing-param` | A call site omits a required param the sub-flow gives no default (§12.4) |
+| `undeclared-dependency` *(warning)* | A reference reads an ancestor's raw `.body` or `.headers` instead of a declared output (§8.3) |
+| `interpolation-in-output-path` *(warning)* | An output's string form is a path into the response, so `{{...}}` written there selects nothing (§8.1) |
+| `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them (§8.7) |
+| `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion accepts every status (§10.3) |
+| `function-shadows-script-argument` *(warning)* | A `functions:` name shadows one of the arguments every script is handed (§8.2) |
+| `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report (§14.8.4) |
+| `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` (§6.2) |
+| `unknown-stage-step` *(warning)* | A `stages:` boundary begins at a step the flow does not have (§5.5) |
+| `stage-boundary-order` *(warning)* | A boundary does not come after the one before it, so it covers no run of steps (§5.5) |
+| `stage-out-of-order` *(warning)* | A boundary cannot be drawn, because a step listed above it does not run before it (§5.5) |
+
+The last three are decided while resolving the graph rather than while reading the document, since
+§5.5's rule is whether a boundary can be *drawn* — one implementation, shared with the drawing, so
+a suppressed rule and a warning about it can never disagree.
+
+#### The codes a run reports
+
+`bru flow validate` sends nothing, so two codes are beyond its reach: they are facts about a run and
+not about a file. They reach a reader through `RunResult.diagnostics` (§13.2) — the console, and
+every reporter (§14.8) — rather than through a check, and they are written down beside the checks
+because a reader shown a code looks in one place or gives up.
+
+| Code | Meaning |
+|---|---|
+| `capture-write-failed` *(warning)* | A step's capture could not be written. A warning because the verdict stands — a flow that passed did pass, whatever the disk did (§14.5) — but the step then has no request or response to open, and nothing else says why |
+| `run-failed` | Something escaped the engine instead of failing a step: the run ends `failed` with no steps, and this diagnostic is the whole account of it (§13.2) |
+
+`run-refused` is the third code no check emits, and it stays in §14.6 with the vocabulary rather
+than here, because it belongs to neither table: it names a run that produced no diagnostics and no
+result at all.
+
+### 14.3b `bru flow list`
+
+Prints the flows a `run` with the same arguments **would execute**, and sends nothing. §14.7 draws
+the output.
+
+| Flag | Purpose |
+|---|---|
+| `--grep <pattern>` | List only the selected flows this case-insensitive regular expression matches, exactly as §14.1 narrows a run |
+| `--grep-invert <pattern>` | Drop the selected flows it matches, over the same fields; excluding wins over including |
+| `--silent` | Write nothing to stdout; the exit code is the whole result (§14.7) |
+| `--no-color` / `--no-unicode` | Disable ANSI colour or the non-ASCII placeholder (§14.7) |
+
+**Nothing about running appears here**, and that is the whole of the difference from §14.1's table:
+no environments, no `--param`, no reporters, no capture, no retries. A listing opens no suite
+directory (§14.8.5) and writes no report, because there is no invocation for either to describe.
+
+**The selection is §14.1's, not a second one.** The same positional paths — including the
+comma-separated form and the default of the working directory — through the same discovery, the same
+§12.5 library exclusion and the same `--grep` narrowing. A listing derived by a rule of its own would
+describe a run nobody could perform, which is the one thing this command must not do: it exists
+because `--grep` is a regular expression over five fields and a step's open `meta:`, and without it
+the only way to find out what a pattern selects is to run it.
+
+That makes §12.5 read as two behaviours and be one rule. A library flow **named on the command line
+is listed, and marked**, because naming it is what runs it; one reached through a directory is
+absent from the listing exactly as it is from the run. The marker is what §12.5 promises when it says
+the distinction is visible without opening files.
+
+Exit codes are §14.2's, of which a listing can reach two. `0` normally, and `3` for the usage errors
+a run raises up front — a path that does not exist, a positional that is not a `.flow.yml`, a
+directory holding no flows, a pattern that is not a regular expression. **A pattern that matched
+nothing is not one of them**: the paths were valid, every flow was read, and none matched, which is
+an answer rather than a refusal. It prints the same two counts a run does in that case (§14.1) and
+exits `0`.
+
+**Stdout is the whole output, and there is no `--json`.** §14.7 makes stdout human output and the
+reporters the machine half; a second machine format here would be a third thing to keep in step with
+`RunResult` and with §14.8.2, describing a suite that never ran. A caller wanting the selection as
+data has `--reporter-json` over the run itself, whose roster (§14.5) is the same list with outcomes
+attached.
+
 ### 14.4 Redaction
 
 This policy governs **everything the runner emits** — stdout, `--dry-run` output, every reporter
@@ -3856,26 +4169,29 @@ untruncated payload is written to an artifact directory:
 
 ```
 .bruno-runs/
-  2026-08-05T14-22-01Z-a3f9/          # startedAt, made path-safe, + the runId's first four hex
-    run.json
-    flow.json                         # the graph this run executed
-    flow.yml                          # the flow's own text at run time
-    summary.json
-    verify_ledger/
-      attempt-1.json
-    await_settlement/
-      attempt-1.json
-      ...
-      attempt-10.json
-    export_ledger/
-      attempt-1.json                  # names the sibling below
-      attempt-1.response.pdf
+  suite-2026-08-05T14-22-01Z-a3f9/    # every run lives in one of these — below
+    2026-08-05T14-22-01Z-a3f9/        # startedAt, made path-safe, + the runId's first four hex
+      run.json
+      flow.json                       # the graph this run executed
+      flow.yml                        # the flow's own text at run time
+      inputs.json                     # what the run was started with
+      summary.json
+      verify_ledger/
+        attempt-1.json
+      await_settlement/
+        attempt-1.json
+        ...
+        attempt-10.json
+      export_ledger/
+        attempt-1.json                # names the sibling below
+        attempt-1.response.pdf
 ```
 
 **Every run lives in a suite directory.** A run on its own opens a suite of one, minted from its own
-id so the pair carries the same four hex; a host running several flows opens one suite and writes
-every run into it, beside the reports that invocation was asked for (§14.8.5). One command's output
-is one folder either way, and every run sits at the same depth whoever produced it:
+id so the pair carries the same four hex — which is the case drawn above; a host running several
+flows opens one suite and writes every run into it, beside the reports that invocation was asked for
+(§14.8.5). One command's output is one folder either way, and every run sits at the same depth
+whoever produced it:
 
 ```
 .bruno-runs/
@@ -3952,7 +4268,7 @@ with an extension derived from the content type — `attempt-1.request.<ext>` an
     "preview": "{\"entries\":[...",
     "truncated": true,
     "originalSize": 2101440,
-    "full": ".bruno-runs/2026-08-05T14-22-01Z-a3f9/verify_ledger/attempt-1.json"
+    "full": ".bruno-runs/suite-2026-08-05T14-22-01Z-a3f9/2026-08-05T14-22-01Z-a3f9/verify_ledger/attempt-1.json"
   }
 }
 ```
@@ -4016,6 +4332,30 @@ same file; the cost is one describe per run, alongside the parse the run does an
 **A snapshot that cannot be built never fails the run.** Describing resolves OpenAPI documents and
 can fail on a network the run itself may not need. Such a run proceeds and records everything else,
 and is read back the way every run was read before snapshots existed.
+
+**`inputs.json` is what the run was *started with*: `{ params, vars }`.** The `params` are §12.5's,
+with every `secret: true` value already replaced by §14.4's mask before anything serializes them; the
+`vars` are §7.3's as each iteration resolved them, keyed by iteration index, because an iteration is
+the unit that has one set of them.
+
+It is a separate file from the snapshot beside it because the two answer opposite halves of one
+question. `flow.json` and `flow.yml` say what the flow *was*; a flow says `default:
+"{{testUserPassword}}"` and `vars: { orderId: "{{$guid}}" }`, and reading those back tells you where a
+value came from without ever telling you what it was. A run whose graph is drawn from the snapshot
+alone therefore shows a step sending a placeholder nobody can resolve after the fact — which is what
+[002](./002-api-flows-ui.md) §5.6's inputs node exists to stop.
+
+**The values are recorded rather than recomputed**, and that is the whole reason the file cannot be
+derived. Re-resolving would not reproduce them: `{{$guid}}` generates a fresh value on every
+evaluation, so a second pass records an id no request ever carried — an artifact that looks like
+evidence and is not.
+
+**It is written twice, at run start and again at finish**, and the second write replaces rather than
+appends. A run that is killed still says what it was asked to do, which is precisely the run somebody
+needs to read; the vars simply do not exist yet at that point, and that version has none. Absent
+under `--no-capture`, and absent for the same reason the snapshot is when the flow could not be
+described — one branch writes both, so a run directory never holds an input record for a graph it
+could not draw.
 
 An interrupted run — `run.json` present, `summary.json` absent — is a real state and not a corrupt
 one: the process was killed, or the machine lost power, which §11.3 covers for the cases the engine
@@ -4150,10 +4490,18 @@ ahead of every other check — an output between response-schema validation and 
 
 **Diagnostic codes** (§13.2's `Diagnostic.code`) are `kebab-case` and name the rule rather than the
 occurrence — `parse-error`, `unknown-operation`, `cyclic-dependency`, `non-ancestor-reference`,
-`undeclared-dependency`, `unresolved-alias`, `path-outside-scope`, `signing-mode-field-override`,
-`invalid-step-id`, `unknown-param`, `ambiguous-media-type`. The full set follows
-§14.3's check list; each check emits one code, so `--strict` and any future per-rule suppression
-have something stable to name.
+`undeclared-dependency`, `unresolved-alias`, `invalid-step-id`, `unknown-param`. **§14.3 tabulates
+the full set**, the codes a check emits and the two only a run reports; each check emits one code, so
+`--strict` and any future per-rule suppression have something stable to name.
+
+**`run-refused` is the one code neither a check nor a run produces**, and it is here rather than in
+§14.3 because it names the one way a flow can produce neither diagnostics nor a result: a run
+refused before `run:start` — §12.5's required param with no value — which `runFlow` reports by
+rejecting (§13.2).
+A host has to put that somewhere a caller can read, and a diagnostic on the flow's record is the
+shape every other "this flow did not run" already has (§14.2). It is in this vocabulary for the
+reason the rest of it is: a CI job matching on codes must not have to tell a rejected promise apart
+from a failed check by parsing prose.
 
 ### 14.7 Console output
 
@@ -4182,7 +4530,7 @@ Checkout happy path  flows/checkout.flow.yml
     res.body.data.balance eq 9900
       expected  9900
       actual    8900
-    capture  .bruno-runs/2026-08-07T10-14-02Z/verify_ledger/
+    capture  .bruno-runs/suite-2026-08-07T10-14-02Z-4b6d/2026-08-07T10-14-02Z-4b6d/verify_ledger/
 
   run failed · archive_receipt skipped · unresolved-dependency
     never produced: steps.verify_ledger.entryId
@@ -4296,18 +4644,30 @@ position information retained rather than into plain objects.
 
 #### `bru flow list`
 
+The flows a `run` with the same arguments would execute (§14.3b), one per line, then a count:
+
 ```
-id                    kind      steps  tags              file
-checkout-happy-path   flow          6  checkout, smoke   flows/checkout.flow.yml
-login                 library       1  —                 flows/shared/login.flow.yml
+id        kind     steps  tags             file
+checkout  flow         6  checkout, smoke  flows/checkout.flow.yml
+refunds   flow         4  refunds          flows/refunds.flow.yml
+login     library      1  —                flows/shared/login.flow.yml
+
+3 flows · 1 library
 ```
 
 Library flows (§12.5) are marked because they are excluded from directory runs, and a flow silently
-not running is the thing this column exists to prevent.
+not running is the thing this column exists to prevent. The one above is in the listing because it
+was named on the command line, which is also what would run it; through `flows/` alone it would be
+absent here exactly as it is from the run.
 
 The `id` column is §5.2's path-derived identity shown by its final segment; when two flows share a
-segment, both are printed with as much of their path as tells them apart. `file` carries the full
-path either way, so the listing is never the only place the answer is.
+segment, both are printed with as much of their path as tells them apart, and the ones that do not
+collide are left short. `file` carries the full path either way, so the listing is never the only
+place the answer is.
+
+A table for a person to read, and deliberately not one to parse — that is the same split as
+everywhere else in this section, and it is why there is no `--json` here. The em dash standing in for
+a flow with no tags falls back to `-` under `--no-unicode`, for the reason the status markers do.
 
 ### 14.8 Reporters
 
@@ -5088,6 +5448,7 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | An `optional: true` step excluded from the flow's final status | This is a testing tool: a step that failed unexpectedly must go red. A negative test is expressed by asserting the expected failure (§10.3), which passes when it holds and fails when it doesn't — a flag that suppresses status would instead hide the case where the negative test found the bug. |
 | Retrying on assertion failure by default | Replays the request that just proved the answer wrong, turning one leaked resource into `maxAttempts` of them on any non-idempotent step. Polling is the narrower case and can ask for it explicitly. |
 | Cleanup depending on the step that created the resource | Becomes eligible as soon as the creator finishes, so it races the steps still using that resource — intermittently, and only under concurrency. Cleanup depends on the last step to touch it (§9.1). |
+| `--tags` / `--exclude-tags` beside `--grep` (§14.1) | A tag filter is `--grep` narrowed to one of the fields it already reads, so the two are one mechanism and its strict subset. Shipping both means two filters to compose with `--retry-failed`'s roster, two behaviours for 002 §4.1b's search box to stay consistent with, and a user having to know which to reach for. Exact matching is what is given up, and an anchored pattern recovers most of it. |
 
 ---
 
@@ -5249,6 +5610,7 @@ wanted but not now.
 | **Deterministic seeding for generated data** (§7.3) | Generation currently cannot be replayed; §14.5 captures record what was sent, so failures stay diagnosable | A run seed in run metadata and seeded generators, plus `--seed` to replay one |
 | **Streaming uploads** (§7.5) | `ReadFile` returns a buffer, which suits fixture-sized payloads | Chunked transfer in the engine and a streaming port variant. Triggered by a real case, not anticipated |
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
+| **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which today `bru flow run` leaves empty entirely (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
 | **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
 | **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), a rule for a run still in flight, which is the question the old per-run bound never answered, and an answer for the newest suite, which §14.2's `--retry-failed` and [002](./002-api-flows-ui.md) §4.1's rerun action both select from — a policy that reaches it takes away the ability to re-run what just failed, silently and at exactly the moment somebody wanted it |

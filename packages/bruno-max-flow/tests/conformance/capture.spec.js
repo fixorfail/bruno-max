@@ -605,6 +605,32 @@ describe('the capture root, resolved without a run', () => {
     expect(RUN_DIRECTORY.test('2026-08-05T14-22-01Z-a3f9')).toBe(true);
   });
 
+  /**
+   * A host's id alphabet is the host's own — 002 §11.3 has the renderer mint the suite id — and the
+   * name this builds has to match `SUITE_DIRECTORY` whatever it is given.
+   *
+   * This is a regression, not a hypothetical. The renderer minted base36 ids, the name was built by
+   * slicing four characters off one, and `[0-9a-f]{4}` rejected roughly nineteen names in twenty —
+   * so `listRuns`, which descends only into directories matching that pattern, could not see the
+   * runs inside. Every flow of an app suite run wrote its capture correctly and was then missing
+   * from its own history for good.
+   */
+  it('names a listable directory whatever alphabet the host mints its id in', () => {
+    const ids = ['a3f9c1d2', 'hbik3l9x', 'ZZZZ', '9', '', 'sui te/../..', '../../escape'];
+
+    for (const id of ids) {
+      const name = path.basename(resolveSuiteDirectory('/w/.bruno-runs', '2026-08-05T14:22:01.123Z', id));
+      expect({ id, listable: SUITE_DIRECTORY.test(name) }).toEqual({ id, listable: true });
+    }
+  });
+
+  /** A uuid keeps the four characters it always had, so nothing already on disk is renamed. */
+  it('leaves a uuid-named suite where it was', () => {
+    const name = path.basename(resolveSuiteDirectory('/w/.bruno-runs', '2026-08-05T14:22:01.123Z', 'a3f9c1d2-0000-4000-8000-000000000000'));
+
+    expect(name).toBe('suite-2026-08-05T14-22-01Z-a3f9');
+  });
+
   it('writes the ignore entry where there is no .gitignore yet', async () => {
     const { written, ports } = memoryPorts();
     await ensureCaptureIgnored({ scope: { workspaceRoot: FIXTURES }, ports });

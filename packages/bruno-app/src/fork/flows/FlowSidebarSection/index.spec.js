@@ -1287,4 +1287,340 @@ describe('FlowSidebarSection', () => {
       expect(screen.getByTestId('flow-row-orders/large.json')).toBeInTheDocument();
     });
   });
+
+  /**
+   * 002 §4.1b. The box narrows the listing, and it narrows it on the engine's own `terms` — so it
+   * selects the flows `bru flow run --grep` would, including on text no row displays.
+   */
+  describe('searching the listing (§4.1b)', () => {
+    const workspaceRoot = '/home/dev/workspace-one';
+
+    const flowAt = (relativePath, terms, extra = {}) => ({
+      pathname: `${workspaceRoot}/flows/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot,
+      terms,
+      ...extra
+    });
+
+    const searchable = [
+      flowAt('checkout.flow.yml', ['flows/checkout', 'Checkout the basket', 'smoke']),
+      flowAt('refund.flow.yml', ['flows/refund', 'Refund an order', 'Read the ledger entry'])
+    ];
+
+    const search = (text) => fireEvent.change(screen.getByTestId('flows-search'), { target: { value: text } });
+
+    beforeEach(() => {
+      window.ipcRenderer = { invoke: jest.fn(async () => []) };
+    });
+
+    it('keeps the flows the text matches, and drops the rest', () => {
+      renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+      search('refund');
+
+      expect(screen.getByTestId('flow-row-refund.flow.yml')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-row-checkout.flow.yml')).not.toBeInTheDocument();
+    });
+
+    /**
+     * The row shows one sentence about a flow and the terms carry everything it can be selected by,
+     * which is the whole point: a tag is how a suite is named on the command line, and a box that
+     * could not find one would disagree with `--grep` about what the workspace holds.
+     */
+    it('matches a tag the row never shows', () => {
+      renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+      search('smoke');
+
+      const row = screen.getByTestId('flow-row-checkout.flow.yml');
+      expect(row).toBeInTheDocument();
+      expect(row).not.toHaveTextContent('smoke');
+      expect(screen.queryByTestId('flow-row-refund.flow.yml')).not.toBeInTheDocument();
+    });
+
+    it('matches a step\'s name', () => {
+      renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+      search('ledger');
+
+      expect(screen.getByTestId('flow-row-refund.flow.yml')).toBeInTheDocument();
+      expect(screen.queryByTestId('flow-row-checkout.flow.yml')).not.toBeInTheDocument();
+    });
+
+    /** Tags and case ids are typed in whatever case, and an exact-case miss is an unexplained miss. */
+    it('ignores case, the way --grep does', () => {
+      renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+      search('CHECKOUT THE BASKET');
+
+      expect(screen.getByTestId('flow-row-checkout.flow.yml')).toBeInTheDocument();
+    });
+
+    /**
+     * The box is a search field, not a regex field. An unescaped pattern would either fail to
+     * compile on the parenthesis or quietly match text the author did not type.
+     */
+    describe('a pattern typed literally', () => {
+      const metacharacters = [
+        flowAt('payments.flow.yml', ['flows/payments', 'payments (v2)']),
+        flowAt('any.flow.yml', ['flows/any', 'axb'])
+      ];
+
+      it('finds the flow whose name holds the metacharacters', () => {
+        renderSection({ flows: metacharacters, workspaces, activeWorkspaceUid: 'one' });
+
+        search('payments (v2)');
+
+        expect(screen.getByTestId('flow-row-payments.flow.yml')).toBeInTheDocument();
+      });
+
+      it('does not let a dot stand for any character', () => {
+        renderSection({ flows: metacharacters, workspaces, activeWorkspaceUid: 'one' });
+
+        search('a.b');
+
+        expect(screen.queryByTestId('flow-row-any.flow.yml')).not.toBeInTheDocument();
+      });
+    });
+
+    /**
+     * §4.1a's folders are derived from the flows that survived, so a folder emptied by the search
+     * goes with them — an empty folder row is an invitation to open something that holds nothing.
+     */
+    describe('the folders of a filtered listing', () => {
+      const nested = [
+        flowAt('company/create.flow.yml', ['flows/company/create', 'Create a company']),
+        flowAt('checkout.flow.yml', ['flows/checkout', 'Checkout the basket'])
+      ];
+
+      it('drops one whose flows all went', () => {
+        renderSection({ flows: nested, workspaces, activeWorkspaceUid: 'one' });
+        expect(screen.getByTestId('flow-folder-company')).toBeInTheDocument();
+
+        search('checkout');
+
+        expect(screen.queryByTestId('flow-folder-company')).not.toBeInTheDocument();
+      });
+
+      /** A match hidden behind a fold answers a search with a directory to open. */
+      it('draws what is left open', () => {
+        renderSection({ flows: nested, workspaces, activeWorkspaceUid: 'one' });
+        expect(screen.queryByTestId('flow-row-company/create.flow.yml')).not.toBeInTheDocument();
+
+        search('company');
+
+        expect(screen.getByTestId('flow-row-company/create.flow.yml')).toBeInTheDocument();
+      });
+
+      /** The fold is narrowed, not forgotten: clearing the box restores what was open before. */
+      it('folds it again once the box is cleared', () => {
+        renderSection({ flows: nested, workspaces, activeWorkspaceUid: 'one' });
+
+        search('company');
+        search('');
+
+        expect(screen.getByTestId('flow-folder-company')).toBeInTheDocument();
+        expect(screen.queryByTestId('flow-row-company/create.flow.yml')).not.toBeInTheDocument();
+      });
+    });
+
+    /**
+     * §4.5's scripts and §4.6's fixtures have no `meta:` for the watcher to read and arrive with no
+     * terms, so they are matched on the name their row shows and their `use:` or `!file` names them by.
+     */
+    describe('scripts and fixtures', () => {
+      const helpers = [
+        flowAt('checkout.flow.yml', ['flows/checkout', 'Checkout the basket']),
+        {
+          pathname: `${workspaceRoot}/flows/scripts/ledger.js`,
+          filename: 'ledger.js',
+          workspaceRoot,
+          script: true
+        },
+        {
+          pathname: `${workspaceRoot}/flows/fixtures/catalog.json`,
+          filename: 'catalog.json',
+          workspaceRoot,
+          fixture: true
+        }
+      ];
+
+      it('keeps the one whose filename matches', () => {
+        renderSection({ flows: helpers, workspaces, activeWorkspaceUid: 'one' });
+
+        search('catalog');
+
+        expect(screen.getByTestId('flow-row-catalog.json')).toBeInTheDocument();
+        expect(screen.queryByTestId('flow-row-ledger.js')).not.toBeInTheDocument();
+        expect(screen.queryByTestId('flow-row-checkout.flow.yml')).not.toBeInTheDocument();
+      });
+
+      /** A label over nothing is a heading for a list the search emptied. */
+      it('takes the Scripts label with the last script', () => {
+        renderSection({ flows: helpers, workspaces, activeWorkspaceUid: 'one' });
+        expect(screen.getByTestId('flow-subgroup-scripts')).toBeInTheDocument();
+
+        search('catalog');
+
+        expect(screen.queryByTestId('flow-subgroup-scripts')).not.toBeInTheDocument();
+      });
+    });
+
+    describe('a search that matched nothing', () => {
+      it('says so, rather than reading as a workspace with no flows', () => {
+        renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+        search('nothing here');
+
+        expect(screen.getByText('No flows match the search')).toBeInTheDocument();
+      });
+
+      /** A box that took itself away with the last row it matched would leave a filter in force. */
+      it('keeps the box, so the search can be cleared', () => {
+        renderSection({ flows: searchable, workspaces, activeWorkspaceUid: 'one' });
+
+        search('nothing here');
+        expect(screen.getByTestId('flows-search')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByTestId('flows-search-clear'));
+
+        expect(screen.getByTestId('flow-row-checkout.flow.yml')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-row-refund.flow.yml')).toBeInTheDocument();
+      });
+    });
+  });
+
+  /**
+   * 002 §4.1b's play button: what the search is showing, run as one suite. Its progress and its
+   * Cancel are §10's, already in the header — this adds a way to start a suite, and not a second way
+   * to watch or stop one.
+   */
+  describe('running what the search is showing (§4.1b)', () => {
+    const flowAt = (root, relativePath, terms, extra = {}) => ({
+      pathname: `${root}/flows/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot: root === '/home/dev/payments' ? root : '/home/dev/workspace-one',
+      collectionRoot: root === '/home/dev/payments' ? root : undefined,
+      terms,
+      ...extra
+    });
+
+    const spanning = [
+      flowAt('/home/dev/workspace-one', 'checkout.flow.yml', ['flows/checkout', 'Checkout', 'smoke']),
+      flowAt('/home/dev/workspace-one', 'login.flow.yml', ['flows/login', 'Log in'], { library: true }),
+      flowAt('/home/dev/payments', 'refund.flow.yml', ['flows/refund', 'Refund', 'smoke'])
+    ];
+
+    let invoke;
+    beforeEach(() => {
+      invoke = jest.fn(async () => []);
+      window.ipcRenderer = { invoke };
+    });
+
+    const runRequest = async () => {
+      fireEvent.click(screen.getByTestId('flows-header-run'));
+      await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-run-suite', expect.anything()));
+      return invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-run-suite')[1];
+    };
+
+    /**
+     * A selection spans a workspace and its collections, so each entry says which scope it belongs
+     * to; the suite's own scope is the first listed flow's, which is what owns the directory.
+     */
+    it('sends every listed flow with its own scope, and the first one\'s as the suite\'s', async () => {
+      renderSection({
+        flows: spanning,
+        workspaces,
+        activeWorkspaceUid: 'one',
+        collections: [{ pathname: '/home/dev/payments' }],
+        // §12.5: a flow runs with what its own panel is holding, the way a retry of it would.
+        configurations: {
+          '/home/dev/workspace-one/flows/checkout.flow.yml': { params: { email: 'qa@example.com', token: '  ' } }
+        }
+      });
+
+      const request = await runRequest();
+
+      expect(request.scope).toEqual({ workspaceRoot: '/home/dev/workspace-one', collectionRoot: undefined });
+      expect(request.flows).toEqual([
+        {
+          entry: '/home/dev/workspace-one/flows/checkout.flow.yml',
+          scope: { workspaceRoot: '/home/dev/workspace-one', collectionRoot: undefined },
+          params: { email: 'qa@example.com' }
+        },
+        {
+          entry: '/home/dev/payments/flows/refund.flow.yml',
+          scope: { workspaceRoot: '/home/dev/payments', collectionRoot: '/home/dev/payments' },
+          params: {}
+        }
+      ]);
+      expect(request.suiteId).toEqual(expect.any(String));
+    });
+
+    /** 001 §12.5 keeps a library out of a glob run: it runs only once its params have been typed. */
+    it('leaves the libraries out', async () => {
+      renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+
+      const request = await runRequest();
+
+      expect(request.flows.map((flow) => flow.entry)).not.toContain('/home/dev/workspace-one/flows/login.flow.yml');
+    });
+
+    it('runs what the search left, and says how many that is', async () => {
+      renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+      expect(screen.getByTestId('flows-header-run')).toHaveAttribute('title', 'Run 2 flows');
+
+      fireEvent.change(screen.getByTestId('flows-search'), { target: { value: 'checkout' } });
+
+      expect(screen.getByTestId('flows-header-run')).toHaveAttribute('title', 'Run 1 flow');
+      const request = await runRequest();
+      expect(request.flows.map((flow) => flow.entry)).toEqual([
+        '/home/dev/workspace-one/flows/checkout.flow.yml'
+      ]);
+    });
+
+    /**
+     * "Nothing to run" is an answer, and the two ways to reach it are undone by different gestures —
+     * so the control says which one this is rather than being merely dim.
+     */
+    it('is disabled, and blames the search, when nothing matched', () => {
+      renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.change(screen.getByTestId('flows-search'), { target: { value: 'nothing here' } });
+
+      const run = screen.getByTestId('flows-header-run');
+      expect(run).toBeDisabled();
+      expect(run).toHaveAttribute('title', 'No flows match the search');
+    });
+
+    it('is disabled when a scope holds nothing but libraries', () => {
+      renderSection({
+        flows: [flowAt('/home/dev/workspace-one', 'login.flow.yml', ['flows/login'], { library: true })],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      const run = screen.getByTestId('flows-header-run');
+      expect(run).toBeDisabled();
+      expect(run).toHaveAttribute('title', 'No flows to run');
+    });
+
+    /** The header already holds that suite's progress and the Cancel that stops it. */
+    it('gives way to §10\'s progress while a suite runs', () => {
+      renderSection({
+        flows: spanning,
+        workspaces,
+        activeWorkspaceUid: 'one',
+        suiteRun: {
+          suiteId: 'suite-live',
+          state: 'running',
+          flows: [{ entry: '/home/dev/workspace-one/flows/checkout.flow.yml', state: 'running' }]
+        }
+      });
+
+      expect(screen.queryByTestId('flows-header-run')).not.toBeInTheDocument();
+      expect(screen.getByTestId('flow-suite-progress')).toBeInTheDocument();
+    });
+  });
 });

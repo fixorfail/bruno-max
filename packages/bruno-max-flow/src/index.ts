@@ -2,7 +2,8 @@
  * @bruno-max/flow — the API Flows engine.
  *
  * Specified by docs/specs/001-api-flows.md (semantics, CLI) and 002-api-flows-ui.md (the app's
- * read-only entries). The package's surface is five functions; only the types exist so far.
+ * read-only entries), which 001 §13.2 enumerates — two entries that execute, and the read-only ones
+ * beside them, some taking ports and some only a flow's text.
  *
  * This package must not import bruno-app or bruno-electron (§13.1).
  */
@@ -32,7 +33,14 @@ export { readFlowProperties, writeFlowProperties } from './meta';
 // §5.2's identity, exported because a roster, a report and a rerun are matched to each other by it:
 // three hosts deriving it separately would be three chances for those three to disagree.
 export { flowIdentity } from './meta';
+// §14.7's listing row: that identity plus §12.5's library flag and the step count. Exported for
+// §5.1's reason — `bru flow list` must not be the second thing that parses `.flow.yml`.
+export { readFlowSummary } from './meta';
 export type { FlowProperties } from './meta';
+// Selecting flows by pattern — `bru flow run --grep` and the app's sidebar search box. The terms a
+// flow is matchable on are extracted here so the two hosts cannot disagree about what a flow
+// contains; only the pattern is theirs to compile.
+export { flowSearchTerms, flowMatches } from './search';
 export { describeFlow } from './describe';
 export { listRuns, readRun, readCapture } from './history';
 // §14.5's `suite.json` — the invocation-level index the run directories cannot supply on their own,

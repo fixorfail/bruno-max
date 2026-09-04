@@ -2,7 +2,7 @@
 
 **Status:** Draft — companion to [001-api-flows.md](./001-api-flows.md)
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-14
+**Last revised:** 2026-09-03
 
 Scenarios the spec's behavior was derived from, written to be implemented directly as tests. Start
 at §2 for the harness, §3–§6 for the four end-to-end flows, §7 for the regression set, and §9 for
@@ -66,8 +66,8 @@ tests/conformance/
   f3-batch-settlement.spec.js
   f4-partner-acceptance.spec.js
   regressions.spec.js
-  capture.spec.js             # R4g2 and R4n — the artifact directory, asserted through the write ports
-  history.spec.js             # R4o — the same directory read back through 002 §11.2's entries
+  capture.spec.js             # R4g2 and R4n — the artifact directory and §14.5's roster, through the write ports
+  history.spec.js             # R4o — the runs and the suites read back through 002 §11.2's entries
   parse.spec.js               # R4p — §5.4's tags, merge keys and node positions
   describe.spec.js            # R4q — the graph 002 §11.1 hands the app
 ```
@@ -98,7 +98,7 @@ The exceptions are listed rather than allowed to accumulate silently:
 
 | Requirement | Where it is | Why not here |
 |---|---|---|
-| R4i | `bruno-cli/tests/fork/flow/selection.spec.js` | How `bru flow run` orders a multi-flow selection is the CLI's, not the engine's |
+| R4i | `bruno-cli/tests/fork/flow/` — `selection.spec.js`, and `retry.spec.js` / `retry.integration.spec.js` for the retry half | Which flows an invocation runs, in what order, and which of them it runs again is the CLI's: the engine sees one flow at a time and never the invocation around it (§13.2) |
 | R4l | `bruno-cli/tests/fork/flow/output.spec.js` | §14.7's console rules are the CLI's own |
 | R4k | Asserted throughout, by every scenario that names an outcome | §14.6's vocabulary is a property of every reason string in the suite; a dedicated scenario would restate what forty assertions already pin |
 | R4m | **No test — §5.4's `flow.schema.json` is not implemented** | The requirement is written and the artifact it validates against does not exist yet |
@@ -1020,9 +1020,9 @@ Killing the run for the third row means terminating without the cancellation pat
 The never-called row is the important one — a check that validates after dispatch has already made
 the call it was meant to prevent.
 
-### R4i — Multi-flow run ordering
+### R4i — Multi-flow run ordering, and re-running what failed
 
-**Pins:** §14.1.
+**Pins:** §14.1 and §14.2, over §14.5's roster.
 
 Four flows in a directory, two of them appending to the same stubbed collection.
 
@@ -1032,6 +1032,29 @@ Four flows in a directory, two of them appending to the same stubbed collection.
 | execution order matches **path sort**, not directory-read order | reproducibility across machines and filesystems |
 | `config.concurrency: 5` in two flows never yields more than 5 in flight overall | the budget bounds steps within a flow, never spans them |
 | `--bail` stops after the first failing flow; without it all four run | §14.2's worst-outcome exit code needs the rest to have run |
+
+**A retry is a selection too**, and it is the one selection the CLI does not compute from the command
+line: `--retry-failed` reads §14.5's roster of the newest suite and re-runs what it says did not
+pass. That makes the roster's format a CI contract rather than an artifact — a rerun is only as
+honest as the record it selects from, which is why the writer is asserted in `capture.spec.js` and
+the reader in R4o.
+
+| Assertion | Why |
+|---|---|
+| the invocation writes its roster, naming a flow that never opened a run directory and giving it no `runDir` | an `invalid` flow fails validation before anything is created for it, so it is in the roster or it is nowhere |
+| `--retry-failed` re-runs the flows the newest suite recorded as `failed`, `cancelled` or `invalid`, in path order, into a suite of its own that names the one it re-ran in `retryOf` | a selection that dropped `invalid` would shrink on every retry, and a retry that edited the suite it re-ran would destroy the record of what CI actually saw |
+| a suite named as a bare directory name inside the capture root, or as a path, and a capture root moved by `--capture-dir` | the three ways a CI job addresses a suite it kept |
+| a flow the roster names that is no longer on disk | skipped, and still counted as retried — a deleted flow is not a failure to report |
+| the newest suite passed entirely | *nothing to retry*, exit 0, and no second suite: an invocation that ran nothing has nothing to record |
+| a scope with no suite in it, or a named directory that is not a suite | exit 3 — a usage error, raised from the capture root before a request is sent |
+| `--retries 1` over a flow that fails then passes | the invocation is green, the roster records `attempt: 2` and `flaky: true`, and the report counts one flaky flow |
+| the same flow with no `--retries` | one attempt, exit 1, and **no** `attempt` or `flaky` field anywhere |
+| `--retries 2` over a flow that never passes | exits on the final outcome, `attempt: 3`, not flaky |
+
+The flaky rows are the pair that has to be asserted together. A retry loop that marked every flow it
+ran `flaky` would be indistinguishable from a correct one on any suite that used it, and one that
+marked none would turn a green invocation into a claim that nothing had gone wrong — which is the
+whole reason §14.8 records the attempt count beside the outcome.
 
 ### R4j — The engine boundary
 
@@ -1191,7 +1214,8 @@ a suite that tested only the denylist would read as if §14.4 had one mechanism.
 
 ### R4o — Reading a run back
 
-**Pins:** §14.5's layout, through 002 §11.2's `listRuns` and `readCapture`. These live here rather
+**Pins:** §14.5's layout — the run directory and the suite around it — through 002 §11.2's
+`listRuns`, `readRun`, `readCapture`, `listSuites` and `readSuite`. These live here rather
 than in 002-C because the thing under test is the **round trip**: the reader is correct exactly when
 it recovers what the writer wrote, and 002-C §8 hands engine semantics to this file. 002-C's U4 rows
 assert the *app* renders what comes back.
@@ -1202,6 +1226,8 @@ assert the *app* renders what comes back.
 | a directory with `run.json` and no `summary.json`, for a run the engine is not executing | `state: 'interrupted'`, and **no** `status` — an interrupted run has no outcome and a reader must not synthesize one |
 | the same shape while `runFlow` is executing it | `state: 'running'`; the two are distinguishable only because the engine knows which runs it owns |
 | several runs | newest first, by `startedAt` rather than by directory name |
+| a run inside a suite directory, and one written at the top level | both listed; the first names its suite by basename and the second names none, because 002 §10 is one history over runs of both shapes |
+| a run whose `run.json` recorded an `origin` | reported by `listRuns` and by `readRun` alike, and absent from both for one that recorded none — who ran it is a fact the manifest carries, never one a reader infers |
 | `flow:` supplied | runs of other flows in the same scope are excluded, and the filter works on an entry that has no `summary.json` |
 | a capture root that does not exist | an empty list, not a throw — no run has happened yet |
 | a directory not matching the run-directory naming, or one missing `run.json` | skipped; a run that cannot be attributed to a flow is not listed as one |
@@ -1217,6 +1243,31 @@ assert the *app* renders what comes back.
 The binary-body row is the one that keeps the split honest: a reader that resolved the sibling and returned
 its bytes would put a 2 MB payload in every step-pane open, which is what "storage is split" exists
 to prevent.
+
+**The suite is the same round trip one level up**, and it has two writers rather than one: a host
+writes §14.5's `suite.json` when it owns an invocation, and every other suite has its roster rebuilt
+from the run directories inside it. Both are read through one shape (002 §11.2), so both are
+asserted against the same reader here — the rebuild in `history.spec.js` beside the cases above, the
+written manifest in `capture.spec.js` beside the writer that produces it.
+
+| Case | Expected |
+|---|---|
+| a single run of one flow | the suite of one it minted, its roster naming the flow by §5.2's id and the `meta.name` of the run's own `flow.yml` snapshot, and marked `partial` |
+| the same, with the snapshot gone | the flow named by its file stem — a rebuilt line names a flow exactly as a written roster would, which is what lets a rerun match the two |
+| a suite holding a `suite.json` | the manifest wins and `partial` is absent: it names the flow that never ran, with no `runDir`, which is the whole reason the file exists |
+| a roster a host wrote, read back | returned whole — `retryOf`, `exitCode`, `origin`, and R4i's `attempt` and `flaky` included; the writer and this reader are two halves of one format |
+| several suites | newest first by `startedAt`, not by directory name — the name's timestamp is truncated, so two suites started in the same second would sort by their id suffix |
+| a suite holding two runs of one flow, and no manifest | one roster line, the last attempt's outcome and directory (§14.8) |
+| a run with no `summary.json` inside a suite | left out of the rebuilt roster and still dating the suite: nobody recorded an outcome, and calling it `cancelled` would put a flow in a roster a rerun then acts on |
+| a directory holding only a report, or an unreadable manifest | not listed — nothing in it is attributable to a flow, and nothing in it dates the suite |
+| a scope where nothing has run | an empty list, exactly as `listRuns` answers |
+| `readSuite` over a suite | precisely what the listing says about that directory |
+| `readSuite` over a directory that is not one | throws, where `listSuites` skips: a caller naming a directory has named something, and an empty roster would report a mistyped path as an invocation that ran nothing |
+
+`partial` is the row every other row depends on. A rebuilt roster cannot name a flow that never
+opened a run directory, so the difference between it and a written one is invisible in the result
+unless the result says so — and 002 §4.1's rerun is offered over both, which is only defensible
+because the reader is explicit about which it is holding.
 
 ### R4p — What the parse guarantees
 

@@ -2,7 +2,7 @@
 
 **Status:** Draft — companion to [002-api-flows-ui.md](./002-api-flows-ui.md)
 **Owner:** Jake Campbell
-**Last revised:** 2026-08-14
+**Last revised:** 2026-09-03
 
 Scenarios the UI spec's behavior was derived from, written to be implemented directly as Playwright
 specs. Start at §2 for the harness, §3–§6 for the four scenario families, §7 for the host boundary,
@@ -1079,6 +1079,38 @@ form would silently drop every step the author is duplicating the flow to keep. 
 refusal is the case with no other signal — the host copies the file on disk, so the duplicate would
 be missing the author's last edits, in a file they would then go on to edit as though it had them.
 
+### U4.21 What did not pass is re-run from the section header
+
+Run a folder of flows so that one passes and one fails. The section header's three-dot menu then
+holds **`Rerun failed flows (1)`**, and choosing it starts one suite containing that flow alone. A
+suite whose roster also holds a `cancelled` and an `invalid` flow counts all three: *failed* here is
+everything that did not pass, so a mistyped selection cannot shrink on every retry.
+
+The flows are sent **in the roster's order**, each with the params its own run panel holds (001
+§12.5), and the invocation names the suite it re-ran. The suite it selects from is the **newest
+across the scopes the section is showing** — a collection's runs are recorded under the collection's
+own capture root, so the last thing the reader ran is as likely to be one of those as one of the
+workspace's — and it is run against *that* suite's scope rather than the active workspace's.
+
+The item is **disabled, and does nothing when clicked**, when the newest suite passed entirely; it is
+**absent** when nothing has ever run in these scopes, with the folder items still in the menu beside
+where it would have been. A roster marked `partial` (§11.2) is offered on exactly the same terms as
+a written one.
+
+While the suite runs, the header shows **`done / total`** and the menu offers **`Cancel`** in place
+of another rerun; cancelling stops the suite by its id and the section says so without waiting for a
+reload. Once it has finished the progress is gone. Each flow of the suite opens and updates in its
+own tab exactly as a single run does — the same graph, the same node states — because the suite adds
+a stream beside the per-flow one rather than replacing it.
+
+*Pins 002 §4.1, §10, §11.3.* The counting half is asserted today in `bruno-app`'s own Jest spec for
+the section, over a stubbed `renderer:flow-list-suites`; what a Jest spec cannot reach is the half
+this scenario exists for — that the suite really runs, that each flow lands in its own tab unchanged,
+and that Cancel stops it. Two wrong implementations look right until they matter: one that offers the
+action only for a roster the engine did not have to rebuild hides the retry in exactly the history
+the app writes for itself (§11.2), and one that hides the item rather than disabling it answers
+"nothing to retry" with no answer at all.
+
 ---
 
 ## 7. U5 — The host boundary
@@ -1128,20 +1160,26 @@ that run's events, in emission order.
 *Pins 002 §8.1, §11.3.* §8.1 permits batching and guarantees order within a batch; a single global
 buffer keyed by nothing would satisfy the first and quietly break the second.
 
-### U5.6 The watcher reports, and reads only the name
+### U5.6 The watcher reports, and reads only what a row is drawn from
 
 `renderer:flow-watch-scope` resolves with the flows already on disk. Adding, editing and deleting a
 `.flow.yml` under a workspace and under a collection then each emit one `main:flow-tree-updated`, and
 `renderer:flow-unwatch-scope` stops them. An entry carries the flow's `meta.name` and reports the new
-one when it is edited. A file that is not valid YAML still appears, with no name.
+one when it is edited; it carries `meta.library` the same way, and **drops** the flag when the file
+stops declaring one. A file that is not valid YAML still appears, with no name.
+
+An entry also carries the `terms` §4.1b matches on — the flow's id, name, tags and each step's name
+and `meta:` scalars — re-indexed when the file changes, and reduced to the flow's own path for one
+that does not parse. A script's entry and a fixture's carry none of the three.
 
 A flow using a `!file` fixture (001 §5.4) reports its declared name like any other — the tags are part
 of the format, and a parser without them calls the file unreadable and falls back to its filename.
 
-*Pins 002 §4.1, §11.3.* The name is what the sidebar labels an unopened flow with, and it is the only
-field read from a **flow**: the rest is `describeFlow`'s, which resolves OpenAPI documents over the
-network. A watcher that failed on a file it could not parse would drop the flow that most needs
-opening — the broken one.
+*Pins 002 §4.1, §4.1b, §11.3.* These are what the sidebar draws, groups and filters an **unopened**
+flow by, and they are the whole of what is read from one: everything else is `describeFlow`'s, which
+resolves sub-flows and OpenAPI documents over the network. All three come from one parse of text the
+watcher has already read, so a second read here is a regression rather than a detail. A watcher that
+failed on a file it could not parse would drop the flow that most needs opening — the broken one.
 
 ### U5.6a A workspace flow's scripts run
 
@@ -1355,6 +1393,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U4.16 | §4.5 | A scripts folder that resolves implicitly, or a section that lists every `.js` in the tree |
 | U4.16a | §4.5, §4.4 | A script's menu copied from a flow's; a rename that moves the file out of the folder that lists it |
 | U4.17 | §4.5, §11.3 | A timer writing a half-typed prelude into every flow that names it; a guard on the extension rather than the directory |
+| U4.21 | §4.1, §10, §11.3 | A rerun that refuses a rebuilt roster, or hides itself when the answer is "nothing to retry" |
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher a broken flow defeats |
 | U5.6a | §7.3, 001 §8.2 | Every script position failing for a flow that has no collection |

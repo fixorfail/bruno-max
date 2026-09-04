@@ -121,7 +121,7 @@ Where prose goes, and what each field is actually used for today:
 | Flow | `meta.name` | Human title | The graph title and `FlowDescription.name`; falls back to the filename |
 | Flow | `meta.description` | What the flow does and why | The app's [flow properties dialog](#flow-properties), and the reader of the file |
 | Flow | `meta.testId` | A test-management case id for the flow as a whole | Carried into reports as `test_id` (see [Reports](#reports)) |
-| Flow | `meta.tags` | Labels for grouping | The properties dialog edits them; **nothing selects on them yet** — `--tags` filtering is specified (001 §14.1) but not implemented |
+| Flow | `meta.tags` | Labels for grouping | `--grep` and the app's flow search select on them (see [Picking flows with a pattern](#picking-flows-with-a-pattern)); the properties dialog edits them. There is no separate `--tags` flag — a pattern reads tags among everything else, and `--grep '^smoke$'` is the exact-match form |
 | Step | `name` | Human label for one step | Shown on the graph node beside the id |
 | Anywhere | `# comment` | Everything else | Nothing reads them; they survive in the file |
 
@@ -222,6 +222,11 @@ shared: [chargeId]             # slots that any branch can write and any branch 
 
 dataset: ./fixtures/customers.csv   # run the whole flow once per row
 
+stages:                        # names for regions of the graph — presentation only
+  setup: sign_in               # a stage name -> the step it begins at
+  test: create_payment
+  teardown: refund
+
 params:                        # library flows only — see Sub-flows
   tenantId:
     required: true
@@ -296,6 +301,39 @@ vars:
 
 They are referenced **bare** — `{{currency}}`, not `{{vars.currency}}` — and sit in the same scope
 chain as Bruno's environment variables, which they shadow.
+
+### `stages:` — naming regions of the graph
+
+A graph of fifteen steps is read in parts — what is being set up, what is under test, what is being
+cleaned up — and nothing in `steps:` says where one part ends. `stages:` draws those lines:
+
+```yaml
+stages:
+  setup: sign_in                # everything from sign_in up to create_payment
+  test: create_payment          # …up to refund
+  teardown: refund              # …to the end
+```
+
+**A stage names the step it *begins* at, not the steps it contains.** It covers the run of `steps:`
+from there to the next stage's step, and anything before the first boundary belongs to no stage. That
+is the whole point of the shape: adding, removing or reordering steps *inside* a stage is not an edit
+to `stages:`, so the two halves of the file cannot quietly disagree. Mapping order is the order the
+regions appear in.
+
+**It changes nothing about what the flow does.** No schedule, no status, no capture — a stage
+boundary is not a barrier, and the first step of a stage still depends on the step above it unless
+its `depends:` says otherwise. Deleting the block leaves an identical run. It lives in the file
+rather than in the app's settings because where a flow's setup ends is a fact about *this flow* that
+a teammate opening it should see too.
+
+**A boundary the schedule contradicts is dropped, and `bru flow validate` says so.** A rule is drawn
+before its first step's column, which needs everything above the boundary to actually run before it —
+so a cleanup step that depends on an early step runs early, shares that column, and no line can pass
+between them. The rule is suppressed rather than the graph rearranging itself to look tidy, and you
+get a warning: `unknown-stage-step` when the named step is not a step of this flow (a step inside a
+`uses:` sub-flow is not addressable from here), `stage-boundary-order` when a boundary does not come
+after the one before it, and `stage-out-of-order` for the schedule case above. Warnings, not errors —
+they decide how a graph is drawn and never what a flow does.
 
 ---
 
@@ -1098,10 +1136,37 @@ supplying its parameters.
 
 ## Editing a flow in the app
 
-A `.flow.yml` is a file you can edit in anything, and the app never pretends otherwise — but three of
-its surfaces exist for the edits you would otherwise make by hand and get subtly wrong. All of them
-hang off the flow's row in the **API Flows** sidebar section, on a menu revealed when the pointer is
-on the row.
+A `.flow.yml` is a file you can edit in anything, and the app never pretends otherwise — but the
+**API Flows** sidebar section carries a handful of surfaces for the edits you would otherwise make by
+hand and get subtly wrong. Two places to look for them: the `+` on the section header starts a new
+flow, and a menu appears on a row when the pointer is on it, carrying `Edit Yaml`, `Flow Properties`
+and `Duplicate` for a flow and `Rename` for a script. Fixture rows carry no menu — there is nothing
+about a data file the app knows better than you do.
+
+### Creating and duplicating a flow
+
+The header's `+` opens a form rather than writing a blank file, because a blank `.flow.yml` cannot be
+written without answering questions the file itself will not prompt you for: where it goes, what it
+is called, what it is for, whether it is a library, and which OpenAPI documents it binds. The last is
+the one worth having a form for — picking specs from the workspace's loaded documents writes an
+`apis:` block with an alias per spec, slugged from the spec's filename rather than its title (a title
+is prose, and `Payments API v2 (beta)#createOrder` is not something you want to type in every step),
+and each `source:` written relative to the new file's own directory rather than to the workspace.
+
+**The flow's name and its file name are separate fields, and the file name defaults from the name.**
+Leave it blank and you get the name in kebab-case, which is right about nine times in ten; the
+`.flow.yml` extension is the form's to add. Nothing here offers to add a step — that is the graph and
+the [YAML editor](#the-raw-yaml-editor) below, and a form that started inventing steps would be
+guessing.
+
+**`Duplicate` on a flow's row is the same form, opened over the flow you picked.** It arrives filled
+in from that flow's `meta:`, with `copy` on the end of the name rather than `copy of` in front so the
+duplicate sorts next to its original. The spec picker is replaced by a note, because a duplicate
+binds whatever its source binds: what gets written is the source file's own text with `meta:`
+swapped, so the steps, the comments, the anchors and the `!file` tags all survive and the copy still
+diffs cleanly against the original. It refuses to open over an unsaved YAML editor for the reason the
+properties dialog does — it reads the file on disk, and duplicating a flow you are ten minutes ahead
+of hands you a copy silently missing those ten minutes.
 
 ### Flow properties
 
@@ -1200,6 +1265,27 @@ require('lodash')                  // ✓ bare names are unaffected
 Composition between scripts is `use:`'s job, and `use:` *does* resolve relative to the file that named
 it — a `.yml` library document listing several `.js` files is the shape that works.
 
+### `flows/fixtures/` — where data files live
+
+`!file`, `bodyFile:` and `dataset:` read a path relative to the flow, so a fixture can sit anywhere;
+`flows/fixtures/` is the conventional home, and the sidebar lists what is under it in a `Fixtures`
+bucket of its own, below the scripts. Any extension and any depth — a fixture has no single one,
+since 001 §7.4 reads JSON, YAML and CSV as data and anything at all as an upload.
+
+Clicking one opens it as text in the same editor a script gets, syntax-coloured by extension.
+**Auto-save is not gated on it parsing**, unlike a script's: a fixture corpus is JSON, YAML, CSV and
+whatever else an operation takes, so for most of them there is no question to ask, and gating only
+the ones that happen to be JSON would be a rule that surprises you exactly when it fires. A fixture
+that does not parse fails the flows reading it, at the step that read it, naming the file.
+
+There is no menu on a fixture row: nothing here has a `meta:` to edit, and there is deliberately no
+rename, because a fixture is named by the path written into every flow that reads it and nothing
+would rewrite those. Rename one on disk and the flows that named it fail with `file-read-failed` —
+this is not something `bru flow validate` catches, since nothing resolves fixture paths before a run.
+
+As with `flows/scripts/`, the folder is a listing convention and nothing more — it changes no
+resolution rule, and a file put there is still reached only by a flow that names its path.
+
 ---
 
 ## Running a flow
@@ -1212,7 +1298,13 @@ On the command line:
 ```bash
 bru flow run flows/checkout.flow.yml       # one flow
 bru flow run flows/                        # every flow in a directory
+bru flow run a.flow.yml,b.flow.yml         # several, in one argument
 ```
+
+Paths can be separated by spaces or by commas, so a whole selection fits in one shell word — useful
+in a CI `command:` line or an npm script, where assembling several arguments is awkward. The one
+casualty is a `.flow.yml` whose filename actually contains a comma: there is no way to escape it, so
+name its directory instead.
 
 The options you are most likely to want:
 
@@ -1221,6 +1313,8 @@ The options you are most likely to want:
 | `--global-env name` | Run against a workspace environment — `<workspace>/environments/<name>.yml` |
 | `--env-var name=value` | Override one variable (repeatable) |
 | `--param name=value` | Supply a library flow's declared param (repeatable) |
+| `--grep pattern` | Run only the flows the pattern matches — see [Picking flows with a pattern](#picking-flows-with-a-pattern) |
+| `--grep-invert pattern` | Drop the flows the pattern matches |
 | `--concurrency n` | Override `config.concurrency` |
 | `--max-run-duration ms` | Bound the whole run; elapsing cancels it and exits 4 |
 | `--bail` | Stop after the first failing flow |
@@ -1244,20 +1338,103 @@ from before this layout existed, as an older entry. Nothing under `.bruno-runs/`
 you — it grows by one suite every run, so clearing it out is yours to do when you want the space
 back.
 
-Every run also records which environment it used — `--env` and `--global-env` here, whatever the
-run control's environment selector had chosen in the app. The app shows it as a small badge next to
-a run's result, so you can tell at a glance which environment a graph you're looking at ran against;
-the JUnit report carries the same information as suite properties (see [Reports](#reports) below).
+Every run also records which environment it used — `--global-env` here, whatever the run control's
+environment selector had chosen in the app. The app shows it as a small badge next to a run's result,
+so you can tell at a glance which environment a graph you're looking at ran against; the JUnit report
+carries the same information as suite properties (see [Reports](#reports) below).
 
 What the command exits with, for a CI job that has to tell these apart:
 
 | Code | Means |
 |---|---|
-| `0` | Every flow passed — including one that only passed on a `--retries` attempt |
+| `0` | Every flow passed — including one that only passed on a `--retries` attempt, and including a `--grep` that matched nothing |
 | `1` | A flow failed |
 | `2` | A flow did not validate, so it was not run |
-| `3` | The command itself was wrong — a bad path, a `--global-env` that does not exist, or a `--retry-failed` naming something that is not a past run |
+| `3` | The command itself was wrong — a bad path, a `--global-env` that does not exist, a `--grep` that is not a valid regular expression, or a `--retry-failed` naming something that is not a past run |
 | `4` | The run was cancelled, including by `--max-run-duration` elapsing |
+
+### Picking flows with a pattern
+
+`--grep` runs only the flows whose text matches, and `--grep-invert` drops the ones that do:
+
+```bash
+bru flow run flows/ --grep 'smoke|checkout'      # only these
+bru flow run flows/ --grep-invert slow           # everything except these
+bru flow run flows/ --grep smoke --grep-invert flaky
+```
+
+Both take a **regular expression** and both are case-insensitive, so `SMOKE` finds a flow tagged
+`smoke` — tags and case ids get typed in whatever case the tracker uses, and an exact-case miss is an
+empty run that looks like a working one. When the two are combined, excluding wins: a flow matching
+both patterns is dropped.
+
+The pattern is tried against everything a flow says about itself:
+
+| Matched | From |
+|---|---|
+| The flow's path within its workspace or collection | e.g. `flows/checkout/refund.flow.yml` |
+| `meta.name`, every entry in `meta.tags`, `meta.testId` | the flow's own [`meta:`](#documenting-a-flow) |
+| Each step's `id` and `name` | [A step](#a-step) |
+| Every value under a step's `meta:`, however deeply nested | a step's own [`meta:`](#a-step) — case ids, and any other custom key |
+
+Two things it does **not** match. **Keys are never matched, only values** — `--grep testId` finds
+nothing, rather than every flow that happens to declare one. And the **absolute path is not
+searched**: only the part below the workspace or collection root, so `--grep jake` cannot select your
+entire workspace by way of your home directory.
+
+`--grep` narrows what the paths you gave already selected; it never goes looking for flows elsewhere.
+It also cannot pull in a [library flow](#sub-flows-and-library-flows), since running `flows/` skipped
+those before the pattern was applied. It works the same way over `--retry-failed`, where it narrows
+the past run's list.
+
+If nothing matches, that is not an error: the command tells you how many flows the paths selected and
+that the pattern kept none, and exits `0`. A pattern that is not a valid regular expression *is* an
+error, and it is refused before any flow runs (exit `3`) rather than after ten minutes of requests.
+
+To see what a pattern selects without running it, swap `run` for `list` — see
+[Listing what would run](#listing-what-would-run).
+
+In the app, the **search box** at the top of the API Flows section filters the list on exactly the
+same fields, and the **play button** in that section's header runs the flows the search is showing as
+one suite. The box takes text rather than a regular expression — `payments (v2)` is read literally —
+but what it looks in is the same, so a flow you can find in the sidebar is a flow `--grep` can
+select. That does mean a flow can match on a tag or a step name its sidebar row does not show.
+
+### Listing what would run
+
+`bru flow list` prints the flows a `bru flow run` with the same arguments would execute, and sends
+nothing. It is how you check a pattern before you spend a CI job on it:
+
+```bash
+bru flow list flows/                             # what a run of this directory would do
+bru flow list flows/ --grep 'smoke|checkout'     # what the pattern actually selects
+bru flow list                                    # the whole collection or workspace
+```
+
+```
+id        kind     steps  tags             file
+checkout  flow         6  checkout, smoke  flows/checkout.flow.yml
+refunds   flow         4  refunds          flows/refunds.flow.yml
+login     library      1  —                flows/shared/login.flow.yml
+
+3 flows · 1 library
+```
+
+The selection is the run's, so everything above applies unchanged: the same paths, spaced or
+comma-separated, the same default of the current directory, the same `--grep` and `--grep-invert`.
+Nothing about running is accepted — no environments, no `--param`, no reporters — and nothing is
+written to `.bruno-runs/`, because nothing ran. `--silent`, `--no-color` and `--no-unicode` work as
+they do for a run.
+
+A [library flow](#sub-flows-and-library-flows) is listed and marked `library` when you name it, and
+absent when you name only the directory holding it — the same two behaviours a run has, which is the
+point: what the listing shows is what would run. The `id` column is the last segment of the flow's
+path, widened to as much of the path as tells two flows apart when a segment alone does not; `file`
+always carries the whole path.
+
+It exits `0`, or `3` for the same up-front mistakes a run refuses — a path that does not exist, a
+`--grep` that is not a valid regular expression. A pattern that matched nothing is not one of those:
+it says how many flows the paths selected, and exits `0`.
 
 ### Re-running what failed
 
@@ -1379,11 +1556,13 @@ that step — so a report can carry whatever your team's tooling wants without w
 to grow a field for it. The flow's `tags` gives you the coarser grouping: filter or group runs by
 whatever `meta.tags` a flow carries.
 
-`host` and `globalEnvironment` (plus `environment`, for a collection-scoped flow) record where the
-run came from and which environment it used — `host` is always `cli` here, since these come from
-`bru flow run`, and `globalEnvironment` is whatever `--global-env` named (see below); a run from the
-app records the same two properties with `host: app`, so a JUnit file lets a CI failure and an app
-run be told apart at a glance.
+`host` and `globalEnvironment` record where the run came from and which environment it used — `host`
+is always `cli` here, since these come from `bru flow run`, and `globalEnvironment` is whatever
+`--global-env` named (see below). A run from the app records the same properties with `host: app`,
+so a JUnit file lets a CI failure and an app run be told apart at a glance, and it can carry a third,
+`environment`, naming the collection environment its run control had selected. `bru flow run` never
+writes that one: it has no flag for a collection environment, so a CLI report saying nothing about
+one is saying that none was chosen rather than that it forgot.
 
 `--reporter-junit-flows` writes a second JUnit shape: one `<testcase>` per **flow** instead of per
 step, all inside a single `<testsuite name="bru flow run">` for the whole invocation:
@@ -1493,6 +1672,15 @@ What it reports:
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 
+Two more codes exist that `bru flow validate` can never show you, because they are facts about a run
+rather than about the file. They arrive in the run's own diagnostics — on the console, and in the
+reports (§14.8) — and are listed here so a code you are shown is always a code you can look up:
+
+| Code | Meaning |
+|---|---|
+| `capture-write-failed` *(warning)* | A step's capture could not be written. The run carries on and its verdict stands — a flow that passed did pass, whatever the disk did — but that step has no request or response to open afterwards, and this is what says why |
+| `run-failed` | The run itself broke: something escaped the engine rather than a step failing. The run reports `failed` with no steps and this message, which is the only account of what happened |
+
 ---
 
 ## Reference tables
@@ -1546,8 +1734,18 @@ So you do not write a flow that depends on it:
 - **Raw `steps.<id>.body` / `.headers` access** — validated and drawn, but does not resolve at run
   time. Declare an output.
 - **The document schema** — unknown and misspelled keys are silently ignored.
-- **`--tags` filtering** — the properties dialog edits `meta.tags`, and nothing *selects* on them:
-  neither `bru flow run` nor the sidebar takes a tag.
+- **A collection-environment flag on `bru flow run`** — `--global-env` picks a workspace
+  environment, and there is no `--env` beside it, so the collection tier is empty under `bru`. Supply
+  those values with `--env-var` or from the process environment; the app's run control selects a
+  collection environment normally. 001 §14.1 specifies the flag.
+- **`bru flow run` reading a scope's `.env`** — the app does and the CLI does not, so a variable a
+  flow resolves in the app can be missing in CI. Set it in the environment, or pass `--env-var`.
+- **`--dry-run`, `--strict`, `--show-sensitive` and `--dataset`** (001 §14.1) — specified, argued
+  for, and not flags today. `bru flow run` rejects each as unknown rather than ignoring it, so a CI
+  line using one fails loudly instead of quietly running without it.
+- **`bru flow schema`** (001 §14, §5.4) — the command takes `run`, `validate` and `list` only. There
+  is no generated JSON Schema to point an editor at yet, which is the same reason unknown keys go
+  unwarned above.
 - **The implicit `collection` auth profile** (001 §6.4) — no host supplies it; declare your own.
 - **Cookie-jar scoping** (001 §7.6) and the provenance half of secret redaction (§14.4). Header-name
   redaction *is* in place, including `config.redactHeaders`.

@@ -281,7 +281,7 @@ const CreateFlow = ({ defaultDirectory, source, onClose }) => {
             onChange={formik.handleChange}
             value={formik.values.tags}
           />
-          <div className="flow-library-hint">Comma separated. `bru flow run --tags` selects on these.</div>
+          <div className="flow-library-hint">Comma separated. `bru flow run --grep` selects on these.</div>
 
           <label className="flow-library-option mt-3">
             <input

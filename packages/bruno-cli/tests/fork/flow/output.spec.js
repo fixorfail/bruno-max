@@ -378,3 +378,112 @@ describe('the resolved script library', () => {
     expect(lines).toEqual([]);
   });
 });
+
+/**
+ * 001 §14.7's `bru flow list`.
+ *
+ * The columns are asserted as properties — a name, a kind, a step count, tags and the whole path —
+ * rather than as a table drawn character for character, for the reason at the top of this file. The
+ * one rule worth pinning exactly is §5.2's display name, because it is the only thing here a reader
+ * could get wrong by looking at one row at a time: what a flow is called depends on the others being
+ * listed beside it.
+ */
+describe('the flow listing', () => {
+  const row = (id, over = {}) => ({ id, file: `${id}.flow.yml`, library: false, steps: 1, tags: [], ...over });
+
+  /** The first cell of each row between the header and the blank line above the count. */
+  const names = (lines) => lines.slice(1, lines.indexOf('')).map((line) => line.trim().split(/\s+/)[0]);
+
+  it('shows a flow by the final segment of its id, and its whole path in the file column', () => {
+    const { reporter, lines, text } = capture({});
+
+    reporter.listing([row('flows/checkout', { steps: 6, tags: ['checkout', 'smoke'] })]);
+
+    expect(names(lines)).toEqual(['checkout']);
+    expect(text()).toContain('flows/checkout.flow.yml');
+    expect(text()).toContain('6');
+    expect(text()).toContain('checkout, smoke');
+  });
+
+  /** §5.2: as much of the path as tells them apart, and only for the ids that collide. */
+  it('widens the ids that share a stem, and leaves the others at their final segment', () => {
+    const { reporter, lines } = capture({});
+
+    reporter.listing([row('flows/shared/login'), row('ops/login'), row('flows/checkout')]);
+
+    expect(names(lines)).toEqual(['shared/login', 'ops/login', 'checkout']);
+  });
+
+  it('widens only as far as it must, so two ids that differ at the root show three segments', () => {
+    const { reporter, lines } = capture({});
+
+    reporter.listing([row('a/shared/login'), row('b/shared/login')]);
+
+    expect(names(lines)).toEqual(['a/shared/login', 'b/shared/login']);
+  });
+
+  /**
+   * §12.5's column: a library flow is skipped by a directory run, and a flow silently not running is
+   * what marking it exists to prevent.
+   */
+  it('marks a library flow and counts the libraries among the flows', () => {
+    const { reporter, text } = capture({});
+
+    reporter.listing([row('flows/checkout'), row('flows/shared/login', { library: true })]);
+
+    expect(text()).toContain('library');
+    expect(text()).toContain('2 flows');
+    expect(text()).toContain('1 library');
+  });
+
+  it('counts one flow in the singular', () => {
+    const { reporter, text } = capture({});
+
+    reporter.listing([row('flows/checkout')]);
+
+    expect(text()).toContain('1 flow');
+  });
+
+  it('prints a placeholder rather than an empty column for a flow with no tags', () => {
+    const { reporter, text } = capture({});
+
+    reporter.listing([row('flows/checkout')]);
+
+    expect(text()).toContain('—');
+  });
+
+  // A Windows console printing mojibake is worse than a plain character (§14.7).
+  it('falls back to ASCII for that placeholder under --no-unicode', () => {
+    const { reporter, text } = capture({ unicode: false });
+
+    reporter.listing([row('flows/checkout')]);
+
+    expect(text()).not.toContain('—');
+  });
+
+  /**
+   * Columns are padded before they are painted, so a colour code never counts towards a width — the
+   * failure mode is a table that lines up in a terminal and is ragged in every archived log.
+   */
+  it('lines the columns up identically with colour on and off', () => {
+    const rows = [row('flows/checkout', { steps: 6 }), row('flows/shared/login', { library: true })];
+    const strip = (line) => line.replace(/\[\d+m/g, '');
+
+    const plain = capture({ tty: true, noColor: true, env: {} });
+    const painted = capture({ tty: true, env: {} });
+    plain.reporter.listing(rows);
+    painted.reporter.listing(rows);
+
+    expect(painted.lines.map(strip)).toEqual(plain.lines);
+    expect(plain.text()).not.toMatch(ANSI);
+  });
+
+  /** §14.7's `--silent`: the exit code is the whole result. */
+  it('writes nothing under --silent', () => {
+    const { reporter, lines } = capture({ verbosity: 'silent' });
+
+    reporter.listing([row('flows/checkout')]);
+
+    expect(lines).toEqual([]);
+  });
+});

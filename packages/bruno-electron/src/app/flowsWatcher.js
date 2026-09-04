@@ -2,7 +2,7 @@ const fs = require('fs/promises');
 const { readFileSync } = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
-const { readFlowMeta } = require('@bruno-max/flow');
+const { readFlowMeta, flowSearchTerms } = require('@bruno-max/flow');
 
 const FLOW_SUFFIX = '.flow.yml';
 const IGNORED_DIRECTORIES = ['node_modules', '.git'];
@@ -26,7 +26,9 @@ const FIXTURES_DIRECTORY = 'fixtures';
 const isFlowFile = (pathname) => pathname.endsWith(FLOW_SUFFIX);
 
 /** A collection-scoped flow lives under the collection, a workspace-scoped one under the workspace (001 §5.1). */
-const flowsDirectoryFor = ({ workspaceRoot, collectionRoot }) => path.join(collectionRoot || workspaceRoot, 'flows');
+const scopeRootOf = ({ workspaceRoot, collectionRoot }) => collectionRoot || workspaceRoot;
+
+const flowsDirectoryFor = (scope) => path.join(scopeRootOf(scope), 'flows');
 
 /** Whether a path is inside one of `flows/`'s conventional subdirectories, at any depth. */
 const isInFlowsSubdirectory = (pathname, scope, directory) => {
@@ -70,8 +72,9 @@ const isListedFile = (pathname, scope) =>
   isFlowFile(pathname) || isScriptFile(pathname, scope) || isFixtureFile(pathname, scope);
 
 /**
- * 002 §4.1's display name and library flag — `meta.name` and `meta.library`, and nothing else the
- * file says.
+ * What the sidebar knows about a flow nobody has opened: 002 §4.1's display name and library flag —
+ * `meta.name` and `meta.library` — and the strings its search box matches the flow on. Nothing else
+ * the file says.
  *
  * Read here rather than from `describeFlow` because the sidebar names every flow it lists and
  * describing one resolves its sub-flows and its OpenAPI documents, which `readSpec` will fetch over
@@ -81,16 +84,22 @@ const isListedFile = (pathname, scope) =>
  * tags, and a plain parser rejects `!file` as an unknown tag — so a watcher with its own parser would
  * report every flow using one as unreadable and quietly name it after its file. Failure stays
  * ordinary either way: a document that does not parse, or a file already gone by the time this runs,
- * still reports as an entry and is named by its filename.
+ * still reports as an entry, named by its filename and matched by its path alone.
+ *
+ * **One read for both.** The terms are extracted from the text this already has rather than by a
+ * second pass over the directory — the extraction is a parse rather than a describe precisely so a
+ * listing can afford it, and a watcher reading every flow twice would spend that saving again.
  *
  * Synchronous so that a rapid add/change/unlink sequence reaches the renderer in the order chokidar
  * observed it; these are small documents in a directory the app is already watching.
  */
-const declaredMetaOf = (pathname) => {
+const flowFieldsOf = (pathname, scope) => {
+  const scopeRoot = scopeRootOf(scope);
   try {
-    return readFlowMeta(readFileSync(pathname, 'utf8'));
+    const source = readFileSync(pathname, 'utf8');
+    return { ...readFlowMeta(source), terms: flowSearchTerms(scopeRoot, pathname, source) };
   } catch (error) {
-    return {};
+    return { terms: flowSearchTerms(scopeRoot, pathname) };
   }
 };
 
@@ -102,7 +111,9 @@ const buildEntry = (pathname, scope) => {
   }
 
   // §4.5 and §4.6: source and data, not documents — there is no `meta:` to read, and reading one
-  // would be a file read per entry on every tree change for a field neither kind has.
+  // would be a file read per entry on every tree change for a field neither kind has. No search
+  // terms either, for the same reason: a script and a fixture are matched on their filename, which
+  // the entry already carries.
   if (!isFlowFile(pathname)) {
     if (isFixtureFile(pathname, scope)) {
       entry.fixture = true;
@@ -112,7 +123,7 @@ const buildEntry = (pathname, scope) => {
     return entry;
   }
 
-  const { name, library } = declaredMetaOf(pathname);
+  const { name, library, terms } = flowFieldsOf(pathname, scope);
   if (name) {
     entry.name = name;
   }
@@ -121,6 +132,11 @@ const buildEntry = (pathname, scope) => {
   if (library) {
     entry.library = true;
   }
+  // 001 §5.2's identity and `meta:`, plus each step's name and the scalars in its own `meta:`. The
+  // list is what the sidebar's search box filters on, and it is the engine's extraction rather than
+  // the sidebar's so that the box and `bru flow run --grep` agree about what a flow contains — which
+  // is why a flow may match on a tag or a step name no row displays.
+  entry.terms = terms;
   return entry;
 };
 
@@ -150,9 +166,9 @@ const scanFlows = async (directory, scope) => {
 /**
  * The flow tree behind the sidebar section — 002 §4.1, emitting 002 §11.3's `main:flow-tree-updated`.
  *
- * **It reads `meta.name` and `meta.library`, and nothing else.** A flow that does not parse must
- * still reach the sidebar so it can be opened and its diagnostics read (002 §6), so both are
- * best-effort and their absence is ordinary; everything else the app draws still comes from
+ * **It reads `meta.name` and `meta.library`, and indexes what a flow is searchable on.** A flow that
+ * does not parse must still reach the sidebar so it can be opened and its diagnostics read (002 §6),
+ * so all of it is best-effort and absence is ordinary; everything else the app draws still comes from
  * `describeFlow` when the flow is opened.
  *
  * Unlike `apiSpecsWatcher`, this watches a *directory* per scope rather than a file per artifact,

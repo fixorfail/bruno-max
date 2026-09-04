@@ -20,6 +20,7 @@ import * as path from 'path';
 
 import * as YAML from 'yaml';
 
+import { asRecord, parseDocument } from './document';
 import type { FlowIdentity } from './types/reporter';
 
 /** §5.2's `meta:`, as a dialog edits it. */
@@ -193,5 +194,39 @@ export const flowIdentity = (scopeRoot: string, file: string, source?: string): 
     // Absent rather than empty when the flow declares none: a report writes the property only for a
     // flow a tracker actually has a case for.
     ...(properties && properties.testId ? { testId: properties.testId } : {})
+  };
+};
+
+/**
+ * A flow as a listing shows it — §5.2's identity, plus the two facts a row needs that identity does
+ * not carry: §12.5's `library` flag and how many steps the file declares (001 §14.7).
+ *
+ * **Here rather than at the host, because the host must not parse `.flow.yml`.** §5.1 buys one
+ * parser by making flows YAML-only, and `bru flow list` reading the format itself would be the
+ * second one — it would have to know §5.4's local tags to see `!file` as a value rather than as a
+ * broken file, and it would derive `library` with a rule the run could disagree with.
+ *
+ * A read in `flowSearchTerms`' sense, and for its reasons: text in, summary out — no ports, no
+ * `describeFlow`, no OpenAPI resolution, and no file reads of any kind, since this runs over every
+ * flow a listing names. Text that does not parse yields the identity its path carries with no
+ * library flag and no steps, so a flow the author is midway through editing is listed rather than
+ * dropped (002 §6) — being unreadable is `validateFlow`'s finding to report, not a listing's to
+ * settle by omission.
+ */
+export const readFlowSummary = (
+  scopeRoot: string,
+  file: string,
+  source?: string
+): FlowIdentity & { library: boolean; steps: number } => {
+  // The engine's own reader, so §5.4's local tags are values rather than errors and a document with
+  // errors yields `{}` — the same tolerance every other host-facing read in the package has.
+  const { model } = parseDocument(source === undefined ? '' : source);
+
+  return {
+    ...flowIdentity(scopeRoot, file, source),
+    // `document.ts`'s reading of the flag and nothing looser: a listing that called a flow a library
+    // on some other evidence would disagree with the run about which flows a directory selects.
+    library: asRecord(model.meta).library === true,
+    steps: Array.isArray(model.steps) ? model.steps.length : 0
   };
 };

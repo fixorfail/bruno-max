@@ -6,6 +6,6 @@
 const { builder, handler } = require('../fork/flow');
 
 const command = 'flow <action> [paths...]';
-const desc = 'Run or validate API flows';
+const desc = 'Run, validate or list API flows';
 
 module.exports = { command, desc, builder, handler };

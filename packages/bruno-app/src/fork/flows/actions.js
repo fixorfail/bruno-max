@@ -1,7 +1,5 @@
 import get from 'lodash/get';
 import find from 'lodash/find';
-import { uuid } from 'utils/common';
-import brunoPath from 'utils/common/path';
 import {
   describeStarted,
   describeSucceeded,
@@ -327,6 +325,27 @@ export const openPastRun = ({ flow, entry, stepIds }) => async (dispatch) => {
 };
 
 /**
+ * A suite's id, and the basename of a suite directory — spelled here rather than taken from
+ * `utils/common`, which is where an equivalent of each already lives.
+ *
+ * `fork/registry.js` reaches this module eagerly (through `ipcEvents.js`), and an upstream import in
+ * that graph closes a cycle with the Redux store: the store's module is entered while the registry
+ * is mid-evaluation, `forkReducers` reads as `undefined`, and `{...undefined}` is legal — so the app
+ * builds a store with no `flows` reducer and breaks somewhere else entirely. `registry.spec.js`
+ * pins that, and these two are the whole of what this module wanted from upstream.
+ *
+ * **Random first, and hexadecimal.** 001 §14.5 names a suite directory from the first four
+ * characters of this id: an id opening with a clock reading would collide for every suite started in
+ * the same era, and one outside `[0-9a-f]` names a directory the engine's own `SUITE_DIRECTORY`
+ * does not match — which is a run written correctly and then missing from its flow's history. The
+ * engine now normalises either mistake, and this avoids relying on it.
+ */
+const suiteId = () => `${Math.random().toString(16).slice(2, 10)}${Date.now().toString(16)}`;
+
+/** Separators are the host's, so a Windows directory is split on both. */
+const basenameOf = (dir) => (dir || '').split(/[\\/]/).filter(Boolean).pop() || '';
+
+/**
  * §10: the suites under `.bruno-runs/` for one scope, newest first — the roster a retry is selected
  * from.
  *
@@ -371,13 +390,51 @@ export const rerunFailedFlows = ({ scopeRoot, suite }) => async (dispatch, getSt
     }));
 
   return ipc().invoke('renderer:flow-run-suite', {
-    suiteId: uuid(),
+    suiteId: suiteId(),
     scope: { workspaceRoot: scopeRoot, collectionRoot: collection ? scopeRoot : undefined },
     flows,
     tiers: tiersFor({ collection, globalEnvironments: state.globalEnvironments }),
     // The manifest names the suite this one re-ran by its directory's own name, so a record stays
     // readable after the capture root has been moved or checked out somewhere else.
-    retryOf: brunoPath.basename(suite.dir)
+    retryOf: basenameOf(suite.dir)
+  });
+};
+
+/** The pair the host resolves a flow's ports, environment and script `require` against (§7.2). */
+const scopeOf = (flow) => ({ workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot });
+
+/**
+ * 002 §4.1b: the flows the sidebar is currently showing, run as one sequential suite.
+ *
+ * **Every entry carries its own scope, and the suite's is the first one's.** A search box narrows a
+ * workspace *and* its collections at once, so a selection routinely spans scopes that resolve
+ * different environments and different `require` roots; the host validates each entry against the
+ * scope beside it (§11.3) rather than against one root they would have to share. The suite directory
+ * still belongs to the top-level scope, which is `bru flow run`'s own rule for a selection spanning
+ * several — the first selected flow's scope owns the invocation's record.
+ *
+ * The environment table is resolved from that same scope, for the reason it owns the directory: one
+ * invocation resolves one set of tiers, and a suite that resolved a table per flow would be several
+ * invocations wearing one record.
+ */
+export const runFlowSelection = (flows) => async (dispatch, getState) => {
+  const state = getState();
+  const [first] = flows;
+  const collection = first.collectionRoot
+    ? find(state.collections.collections, (entry) => entry.pathname === first.collectionRoot)
+    : undefined;
+
+  return ipc().invoke('renderer:flow-run-suite', {
+    suiteId: suiteId(),
+    scope: scopeOf(first),
+    flows: flows.map((flow) => ({
+      entry: flow.pathname,
+      scope: scopeOf(flow),
+      // §12.5: params are typed into a flow's own run panel, so this runs each flow with what its
+      // panel is holding — the same values a retry of that flow would give it.
+      params: suppliedParams(get(state.flows.configurations, [flow.pathname, 'params']))
+    })),
+    tiers: tiersFor({ collection, globalEnvironments: state.globalEnvironments })
   });
 };
 

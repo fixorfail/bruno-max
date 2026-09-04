@@ -10,6 +10,24 @@ const path = require('path');
 
 const { runFlow, validate, FLOWS } = require('./harness');
 
+/**
+ * Every engine source as one string, for the checks that ask whether a documented name is real.
+ *
+ * `validate.ts` alone was the bug: `stages:` emits from `graph.ts` and a run reports two codes from
+ * `run.ts`, so a document naming one of those five read as naming something the engine does not have
+ * — and, in the other direction, those five could go undocumented with nothing complaining.
+ */
+const ENGINE_SOURCES = path.join(__dirname, '../../src');
+
+const engineFiles = (directory) =>
+  fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) return engineFiles(target);
+    return target.endsWith('.ts') ? [target] : [];
+  });
+
+const engineText = () => engineFiles(ENGINE_SOURCES).map((file) => fs.readFileSync(file, 'utf8')).join('\n');
+
 const guide = (name, body) => {
   const entry = path.join(FLOWS, `guide-${name}.flow.yml`);
   return { entry, files: { [entry]: body } };
@@ -175,15 +193,15 @@ steps:
     expect(run.result.iterations[0].steps.map((step) => step.status)).toEqual(['success', 'success', 'success']);
   });
 
-  /** Every documented diagnostic code is one the validator can actually produce. */
-  it('names only diagnostic codes the validator emits', () => {
+  /** Every documented diagnostic code is one the engine can actually produce. */
+  it('names only diagnostic codes the engine emits', () => {
     // The diagnostics table only — the CLI options table a few lines above is also backticked rows.
     const guideText = fs.readFileSync(path.join(__dirname, '../../../../docs/writing-flows.md'), 'utf8');
     const section = guideText.slice(guideText.indexOf('## Validating a flow'));
     const documented = [...section.slice(0, section.indexOf('## Reference tables'))
       .matchAll(/^\| `([a-z][a-z-]+)`(?: \/ `([a-z-]+)`)?(?: \*\(warning\)\*)? \| /gm)]
       .flatMap((match) => [match[1], match[2]].filter(Boolean));
-    const source = fs.readFileSync(path.join(__dirname, '../../src/validate.ts'), 'utf8');
+    const source = engineText();
 
     expect(documented.length).toBeGreaterThan(8);
     for (const code of documented) {
@@ -245,8 +263,8 @@ describe('the flow-writer skill', () => {
     }
   });
 
-  it('names only diagnostic codes the validator emits', () => {
-    const source = fs.readFileSync(path.join(__dirname, '../../src/validate.ts'), 'utf8');
+  it('names only diagnostic codes the engine emits', () => {
+    const source = engineText();
     const section = read('references/dsl.md').split('## Diagnostics')[1].split('## Step outcomes')[0];
     const documented = [...section.matchAll(/^\| `([a-z][a-z-]+)`(?: \/ `([a-z-]+)`)?/gm)]
       .flatMap((match) => [match[1], match[2]].filter(Boolean));
@@ -495,18 +513,29 @@ describe('the documents cover the engine', () => {
     '.claude/skills/flow-writer/references/dsl.md': path.join(
       __dirname,
       '../../../../.claude/skills/flow-writer/references/dsl.md'
-    )
+    ),
+    // The normative spec is held to the same bar as the two guides: §14.6 named a code no package
+    // emits for as long as nothing checked it, which is the drift this block exists to stop.
+    'docs/specs/001-api-flows.md': path.join(__dirname, '../../../../docs/specs/001-api-flows.md')
   };
 
   /**
    * Codes are read from the call sites rather than from a list, because a list is the thing that
    * goes stale. `\s*` spans the line break, since the longer calls wrap their arguments.
+   *
+   * **Every source, not `validate.ts` alone.** Reading one file reintroduced the exact failure this
+   * block exists to catch: `stages:` shipped three diagnostics from `graph.ts` and a run reports two
+   * of its own from `run.ts`, and none of the five were visible here — so the check passed while the
+   * documents were missing codes an author can be shown. Scanning the tree means the next file to
+   * emit one is covered before anybody notices it is a new file.
    */
   const emittedCodes = () => {
-    const source = fs.readFileSync(path.join(ENGINE, 'validate.ts'), 'utf8');
     const found = new Set();
-    for (const match of source.matchAll(/(?:error|warn)\(\s*'([a-z][a-z-]+)'|code:\s*'([a-z][a-z-]+)'/g)) {
-      found.add(match[1] || match[2]);
+    for (const file of engineFiles(ENGINE)) {
+      const source = fs.readFileSync(file, 'utf8');
+      for (const match of source.matchAll(/(?:error|warn)\(\s*'([a-z][a-z-]+)'|code:\s*'([a-z][a-z-]+)'/g)) {
+        found.add(match[1] || match[2]);
+      }
     }
     return [...found].sort();
   };
@@ -525,7 +554,8 @@ describe('the documents cover the engine', () => {
    */
   const UNDOCUMENTED = {
     'docs/writing-flows.md': [],
-    '.claude/skills/flow-writer/references/dsl.md': []
+    '.claude/skills/flow-writer/references/dsl.md': [],
+    'docs/specs/001-api-flows.md': []
   };
 
   const missing = (names, file) => {
@@ -535,12 +565,36 @@ describe('the documents cover the engine', () => {
 
   it('finds diagnostic codes to check', () => {
     // A regex that silently matched nothing would make every assertion below vacuously true.
-    expect(emittedCodes().length).toBeGreaterThan(15);
+    expect(emittedCodes().length).toBeGreaterThan(25);
     expect(declaredReasons().length).toBeGreaterThan(10);
   });
 
+  /**
+   * The reverse of the above for 001's own tables — every row names a code some package produces.
+   *
+   * Scoped to §14.3's two tables rather than to the whole file, because 001 discusses codes in prose
+   * throughout and a document-wide sweep would read package names and header names as codes. The
+   * CLI is searched as well as the engine: `run-refused` is the command's, not the engine's, and a
+   * check that knew only about `src/` would call the one code §14.6 is *about* a mistake.
+   */
+  it('docs/specs/001-api-flows.md names only diagnostic codes some package emits', () => {
+    const text = fs.readFileSync(DOCUMENTS['docs/specs/001-api-flows.md'], 'utf8');
+    const section = text.slice(text.indexOf('#### The codes a check emits'), text.indexOf('### 14.4'));
+    const documented = [...section.matchAll(/^\| `([a-z][a-z-]+)`(?: \/ `([a-z-]+)`)?/gm)]
+      .flatMap((match) => [match[1], match[2]].filter(Boolean));
+    const source = engineText() + fs.readFileSync(
+      path.join(__dirname, '../../../bruno-cli/src/fork/flow/index.js'),
+      'utf8'
+    );
+
+    expect(documented.length).toBeGreaterThan(25);
+    for (const code of documented) {
+      expect({ code, emitted: source.includes(`'${code}'`) }).toEqual({ code, emitted: true });
+    }
+  });
+
   for (const file of Object.keys(DOCUMENTS)) {
-    it(`${file} documents every diagnostic the validator emits`, () => {
+    it(`${file} documents every diagnostic the engine emits`, () => {
       expect({ file, missing: missing(emittedCodes(), file) }).toEqual({ file, missing: [] });
     });
 

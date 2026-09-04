@@ -24,6 +24,35 @@ const duration = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.ro
  */
 const wantsColour = ({ tty, noColor, env = process.env }) => Boolean(tty) && !noColor && !env.NO_COLOR;
 
+const stemOf = (segments, depth) => segments.slice(-depth).join('/');
+
+/**
+ * §5.2's display rule over the flows being listed: a flow is shown by the final segment of its id,
+ * and by as much of the path as tells it apart when that segment alone does not.
+ *
+ * Widened a segment at a time and only for the ids that collide, so one pair of `login`s does not
+ * lengthen every other row. Two ids can share every segment only by being the same flow, which the
+ * selection deduplicated, so the widening terminates on the whole id at worst.
+ */
+const displayNames = (ids) => {
+  const segments = new Map(ids.map((id) => [id, id.split('/')]));
+
+  return new Map(
+    ids.map((id) => {
+      const own = segments.get(id);
+      let depth = 1;
+      while (
+        depth < own.length
+        && ids.some((other) => other !== id && stemOf(segments.get(other), depth) === stemOf(own, depth))
+      ) {
+        depth += 1;
+      }
+
+      return [id, stemOf(own, depth)];
+    })
+  );
+};
+
 const createReporter = ({
   write = (line) => process.stdout.write(`${line}\n`),
   tty = Boolean(process.stdout.isTTY),
@@ -153,6 +182,56 @@ const createReporter = ({
         const name = entry.name || paint(90, '(source)');
         line(`  ${name.padEnd(24)} ${paint(90, entry.from)}`);
       }
+    },
+
+    /**
+     * 001 §14.7's listing — the flows a `run` with the same arguments would execute.
+     *
+     * A table a person reads, and deliberately not one to parse: §14.7 makes stdout human output and
+     * machine output the reporters' job, so there is no `--json` here to become a second format to
+     * keep in step with them.
+     *
+     * `kind` is the column §12.5 asks for. A library flow is skipped by a directory run, and a flow
+     * silently not running is the thing it exists to prevent — so the ordinary kind is greyed and the
+     * marked rows are what a scan lands on. `file` carries the whole path however short the displayed
+     * name came out, which is what keeps the listing from being the only place the answer is.
+     */
+    listing: (rows) => {
+      const names = displayNames(rows.map((row) => row.id));
+      const cells = rows.map((row) => ({
+        name: names.get(row.id),
+        kind: row.library ? 'library' : 'flow',
+        steps: String(row.steps),
+        // A Windows console printing mojibake is worse than a plain character (§14.7).
+        tags: row.tags.length ? row.tags.join(', ') : unicode ? '—' : '-',
+        file: row.file
+      }));
+
+      const widthOf = (key, header) => Math.max(header.length, ...cells.map((cell) => cell[key].length));
+      const name = widthOf('name', 'id');
+      const kind = widthOf('kind', 'kind');
+      const steps = widthOf('steps', 'steps');
+      const tags = widthOf('tags', 'tags');
+
+      line(
+        paint(1, `${'id'.padEnd(name)}  ${'kind'.padEnd(kind)}  ${'steps'.padStart(steps)}  ${'tags'.padEnd(tags)}  file`)
+      );
+      for (const cell of cells) {
+        // Padded before it is painted: an escape sequence counts towards a string's length and would
+        // put every column after it out by the width of the colour code.
+        const marked = cell.kind === 'library' ? cell.kind.padEnd(kind) : paint(90, cell.kind.padEnd(kind));
+        line(
+          `${cell.name.padEnd(name)}  ${marked}  ${cell.steps.padStart(steps)}  ${cell.tags.padEnd(tags)}  `
+          + paint(90, cell.file)
+        );
+      }
+
+      const libraries = rows.filter((row) => row.library).length;
+      line();
+      line(
+        `${rows.length} ${rows.length === 1 ? 'flow' : 'flows'}`
+        + (libraries ? ` · ${libraries} ${libraries === 1 ? 'library' : 'libraries'}` : '')
+      );
     },
 
     diagnostics: (file, entries) => {

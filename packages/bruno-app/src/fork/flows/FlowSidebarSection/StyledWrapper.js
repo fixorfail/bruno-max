@@ -14,6 +14,63 @@ export const SuiteProgress = styled.span`
 `;
 
 const StyledWrapper = styled.div`
+  /* §4.1b's search row, sized and coloured as the collection sidebar's own search: it is the same
+     control a row above in the same sidebar, and two search fields that did not match would read as
+     two different kinds of search. */
+  .flow-search {
+    position: relative;
+    margin: 4px 10px 8px 10px;
+
+    input {
+      width: 100%;
+      height: 28px;
+      padding: 0 30px 0 30px;
+      font-size: 12px;
+      color: ${(props) => props.theme.sidebar.color};
+      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+      border: 1px solid transparent;
+      border-radius: 6px;
+      outline: none;
+
+      &::placeholder {
+        color: ${(props) => props.theme.sidebar.muted};
+      }
+
+      &:hover,
+      &:focus {
+        border-color: ${(props) => props.theme.input.border};
+      }
+
+      &:focus {
+        background: ${(props) => props.theme.input.bg};
+      }
+    }
+  }
+
+  .flow-search-icon,
+  .flow-search-clear {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    color: ${(props) => props.theme.sidebar.muted};
+  }
+
+  .flow-search-icon {
+    left: 9px;
+    pointer-events: none;
+  }
+
+  .flow-search-clear {
+    right: 8px;
+    cursor: pointer;
+
+    &:hover {
+      color: ${(props) => props.theme.sidebar.color};
+    }
+  }
+
   .flows-empty {
     padding: 0.25rem 0.75rem;
     color: ${(props) => props.theme.colors.text.muted};

@@ -11,12 +11,16 @@ import {
   IconEdit,
   IconFoldDown,
   IconFoldUp,
+  IconPlayerPlay,
   IconPlayerStop,
   IconPlus,
   IconRefresh,
+  IconSearch,
   IconSettings,
-  IconSitemap
+  IconSitemap,
+  IconX
 } from '@tabler/icons';
+import escapeRegExp from 'lodash/escapeRegExp';
 import toast from 'react-hot-toast';
 import Dropdown from 'components/Dropdown';
 import SidebarSection from 'components/Sidebar/SidebarSection';
@@ -26,7 +30,14 @@ import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
 import { collectionUidForScope } from '../collectionScope';
-import { cancelSuiteRun, flowsFolderFor, listFlowSuites, readFlowProperties, rerunFailedFlows } from '../actions';
+import {
+  cancelSuiteRun,
+  flowsFolderFor,
+  listFlowSuites,
+  readFlowProperties,
+  rerunFailedFlows,
+  runFlowSelection
+} from '../actions';
 import { buildFlowTree, flowLabel, folderKeysOf, relativePathOf } from '../flowTree';
 import { folderToggled, foldersCollapsed, foldersExpanded } from '../slice';
 import CreateFlow from '../CreateFlow';
@@ -74,6 +85,80 @@ const flowsInWorkspace = (flows, workspace) => {
       : Boolean(workspaceRoot) && normalizePath(flow.workspaceRoot) === workspaceRoot
   );
 };
+
+/**
+ * §4.1b: the typed text as a pattern — **an escaped literal**, always case-insensitive.
+ *
+ * The box is a search field, not a regex field: someone typing `payments (v2)` is naming a flow, and
+ * an unescaped pattern would either fail to compile or quietly match `payments v2` instead. `--grep`
+ * compiles the user's own expression because a command line is where a regular expression is worth
+ * offering; both compile with `i`, because `flowSearchTerms` normalises no case and a tag typed in
+ * the wrong one is an empty listing with nothing to explain it.
+ */
+const searchPattern = (text) => new RegExp(escapeRegExp(text), 'i');
+
+/**
+ * What an entry is matched on.
+ *
+ * A flow carries the engine's own `terms` (§11.3) — its id, `meta.name`, tags, `testId`, and each
+ * step's name and `meta:` scalars — which is what makes this box and `bru flow run --grep` agree
+ * about what a flow contains. **A flow therefore matches on text no row displays.** The row is not
+ * annotated with which term found it: a term arrives as a bare string with no field name beside it,
+ * so a listing that said "matched a tag" would be guessing at exactly the moments the reader was
+ * relying on it.
+ *
+ * §4.5's scripts and §4.6's fixtures have no `meta:` to read and are reported with no terms, so they
+ * match on their filename — which is what their row shows and what a `use:` or a `!file` names them
+ * by.
+ *
+ * The **predicate** is spelled here rather than imported: `@bruno-max/flow`'s entry reaches the
+ * runner and `@usebruno/js`'s Node sandbox, which is not a thing to pull into a browser bundle. The
+ * half the two hosts must agree on is the *extraction*, and that stays in the engine and arrives on
+ * the entry.
+ */
+const searchTermsOf = (entry) => entry.terms || [entry.filename];
+
+const matchingFlows = (flows, filter) => {
+  const text = filter.trim();
+  if (!text) {
+    return flows;
+  }
+
+  const pattern = searchPattern(text);
+  return flows.filter((entry) => searchTermsOf(entry).some((term) => pattern.test(term)));
+};
+
+/**
+ * §4.1b's search row — the section's own, directly below the header.
+ *
+ * Its markup is here rather than `components/SearchInput`'s, which hardcodes `autoFocus` and a fixed
+ * DOM `id`: this row is rendered for as long as the section is open, so it would take the caret from
+ * whatever the reader was typing every time the section came back. `Sidebar/Collections`'s own search
+ * row is bespoke for the same reason, and this one is styled to read as its sibling.
+ */
+const FlowSearch = ({ value, onChange }) => (
+  <div className="flow-search">
+    <IconSearch size={14} strokeWidth={1.5} className="flow-search-icon" />
+    <input
+      type="text"
+      name="flow-search"
+      data-testid="flows-search"
+      aria-label="Search flows"
+      placeholder="Search flows..."
+      autoComplete="off"
+      autoCorrect="off"
+      autoCapitalize="off"
+      spellCheck="false"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+    {value === '' ? null : (
+      <div className="flow-search-clear" data-testid="flows-search-clear" onClick={() => onChange('')}>
+        <IconX size={14} strokeWidth={1.5} />
+      </div>
+    )}
+  </div>
+);
 
 /**
  * 002 §4.3's row menu — the way into raw YAML editing, §4.4's properties beside it, and §4.5's rename
@@ -252,6 +337,25 @@ const newestOf = (listed) =>
     null
   );
 
+/** A bucket's flows in the order the section draws them — a level's folders, then its own rows. */
+const flowsInListOrder = (node) => [...node.folders.flatMap(flowsInListOrder), ...node.flows];
+
+/**
+ * §4.1b: what the play button runs — every flow the filter is currently showing, and nothing else.
+ *
+ * **Libraries are not among them.** 001 §12.5 keeps them out of a glob run because running one means
+ * supplying its `params:` first, which is a decision per invocation and not one a button over a list
+ * can make; §4.1 already lists them apart for the same reason. Scripts and fixtures do not run at all.
+ *
+ * In listing order, because the suite's directory sits in the **first** flow's scope: the scope that
+ * ends up owning the record is then the one at the top of the list the reader is looking at.
+ */
+const runnableFlowsOf = (groups) =>
+  groups.flatMap((group) =>
+    group.sections
+      .filter((section) => section.key === 'flows')
+      .flatMap((section) => flowsInListOrder(section.tree)));
+
 /**
  * §4.1a: one folder of a bucket, and what is inside it when it is open.
  *
@@ -259,8 +363,8 @@ const newestOf = (listed) =>
  * more than cosmetic: the rows below carry the run marks and hover menus of flows the reader has
  * chosen not to look at.
  */
-const FlowFolder = ({ folder, depth, expansion, onToggle, renderRow }) => {
-  const expanded = Boolean(expansion[folder.key]);
+const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow }) => {
+  const expanded = isExpanded(folder.key);
 
   const toggle = () => onToggle(folder.key);
 
@@ -287,7 +391,7 @@ const FlowFolder = ({ folder, depth, expansion, onToggle, renderRow }) => {
         <span className="flow-name">{folder.name}</span>
       </div>
       {expanded ? (
-        <FlowNode node={folder} depth={depth + 1} expansion={expansion} onToggle={onToggle} renderRow={renderRow} />
+        <FlowNode node={folder} depth={depth + 1} isExpanded={isExpanded} onToggle={onToggle} renderRow={renderRow} />
       ) : null}
     </>
   );
@@ -302,7 +406,7 @@ const FlowFolder = ({ folder, depth, expansion, onToggle, renderRow }) => {
  */
 // A function declaration, so the mutual recursion with `FlowFolder` reads in render order — folder
 // row, then what is inside it — rather than being inverted to satisfy declaration order.
-function FlowNode({ node, depth, expansion, onToggle, renderRow }) {
+function FlowNode({ node, depth, isExpanded, onToggle, renderRow }) {
   return (
     <>
       {node.folders.map((folder) => (
@@ -310,7 +414,7 @@ function FlowNode({ node, depth, expansion, onToggle, renderRow }) {
           key={folder.key}
           folder={folder}
           depth={depth}
-          expansion={expansion}
+          isExpanded={isExpanded}
           onToggle={onToggle}
           renderRow={renderRow}
         />
@@ -360,6 +464,17 @@ const FlowSidebarSection = () => {
 
   /** §4.7's duplicate — the source flow and the `meta:` the form opens on, or `null` while closed. */
   const [duplicatingFlow, setDuplicatingFlow] = useState(null);
+
+  /**
+   * §4.1b's search text.
+   *
+   * The section's own state rather than the slice's: nothing outside this component reads it, and a
+   * filter is not a thing to restore — one written back by the snapshot would open the app on a
+   * listing missing flows, with the box that explains it below a section header the reader has not
+   * expanded yet. It sits above `SidebarSection`'s body, which unmounts when the section is shut, so
+   * closing and reopening the section keeps what was typed.
+   */
+  const [filter, setFilter] = useState('');
 
   /**
    * §4.4 refuses to open over unsaved YAML, and the refusal is the handling rather than a warning.
@@ -426,7 +541,14 @@ const FlowSidebarSection = () => {
     }
   };
 
-  const groups = useMemo(() => groupFlows(flowsInWorkspace(flows, activeWorkspace)), [flows, activeWorkspace]);
+  const workspaceFlows = useMemo(() => flowsInWorkspace(flows, activeWorkspace), [flows, activeWorkspace]);
+
+  /**
+   * §4.1b filters the **entries**, before they are grouped, so what disappears is the whole listing
+   * of a thing that did not match: a folder whose flows all went is not left behind as an empty
+   * folder row, and neither is a scope's group header or a `Libraries` label.
+   */
+  const groups = useMemo(() => groupFlows(matchingFlows(workspaceFlows, filter)), [workspaceFlows, filter]);
 
   /**
    * §4.1a's header actions act on the folders the section is currently showing, so the keys are
@@ -473,6 +595,8 @@ const FlowSidebarSection = () => {
 
   const notPassed = newestSuite ? newestSuite.suite.flows.filter((record) => record.outcome !== 'passed') : [];
 
+  const suiteRunning = Boolean(suiteRun && suiteRun.state === 'running');
+
   /**
    * §10's retry, in the header rather than on a row: it is about the last *suite*, which belongs to
    * the scope and to nothing the reader can point at in the list.
@@ -492,7 +616,7 @@ const FlowSidebarSection = () => {
    * label.
    */
   const suiteActions = () => {
-    if (suiteRun && suiteRun.state === 'running') {
+    if (suiteRunning) {
       return [
         {
           id: 'cancel-suite',
@@ -546,9 +670,26 @@ const FlowSidebarSection = () => {
     : [];
 
   const menuActions = [...suiteActions(), ...folderActions];
-  const suiteProgress = suiteRun && suiteRun.state === 'running'
+  const suiteProgress = suiteRunning
     ? `${suiteRun.flows.filter((flow) => flow.state === 'done').length} / ${suiteRun.flows.length}`
     : undefined;
+
+  const runnable = useMemo(() => runnableFlowsOf(groups), [groups]);
+
+  /**
+   * §4.1b's play button says what it would run, and when it would run nothing it says why instead.
+   *
+   * The two ways to have nothing runnable are undone by different gestures — clear the box, or go
+   * and write a flow — and a control that is merely dim answers neither. The count is what makes the
+   * button legible while the section is collapsed, which is the one state where the reader can see
+   * the header and not the listing it is about.
+   */
+  const runLabel = () => {
+    if (!runnable.length) {
+      return filter.trim() ? 'No flows match the search' : 'No flows to run';
+    }
+    return `Run ${runnable.length} flow${runnable.length === 1 ? '' : 's'}`;
+  };
 
   /**
    * Creating is the section's one *additive* action and the folder actions are about the tree that is
@@ -565,6 +706,12 @@ const FlowSidebarSection = () => {
    *
    * §10's progress sits in the header rather than in the menu holding Cancel: a suite runs for
    * minutes and the whole point of the count is to be readable without opening anything.
+   *
+   * **§4.1b's play button goes where the header already acts on what is listed** — after the `+`,
+   * beside the menu whose folder actions have the same subject. It is *absent* while a suite runs
+   * rather than disabled: the header already holds that suite's progress and its Cancel, and a second
+   * control over one suite directory is either a duplicate of the stop beside it or an offer to start
+   * a second suite, which the runner has no state for.
    */
   const sectionActions = (
     <>
@@ -573,6 +720,17 @@ const FlowSidebarSection = () => {
       <ActionIcon label="Add new Flow" onClick={openCreateFlow} data-testid="flows-header-add">
         <IconPlus size={14} stroke={1.5} aria-hidden="true" />
       </ActionIcon>
+
+      {suiteRunning ? null : (
+        <ActionIcon
+          label={runLabel()}
+          disabled={runnable.length === 0}
+          onClick={() => dispatch(runFlowSelection(runnable))}
+          data-testid="flows-header-run"
+        >
+          <IconPlayerPlay size={14} stroke={1.5} aria-hidden="true" />
+        </ActionIcon>
+      )}
 
       {menuActions.length ? (
         <MenuDropdown data-testid="flows-header-actions-menu" items={menuActions} placement="bottom-end">
@@ -618,6 +776,15 @@ const FlowSidebarSection = () => {
   };
 
   const toggleFolder = (key) => dispatch(folderToggled({ key }));
+
+  /**
+   * §4.1a's fold, except while §4.1b is filtering — a filtered listing is drawn open.
+   *
+   * Every row left is one the reader just asked for, and a folder that kept a match hidden would
+   * answer a search with a directory to open; the play button would also be counting flows nobody
+   * could see. The fold itself is untouched and takes effect again the moment the box is cleared.
+   */
+  const isFolderExpanded = (key) => Boolean(filter.trim()) || Boolean(folderExpansion[key]);
 
   /**
    * One row of a bucket's tree, at the depth the tree put it. §4.5's scripts carry a rename and
@@ -723,7 +890,16 @@ const FlowSidebarSection = () => {
         className="flows-section"
       >
         <StyledWrapper>
-          {groups.length === 0 ? <div className="flows-empty">No flows found</div> : null}
+          {/* The box is offered while there is anything to narrow — and while it still holds text,
+              whatever became of the listing. A search field that took itself away with the last row
+              it matched would leave a filter in force and no way to clear it. */}
+          {workspaceFlows.length > 0 || filter !== '' ? <FlowSearch value={filter} onChange={setFilter} /> : null}
+
+          {/* A search that matched nothing is a different answer to a scope that holds nothing, and
+              the reader has just typed the thing that makes them different. */}
+          {groups.length === 0 ? (
+            <div className="flows-empty">{filter.trim() ? 'No flows match the search' : 'No flows found'}</div>
+          ) : null}
 
           {groups.map((group) => (
             <div key={group.root} className="flow-group">
@@ -738,7 +914,7 @@ const FlowSidebarSection = () => {
                   <FlowNode
                     node={section.tree}
                     depth={0}
-                    expansion={folderExpansion}
+                    isExpanded={isFolderExpanded}
                     onToggle={toggleFolder}
                     renderRow={renderRow}
                   />

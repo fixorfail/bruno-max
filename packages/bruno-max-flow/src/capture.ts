@@ -1,11 +1,15 @@
 /**
  * The capture directory — 001 §14.5.
  *
- * The engine owns the layout: it computes every path, decides what a run directory contains, and
- * applies retention. A host supplies `WriteFile`, `ListDirectory` and `RemoveDirectory` and nothing
- * more (§13.2). That division is what lets `readCapture` (002 §11.2) read back what either host
- * produced — a host-side writer would put one declared layout in two implementations and let the
- * CLI and the app produce directories neither can fully read.
+ * The engine owns the layout: it computes every path and decides what a run directory contains. A
+ * host supplies `WriteFile` and `ListDirectory` and nothing more (§13.2). That division is what lets
+ * `readCapture` (002 §11.2) read back what either host produced — a host-side writer would put one
+ * declared layout in two implementations and let the CLI and the app produce directories neither can
+ * fully read.
+ *
+ * **Nothing here deletes.** §14.5 keeps every run: the capture root is gitignored, grows with each
+ * one, and is the user's to clear. `RemoveDirectory` is a port for §19's clearing of runs, which has
+ * no caller yet — see `types/ports.ts`.
  *
  * Redaction (§14.4) is applied on the way in, never after: §14.5 requires that a secret is not
  * written into a file buffer and then removed from it.
@@ -70,8 +74,27 @@ export const flowDigest = (source: string): string => createHash('sha256').updat
 const pathSafeTimestamp = (startedAt: string): string => startedAt.replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
 
 /** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus the runId's first four hex. */
+/**
+ * The four characters that disambiguate two directories named for the same second.
+ *
+ * **Hex, whatever the host's id alphabet is.** `RUN_DIRECTORY` and `SUITE_DIRECTORY` match `[0-9a-f]`,
+ * and a host is free to mint an id in any alphabet it likes — 002 §11.3's suite id is the renderer's.
+ * Passing one through untouched produced directory names the engine's own readers then refused to
+ * descend into, so the run inside was written correctly and was invisible to `listRuns` forever
+ * after. A producer whose output its matcher rejects is the bug; this is where the two are made to
+ * agree.
+ *
+ * A UUID keeps the four characters it always had, so nothing already on disk is renamed and a suite
+ * of one still shares its suffix with the run inside it. Anything else is hashed rather than
+ * filtered, because filtering a short id to its hex characters can leave almost nothing.
+ */
+const shortId = (id: string): string => {
+  const hex = id.replace(/-/g, '');
+  return /^[0-9a-f]{4}/.test(hex) ? hex.slice(0, 4) : createHash('sha256').update(id).digest('hex').slice(0, 4);
+};
+
 const runDirectoryName = (startedAt: string, runId: string): string =>
-  `${pathSafeTimestamp(startedAt)}-${runId.replace(/-/g, '').slice(0, 4)}`;
+  `${pathSafeTimestamp(startedAt)}-${shortId(runId)}`;
 
 /** An id may legally spell one of these (§5.2's charset allows it) and Windows would refuse it. */
 const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
@@ -239,8 +262,8 @@ export type Capture = {
   /** Where the run's directory lives, for `RunResult.captureDir`. */
   readonly dir: string;
   /**
-   * Prunes to retention, writes `run.json` and — when the flow could be described — the snapshot
-   * beside it, and ignores the capture root on first creation.
+   * Writes `run.json` and — when the flow could be described — the snapshot beside it, and ignores
+   * the capture root on first creation.
    */
   start(snapshot?: FlowSnapshot): Promise<void>;
   /**
@@ -288,7 +311,7 @@ export const resolveCaptureRoot = (scope: Scope, dir?: string): string =>
  * directory with the runs. `SUITE_DIRECTORY` says why the prefix matters.
  */
 export const resolveSuiteDirectory = (captureRoot: string, startedAt: string, suiteId: string): string =>
-  path.join(captureRoot, `suite-${pathSafeTimestamp(startedAt)}-${suiteId.slice(0, 4)}`);
+  path.join(captureRoot, `suite-${pathSafeTimestamp(startedAt)}-${shortId(suiteId)}`);
 
 /** Every JSON file under the capture root looks the same on disk: two-space, one trailing newline. */
 const jsonBytes = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value, null, 2)}\n`);

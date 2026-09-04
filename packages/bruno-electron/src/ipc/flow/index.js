@@ -108,6 +108,12 @@ const requireScope = (scope) => {
  * depends on are enforced here: it edits **a flow**, and it edits one **inside the scope it named**.
  * Without the second, a scope's own path is no constraint at all — `../../etc/anything.flow.yml`
  * satisfies the extension and nothing else.
+ *
+ * **Containment, not membership.** The caller names the scope, here as everywhere else on this
+ * channel, so what this guarantees is that an entry resolves inside the root sent *with it* — not
+ * that the root is one the app has open, which no check on this side could tell. A suite's per-flow
+ * scope therefore widens an invocation to several roots and not to none: every entry is still
+ * refused unless it sits inside the one it was checked against.
  */
 const requireFlowInScope = (entry, scope) => {
   requireScope(scope);
@@ -580,6 +586,11 @@ const rosterIdentity = async (file, scope) => {
  * why a rerun needs no second viewer: the flow's tab folds `main:flow-run-event` without learning
  * that a suite is running it.
  *
+ * The `scope` is the roster entry's own — the suite's, unless that entry named one — because it is
+ * what §7.2 resolves the flow's environment, its `.env` and its scripts' `require` against. The
+ * capture directory is the suite's whichever scope the flow came from: 001 §14.5's invocation has
+ * one directory, and it belongs to the scope the suite was started in.
+ *
  * `suite:flow-start` is sent once the run has an identity rather than before, because the event
  * carries the `runId` a reader would use to open it. A flow refused before `run:start` therefore
  * gets a `suite:flow-end` and no start — it never ran, and 001 §14.6 calls that `invalid`.
@@ -647,7 +658,7 @@ const runSuiteFlows = async (win, suite, { suiteId, roster, scope, tiers, overri
       records.push({ ...flow.identity, outcome: 'cancelled' });
       continue;
     }
-    records.push(await runSuiteFlow(win, suite, { suiteId, scope, tiers, overrides, dir, ...flow }));
+    records.push(await runSuiteFlow(win, suite, { suiteId, tiers, overrides, dir, ...flow }));
   }
 
   const finishedAt = new Date().toISOString();
@@ -690,6 +701,10 @@ const runSuiteFlows = async (win, suite, { suiteId, roster, scope, tiers, overri
  * Sequential, and deliberately so. 001 §7.6 gives the app one process-wide cookie jar, so two flows
  * running at once would share it; and a rerun is read as a list, top to bottom, which concurrency
  * would scramble for no gain a user asked for.
+ *
+ * The suite's own `scope` is what its directory is opened in and what its roster is written through,
+ * even when the flows come from several — the CLI's rule, where the first selected flow's scope owns
+ * the invocation's directory, so a cross-scope selection is still one suite with one `suite.json`.
  */
 const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryOf }) => {
   requireScope(scope);
@@ -713,13 +728,22 @@ const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryO
   // Every flow is scope-checked before any of them runs: the preload forwards any channel, and a
   // selection half-executed before its bad entry was noticed is the state nothing can report.
   const roster = await Promise.all(
-    flows.map(async (flow) => ({
-      entry: flow.entry,
-      // Per flow rather than per suite: §12.5's params are declared by the flow that consumes them,
-      // so a library flow in a rerun is given whatever its own run panel is holding.
-      params: flow.params,
-      identity: await rosterIdentity(requireFlowInScope(flow.entry, scope), scope)
-    }))
+    flows.map(async (flow) => {
+      // A selection can span a workspace and the collections inside it, so an entry may carry a
+      // scope of its own and is checked — and later run and named — against *that* one. Without it
+      // the entry belongs to the suite's, which is what a rerun of a past suite sends: every flow in
+      // a roster came from one invocation, so one scope covers all of them.
+      const flowScope = requireScope(flow.scope || scope);
+
+      return {
+        entry: flow.entry,
+        scope: flowScope,
+        // Per flow rather than per suite: §12.5's params are declared by the flow that consumes them,
+        // so a library flow in a rerun is given whatever its own run panel is holding.
+        params: flow.params,
+        identity: await rosterIdentity(requireFlowInScope(flow.entry, flowScope), flowScope)
+      };
+    })
   );
 
   const suite = { cancelled: false, run: undefined, done: undefined };

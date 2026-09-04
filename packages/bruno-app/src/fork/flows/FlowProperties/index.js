@@ -212,7 +212,7 @@ const FlowProperties = ({ flow, properties, onClose }) => {
             onChange={formik.handleChange}
             value={formik.values.tags}
           />
-          <div className="flow-field-hint">Comma separated. `bru flow run --tags` selects on these.</div>
+          <div className="flow-field-hint">Comma separated. `bru flow run --grep` selects on these.</div>
 
           <label className="flow-library-option mt-3">
             <input

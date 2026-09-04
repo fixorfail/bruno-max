@@ -46,7 +46,10 @@ describe('FlowsWatcher', () => {
     expect(flows[0]).toEqual({
       pathname: path.join(flowsDir, 'checkout.flow.yml'),
       filename: 'checkout.flow.yml',
-      workspaceRoot
+      workspaceRoot,
+      // `flowIdentity` names an undeclared flow by its file, so a flow with no `meta:` is still
+      // findable by what it is called.
+      terms: ['flows/checkout', 'checkout']
     });
   });
 
@@ -144,6 +147,81 @@ describe('FlowsWatcher', () => {
 
     expect(flow.collectionRoot).toBe(collectionRoot);
     expect(flow.workspaceRoot).toBe(workspaceRoot);
+  });
+
+  /**
+   * What the sidebar's search box filters on. The terms are the engine's extraction rather than the
+   * fields a row draws, because the box and `bru flow run --grep` have to agree about what a flow
+   * contains — a flow findable in one and not the other is a bug with no explanation.
+   */
+  describe('search terms', () => {
+    it('carries the id, the name, the tags and each step\'s name and meta', async () => {
+      fs.writeFileSync(
+        path.join(flowsDir, 'checkout.flow.yml'),
+        [
+          'version: 1',
+          'meta:',
+          '  name: Checkout',
+          '  tags:',
+          '    - smoke',
+          'steps:',
+          '  - id: pay',
+          '    name: Pay the invoice',
+          '    meta:',
+          '      jira:',
+          '        key: PAY-41',
+          ''
+        ].join('\n')
+      );
+
+      const [flow] = await watcher.listFlows({ workspaceRoot });
+
+      expect(flow.terms).toEqual(['flows/checkout', 'Checkout', 'smoke', 'pay', 'Pay the invoice', 'PAY-41']);
+    });
+
+    /** The id is the flow's identity (001 §5.2), so it is relative to the scope the flow belongs to. */
+    it('names a collection-scoped flow relative to its collection', async () => {
+      const collectionRoot = path.join(workspaceRoot, 'payments');
+      fs.mkdirSync(path.join(collectionRoot, 'flows'), { recursive: true });
+      fs.writeFileSync(path.join(collectionRoot, 'flows', 'settle.flow.yml'), 'version: 1\n');
+
+      const [flow] = await watcher.listFlows({ workspaceRoot, collectionRoot });
+
+      expect(flow.terms).toEqual(['flows/settle', 'settle']);
+    });
+
+    /** 002 §6: an unparseable flow is ordinary, and is still findable by the path it already has. */
+    it('indexes a flow that does not parse by its path alone', async () => {
+      fs.writeFileSync(path.join(flowsDir, 'broken.flow.yml'), 'steps: [ unterminated');
+
+      const [flow] = await watcher.listFlows({ workspaceRoot });
+
+      expect(flow.terms).toEqual(['flows/broken', 'broken']);
+    });
+
+    it('re-indexes a flow whose metadata changed', async () => {
+      const flowFile = path.join(flowsDir, 'checkout.flow.yml');
+      fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Checkout\n');
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => sent('addFile').length === 1);
+
+      fs.writeFileSync(flowFile, 'version: 1\nmeta:\n  name: Checkout\n  tags:\n    - slow\n');
+      await until(() => sent('changeFile').length === 1);
+
+      expect(sent('changeFile')[0][2].terms).toEqual(['flows/checkout', 'Checkout', 'slow']);
+    });
+
+    /** §4.5 and §4.6 are source and data: they have no `meta:`, and the app filters them by filename. */
+    it('gives a script and a fixture none', async () => {
+      fs.mkdirSync(path.join(flowsDir, 'scripts'));
+      fs.mkdirSync(path.join(flowsDir, 'fixtures'));
+      fs.writeFileSync(path.join(flowsDir, 'scripts', 'text.js'), '\n');
+      fs.writeFileSync(path.join(flowsDir, 'fixtures', 'catalog.json'), '{}\n');
+
+      const flows = await watcher.listFlows({ workspaceRoot });
+
+      expect(flows.map((flow) => flow.terms)).toEqual([undefined, undefined]);
+    });
   });
 
   /**
