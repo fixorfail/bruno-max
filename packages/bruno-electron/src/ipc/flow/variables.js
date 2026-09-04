@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { parseDotEnv } = require('@usebruno/filestore');
+const { valueToString } = require('@usebruno/common/utils');
 const { getEnvVars } = require('../../utils/collection');
 
 /**
@@ -55,4 +56,35 @@ const buildVariables = ({ tiers = {}, scope }) => ({
   processEnv: processEnvFor(scope)
 });
 
-module.exports = { buildVariables };
+/**
+ * The values 001 §14.4's provenance redaction follows — masked wherever they later surface.
+ *
+ * Values rather than names, because §14.4 tracks a secret by its value: one copied into a header, a
+ * body or a captured variable stays masked without anything having to model where it went.
+ *
+ * **Only what a host uniquely knows.** The engine derives the auth-profile credentials and the
+ * declared `secret: true` params for itself; which *environment* entries are marked secret is the
+ * part it cannot see, so that is the whole of what this contributes.
+ *
+ * **Beside `buildVariables` rather than on its return.** That function returns exactly the engine's
+ * `VariableTiers`, and `secrets` is a sibling of `variables` in `RunOptions` rather than a tier —
+ * folding it in would make the returned object something the engine's own shape no longer describes.
+ *
+ * `collectionVars` has no entries to read: a request variable carries no `secret` flag, and
+ * `bruno-schema`'s `varsSchema` is `noUnknown` and would refuse one.
+ *
+ * The entries hold plaintext by the time they reach here — the collection watcher hydrates an
+ * environment's secrets from the encrypted store and decrypts them before the renderer ever sees
+ * them, and `globalEnvironmentsStore` decrypts on read.
+ */
+const collectSecrets = ({ tiers = {} }) => [
+  ...new Set(
+    [...(tiers.globalEnvironment?.variables || []), ...(tiers.environment?.variables || [])]
+      .filter((variable) => variable.secret && variable.enabled)
+      .map((variable) => valueToString(variable.value))
+      // A secret declared but never filled in would otherwise mask every empty string in the report.
+      .filter((value) => value.trim())
+  )
+];
+
+module.exports = { buildVariables, collectSecrets };

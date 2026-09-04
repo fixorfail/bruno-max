@@ -624,7 +624,7 @@ Do not write a flow that depends on these:
 - **The document schema** — unknown and misspelled keys are silently ignored.
 - **Connector files (`connectors.yml`)** — declare `outputs:` on the step. For shared *code*,
   `functions:` is built and works.
-- **`--env`, `--dataset`, `--dry-run`, `--strict`, `--show-sensitive`** — specified but not flags;
-  `bru flow run` rejects each as unknown. On the command line a collection environment's values come
+- **`--dry-run`** — specified, scheduled for v2 (001 §19.1), not a flag; `bru flow run` rejects it
+  as unknown. There is no `--env` either: on the command line a collection environment's values come
   from `--env-var` or the process environment.
 - **`bru flow schema`** — the command takes `run`, `validate` and `list` only.

@@ -31,7 +31,10 @@ describe('the workspace environment', () => {
         '  - name: retired',
         '    value: https://old.example.com',
         // The yml environment format spells this `disabled`, not `enabled: false`.
-        '    disabled: true'
+        '    disabled: true',
+        '  - name: token',
+        '    value: abracadabra',
+        '    secret: true'
       ].join('\n') + '\n'
     );
   });
@@ -45,6 +48,15 @@ describe('the workspace environment', () => {
 
   it('leaves a disabled variable out, as every other tier does', () => {
     expect(workspaceEnvironment('staging', workspace)).not.toHaveProperty('retired');
+  });
+
+  /**
+   * Why the CLI supplies nothing to 001 §14.4's provenance redaction: `parseEnvironment` zeroes a
+   * secret's value rather than reading one, so even a value written straight into the file arrives
+   * empty and there is no value here the CLI could tell the engine to mask.
+   */
+  it('has no value for a secret variable, even one written into the file', () => {
+    expect(workspaceEnvironment('staging', workspace).token).toBe('');
   });
 
   /**

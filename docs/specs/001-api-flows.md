@@ -3185,8 +3185,8 @@ would silently lose run identity and pruning along with the payloads.
 root and refused if it escapes.
 
 **Variables arrive as tiers, not as a merged map.** §7.3's precedence chain is a flow semantic and
-belongs to the engine; *finding* each tier — locating `bruno.json`, resolving `--env` across
-collection, workspace and global scopes (§14.1) — is host knowledge. Handing over a pre-merged map
+belongs to the engine; *finding* each tier — locating `bruno.json`, resolving the selected
+environment across collection, workspace and global scopes (§14.1) — is host knowledge. Handing over a pre-merged map
 would move the ordering into two hosts and let them disagree about which scope wins, which is the
 one thing this package exists to prevent.
 
@@ -3698,11 +3698,10 @@ from the shell.
 
 | Flag | Purpose |
 |---|---|
-| `--env <name>` | **Not built.** Bruno environment to run against |
 | `--global-env <name>` | Workspace environment to run against — `<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses; the name is recorded as the run's origin (§14.8.1) |
 | `--env-var k=v` | Override a single variable (repeatable) |
 | `--param k=v` | Supply a declared `params` value (repeatable); for running a library flow directly |
-| `--dataset <path>` | **Not built.** Override the flow's dataset — the engine already takes it as `overrides.dataset` (§13.2); only the flag is missing |
+| `--dataset <path>` | Run each selected flow over this dataset (§9.4) instead of the one it declares, and over one it declares none. Resolved from the working directory, then held to the scope root like any other fixture path (§7.4) |
 | `--concurrency <n>` | Override `config.concurrency` |
 | `--max-run-duration <ms>` | Bound the whole run; elapsing takes the cancellation path and exits 4 (§11.3) |
 | `--grep <pattern>` | Run only the selected flows this case-insensitive regular expression matches |
@@ -3716,22 +3715,39 @@ from the shell.
 | `--reporter-json [<path>]` | Sugar for `--reporter json[=<path>]` |
 | `--reporter-html [<path>]` | Sugar for `--reporter html[=<path>]` |
 | `--reporter-option k=v` | Repeatable; passed to every reporter's `ReporterContext.options` (§14.8) |
-| `--strict` | **Not built.** Promote §14.3's warnings to errors (exit 2) |
-| `--show-sensitive` | **Not built.** Disable masking **for stdout only**; never affects reporter files or captures (§14.4) |
+| `--strict` | Promote §14.3's warnings to errors (exit 2) |
 | `--verbose` / `--quiet` / `--silent` | Console detail level (§14.7) |
 | `--no-color` / `--no-unicode` | Disable ANSI colour or box-drawing glyphs (§14.7) |
 | `--no-capture` / `--capture-dir <path>` | Disable capture, or relocate the capture root (§14.5) that each invocation's suite directory (§14.8.5) is written under |
-| `--dry-run` | **Not built.** Materialize and validate every step, send nothing |
+| `--dry-run` | **v2** (§19.1). Materialize and validate every step, send nothing |
 
-**Five rows are marked because this document runs ahead of the builder, and an unmarked row reads as
-a promise.** `--env`, `--dataset`, `--strict`, `--show-sensitive` and `--dry-run` are specified, argued
-for below and in §14.2, §14.4 and §17, and not implemented — `bru flow run` rejects each as an unknown
-flag today. They stay in the table rather than moving to §19 because each is a decision already taken
-that the rest of this section depends on: §7.1's spec-coupling argument rests on `--dry-run`, §14.4's
-masking rule is stated as the thing `--show-sensitive` may not override, and the environment tiers
-below are what `--env` would select across. Deleting the rows would delete the reasoning with them
-and leave a reader to re-derive it. The marker is the honest form: the design is settled, the flag is
-not there.
+**One row is marked, and the marker now names a release.** `--dry-run` is specified, argued for
+below and in §17, and not implemented — `bru flow run` rejects it as an unknown flag today. It stays
+in this table rather than moving wholesale to §19 because it is a decision already taken that the
+rest of this section depends on: §7.1's spec-coupling argument rests on it, and deleting the row
+would delete that reasoning with it. What §19.1 adds is the half the old marker left to inference —
+**when**. "Not built" said only that the prose ran ahead of the code; "v2" says which side of the
+upstream merge it lands on, and §19.1 says what it is waiting for.
+
+**`--env` was specified here and has been removed.** `--global-env` names a workspace environment —
+`<workspace>/environments/<name>.yml`, the file and flag `bru run` already uses — and that is the
+only environment file `bru flow run` selects. A second flag for collection environments would have
+bought a resolution order to get wrong (collection first, then workspace, first match wins) and a
+second name to record in §13.2's `origin`, to reach a tier the CLI has never filled. What is
+genuinely lost is naming a collection's own environment on the command line: those values come from
+`--env-var` or the process environment instead, and the app's run control selects a collection
+environment normally. The tier itself stays in §7.3's chain — it is a rank the app fills and `bru`
+leaves empty, not a rank that stopped existing.
+
+**`--show-sensitive` was specified here and has been removed**, which makes §14.4's masking
+unconditional: no flag, no environment variable and no reporter option unmasks a value, on any
+surface, in either host. The flag was always the narrower half of its own rule — stdout only, never
+a file — so what it bought was one terminal's convenience against a standing risk, that the flag
+reaches a CI invocation once and is never taken back out. Someone who needs the real value already
+has it where it came from: the environment file, the secret store, or the `--env-var` they typed
+themselves. Removing it also collapses an argument the fork was making three times over —
+[002](./002-api-flows-ui.md) §9 and §8.5 no longer have to explain why the app has no equivalent to
+a flag that does not exist.
 
 **`--tags` / `--exclude-tags` was specified here and has been removed** — `--grep` and `--grep-invert`
 now cover it, and better. A tag was only ever one of the fields a person searches by, so a flag that
@@ -3809,10 +3825,12 @@ locate the collection and workspace roots, then resolves paths against whichever
 bare `bru flow run` with no path runs every non-library flow in the current collection, or in the
 workspace when invoked outside one.
 
-**`--env` resolves** collection environments → workspace/global environments, first match wins. A
-workspace-scoped flow simply has no collection tier. Those are **two** tiers, not three: a
-workspace's environments are what Bruno calls global environments, one mechanism served by
-`renderer:get-global-environments` (§5.1, and [002](./002-api-flows-ui.md) §7.2).
+**`--global-env` resolves** against the workspace's environments, and nothing else: it is the only
+environment file the CLI selects, so a collection-scoped flow run under `bru` has an empty
+collection tier and gets those values from `--env-var` or the process environment. A workspace's
+environments are what Bruno calls global environments, one mechanism served by
+`renderer:get-global-environments` (§5.1, and [002](./002-api-flows-ui.md) §7.2). The collection
+tier is not gone — §7.3 still ranks it, and the app still fills it.
 
 `--dry-run` is what makes §7.1's spec-coupling safe to live with: it prints the effective request
 for every step, so a spec change's blast radius is inspectable before it runs. It also runs
@@ -3851,7 +3869,27 @@ narrower one, validation alone, there being no run for anything to refuse.
 
 `--strict` promotes every warning listed in §14.3 to an error, so a pipeline can gate on undeclared
 dependencies or shadowed namespaces instead of only on hard failures. It applies to both `run` and
-`validate`.
+`validate`, and a flow it stops is stopped **before anything is dispatched** — which is what earns
+the `2`, and what makes the two commands agree about a given file.
+
+**It promotes validation warnings and nothing else.** The engine raises one warning of its own
+during a run, `capture-write-failed` (§14.5), and §14.6 is explicit that a flow whose steps passed
+did pass whatever the disk then did. A flag that turned it into "the flow did not run" would report
+a full disk as a broken flow, and would make an outcome depend on something no reader of the flow
+can see.
+
+**`--dataset` supplies a dataset as readily as it replaces one.** A flow declaring `dataset:` has
+its `source:` replaced; a flow declaring none is iterated over the given file. The narrower reading
+— an override that requires something to override — serves the rarer half of what the option is
+for, which is a flow written against one row set and pointed at another by CI. `parallel:` stays
+the flow's either way: it says whether *these steps* can safely overlap, which is a property of the
+flow and not of the rows, so a flow tuned for concurrent iterations keeps that tuning when the
+source changes under it.
+
+The path is resolved from the working directory, because that is where it was typed, and then held
+to §7.4's scope root exactly as a `dataset:` written in the file is. One flag names one file for
+every flow the invocation selected, which is worth knowing before pointing `--dataset` at a
+directory of flows that do not all read the same columns.
 
 **A `--grep` or `--grep-invert` that is not a valid regular expression is a usage error (`3`), raised
 before any flow runs.** Both are compiled before a path is even resolved, joining the checks
@@ -4134,10 +4172,12 @@ the secret.
 **Redaction is applied before serialization**, so a secret is never written into a file buffer and
 then removed.
 
-`--show-sensitive` disables masking **for stdout only**. It has no effect on reporter files, ever.
-Stdout is ephemeral and local to whoever ran the command; reporter files get archived as CI
-artifacts, attached to tickets, and committed by accident. Those two deserve different defaults,
-and the safe one should not be overridable by a flag someone copy-pastes into a pipeline.
+**Masking has no override.** No flag, environment variable or reporter option unmasks a value, on
+any surface, in either host. A flag unmasking stdout alone was specified here once, on the grounds
+that stdout is ephemeral and local to whoever ran the command — but reporter files and captures get
+archived as CI artifacts, attached to tickets and committed by accident, and a flag that reaches a
+pipeline is never taken back out. Someone who needs the real value reads it where it came from
+(§14.1).
 
 The existing `--reporter-skip-headers`, `--reporter-skip-all-headers`,
 `--reporter-skip-request-body` and `--reporter-skip-response-body` flags continue to work and
@@ -4378,7 +4418,7 @@ it was recorded, and on a host that named none.
 
 **Redaction (§14.4) applies to the artifact directory exactly as it does to reporter output.**
 This is the more important of the two: `.bruno-runs/` is precisely the thing a CI job uploads as a
-build artifact, and `--show-sensitive` never affects files.
+build artifact, and nothing unmasks it (§14.4).
 
 **Nothing is ever pruned.** The capture root grows with every run, and clearing it is the user's.
 The alternative — a bound that silently deletes the oldest runs — is the worse failure: the
@@ -4602,8 +4642,7 @@ would forfeit exactly the stall-localising property the stream exists for.
 | `--silent` | nothing; the exit code is the whole result |
 | `--no-unicode` / `--no-color` | as above |
 
-Redaction (§14.4) applies to all of it, including `--verbose` previews. `--show-sensitive` affects
-stdout only and never reporter files.
+Redaction (§14.4) applies to all of it, including `--verbose` previews, and nothing turns it off.
 
 **Collapsing a sub-flow is a display choice, not a reporting one.** Its internal steps are in
 `IterationResult.steps` and in the event stream either way (§13.2) — the default output prints one
@@ -4845,9 +4884,9 @@ it left that table because the work it named is now specified rather than merely
 **Redaction holds by construction.** A reporter's only inputs are `FlowEvent` (via `onEvent`) and
 `RunResult` (via `FlowRunRecord.result` and `SuiteResult`), and §14.4's masking is applied before
 either is emitted — there is no unredacted form of either type for a reporter to have been handed
-instead. `ReporterContext` carries `outputPath`, `cwd` and `options`; none of those is
-`--show-sensitive`, which disables masking for stdout only (§14.4) and has no path into a reporter at
-all, so a custom reporter cannot opt itself out of redaction even by reading its own options.
+instead. `ReporterContext` carries `outputPath`, `cwd` and `options`; none of those is an unmasking switch,
+and §14.4 leaves no override anywhere for one to reach, so a custom reporter cannot opt itself out
+of redaction even by reading its own options.
 
 #### 14.8.1 The JUnit mapping (step-level)
 
@@ -5362,7 +5401,8 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | A `flows.lock` drift report | Another artifact to maintain and re-lock, for a signal `--dry-run` and schema-aware validation already cover. |
 | Header-name denylist as the only redaction | Blind to secrets in query params and request bodies, and to any header name nobody predicted. |
 | Redacting all headers and bodies by default | Destroys `--dry-run`'s purpose — inspecting a spec change's blast radius — to solve a problem targeted masking already solves. |
-| A `--show-sensitive` that also applies to reporter files | Reporter files are archived as CI artifacts and attached to tickets; a flag copy-pasted into a pipeline would leak them permanently. |
+| A `--show-sensitive` flag, on any surface | Specified here once and removed (§14.1). Reporter files and captures are archived as CI artifacts and attached to tickets, and a flag copy-pasted into a pipeline is never taken back out; the real value is still readable where it came from. |
+| A `--env` flag selecting a collection environment | `--global-env` already names the one environment file the CLI reads. A second flag buys a resolution order to get wrong and a second name to record as the run's origin, to reach a tier `bru` has never filled (§14.1). |
 | Reusing upstream's existing JSON/JUnit/HTML reporters unchanged | They consume `bru run`'s flat per-request result, not a flow's graph — the DAG, sub-flow internals and skip reasons a flow report needs have no field in that shape (§14.8). |
 | Capturing only failed steps | A failure caused by a bad value three steps upstream gives no way to see where that value entered. |
 | Capturing full bodies inline in reporters | Reporter files reach hundreds of megabytes on large payloads, and JUnit XML carrying an embedded binary body may not parse in some CI consumers. |
@@ -5574,8 +5614,12 @@ directory would hold both that step's attempts and the sub-flow's children. `rea
 [002](./002-api-flows-ui.md) §11.2 reads it back, so the two have to agree.
 
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
-without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and
-002 §15 defers the app's dry run on the premise that the engine already supports it.
+without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and it
+is the question §19.1 names as what the v2 work waits on — a dry run that resolved every step
+reference to nothing would print requests a real run would never send, which is worse than no dry
+run for a feature whose whole purpose is showing what *would* be sent. The premise 002 §15 used to
+defer the app's half on — that the engine already supports it — was never true and has been
+corrected there.
 
 **What is in `ctx` for a `script:` form?** Assembled piecemeal: `ctx.env` (§8.2), `ctx.steps`
 (§9.3), `ctx.env` / `ctx.steps` / `ctx.failures` (§11.1). Whether `row`, `params`, `shared` and
@@ -5604,20 +5648,45 @@ adopting one later costs no migration. This list is distinct from its neighbours
 from the feature's purpose, §17 records decisions taken against, and this section holds work that is
 wanted but not now.
 
+**"Not now" has two meanings, and separating them is the point of the two tables below.** *v1* is
+what this fork ships and what the pull request to `usebruno/bruno` carries. *v2* is the work that
+begins once that merge lands. §19.1 holds what is committed to v2 — scoped, argued for, and waiting
+on the merge rather than on a decision. §19.2 holds what is wanted with no release attached, which
+is the older and much larger list; an item moves up when someone commits to it, not when it is
+agreed to be a good idea.
+
+The line is worth drawing because of what an *unmarked* feature in this document otherwise means. A
+reader who finds `--dry-run` argued for across four sections has no way to tell whether it arrives
+next month or eventually, and the honest answer is not inferable from how confidently the prose
+around it is written. Every deferred item in this spec now sits in exactly one of the two tables.
+
+**UI work is not listed here even when it is v2.** [002](./002-api-flows-ui.md) §15 keeps the same
+split for the app, for the reason this section's closing note already gives: a UI deferral recorded
+in two tables is a UI deferral that will drift.
+
+### 19.1 v2 — after the upstream merge
+
+| Item | Why not v1 | What it needs |
+|---|---|---|
+| **`--dry-run`** (§14.1, §7.1) | It is a second execution mode rather than a flag: materialize and validate every step, print each one's effective request and resolved outputs, dispatch nothing. The blocker is not the plumbing but §18's open question — with no step having run, there is no honest value for `{{steps.*}}`, and a dry run that quietly resolved them to nothing would print requests that are not the ones a real run would send. That is a worse artifact than no dry run at all, because §7.1 offers it as the way to inspect a spec change's blast radius | §18's answer for `{{steps.*}}` under a dry run, an engine run mode that stops before `ExecuteRequest`, the printer for a resolved request and for each step's outputs with the file each was declared in (§14.1), and the `--dry-run` row of [001-C](./001-api-flows-conformance.md) R4h, which is written and cannot pass today |
+
+### 19.2 Wanted, with no release attached
+
 | Item | Why not now | What it needs |
 |---|---|---|
 | **Non-REST protocols** — GraphQL, gRPC, WebSocket, SSE (§3) | The graph, connectors and assertions are protocol-agnostic; only the OpenAPI binding assumes HTTP | An operation-identity equivalent to `operationId` per protocol, so a request is *referenced* rather than duplicated — the premise of goal 1 |
 | **Deterministic seeding for generated data** (§7.3) | Generation currently cannot be replayed; §14.5 captures record what was sent, so failures stay diagnosable | A run seed in run metadata and seeded generators, plus `--seed` to replay one |
 | **Streaming uploads** (§7.5) | `ReadFile` returns a buffer, which suits fixture-sized payloads | Chunked transfer in the engine and a streaming port variant. Triggered by a real case, not anticipated |
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
-| **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which today `bru flow run` leaves empty entirely (§14.1) |
+| **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which `bru flow run` leaves empty by design (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
 | **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
 | **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), a rule for a run still in flight, which is the question the old per-run bound never answered, and an answer for the newest suite, which §14.2's `--retry-failed` and [002](./002-api-flows-ui.md) §4.1's rerun action both select from — a policy that reaches it takes away the ability to re-run what just failed, silently and at exactly the moment somebody wanted it |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an
-oversight to rediscover. An item moves out of this table by being specified, and the row is deleted
-rather than left as a stale duplicate.
+oversight to rediscover. A row moves from §19.2 to §19.1 when someone commits to a release for it,
+and out of §19 entirely by being specified — deleted at that point rather than left as a stale
+duplicate of the section that now owns it.
 
 **Two rows left by that rule:** "the flow UI" and "surfacing captures in the app" are now
 [002](./002-api-flows-ui.md). What of the UI is still deferred — the visual builder above all — is

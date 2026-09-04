@@ -17,7 +17,7 @@
 import * as path from 'path';
 import { createHash } from 'crypto';
 
-import { createRedactor, type Redactor } from './redact';
+import { createRedactor, type Redactor, type SecretTracker } from './redact';
 import type {
   CapturedBody,
   CapturedPart,
@@ -388,6 +388,13 @@ export type CaptureSetup = {
   /** §14.5's manifest field, copied through as the host gave it — the engine reads no part of it. */
   origin?: RunOrigin;
   redactHeaders: string[];
+  /**
+   * §14.4's other half — the run's secret values, masked into every attempt this writes.
+   *
+   * The run's own tracker rather than a copy of what it held when the capture opened: a credential
+   * resolves when the step using it materializes, which is after this.
+   */
+  secrets: SecretTracker;
 };
 
 const writeJson = (
@@ -486,7 +493,16 @@ export const createCapture = (setup: CaptureSetup): Capture => {
         return name;
       };
 
-      const capture: StepCapture = {
+      /**
+       * §14.4 both ways round: the denylist has already masked the header names it owns, and the
+       * value walk covers everywhere else a secret reaches — the query string on the URL, either
+       * body, an assertion's operands. Applied to the assembled record and before it serializes,
+       * which is §14.5's rule that a secret is never written into a buffer and then removed from it.
+       *
+       * The binary sibling written above is not walked: it is the response's own bytes, and a
+       * substitution inside them would corrupt the artifact rather than redact it.
+       */
+      const capture: StepCapture = setup.secrets.mask({
         stepId: record.stepId,
         iteration: record.iteration === undefined ? 0 : record.iteration,
         attempt: record.attempt,
@@ -496,7 +512,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
         response: record.response && capturedResponse(record.response, redactor, artifact),
         assertions: record.assertions,
         validation: record.validation
-      };
+      });
 
       await Promise.all(siblings);
       await writeJson(setup, path.join(target, attemptFile(record.attempt)), capture);

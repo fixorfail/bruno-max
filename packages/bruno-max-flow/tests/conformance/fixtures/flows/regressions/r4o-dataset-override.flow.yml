@@ -1,0 +1,19 @@
+# R4o — a flow that declares no `dataset:` and reads a row anyway, for the host override
+# (§14.1's `--dataset`, 002 §7.2's panel control). Without an override it runs one iteration whose
+# `{{row.name}}` resolves to nothing; with one it runs a row at a time.
+version: 1
+
+meta:
+  name: R4o — a dataset the flow does not declare
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: "{{row.name}}"

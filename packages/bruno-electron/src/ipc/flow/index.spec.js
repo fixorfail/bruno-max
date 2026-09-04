@@ -232,6 +232,30 @@ describe('the flow IPC host', () => {
     expect(runFlow.mock.calls[0][0].origin).toEqual({ host: 'app' });
   });
 
+  /**
+   * 001 §14.4 — the host's half of provenance redaction. Which environment entries are `secret: true`
+   * is the part the engine cannot work out for itself, so the run is handed their values.
+   */
+  it('hands the engine the values its environments marked secret', async () => {
+    runFlow.mockImplementation(scriptedRun('run-a'));
+
+    await startRun(makeWindow(), {
+      entry: 'a.flow.yml',
+      scope: { workspaceRoot: '/workspace' },
+      tiers: {
+        environment: {
+          name: 'staging',
+          variables: [
+            { name: 'token', value: 'abracadabra', enabled: true, secret: true },
+            { name: 'baseUrl', value: 'https://staging', enabled: true }
+          ]
+        }
+      }
+    });
+
+    expect(runFlow.mock.calls[0][0].secrets).toEqual(['abracadabra']);
+  });
+
   it('rejects a flow that fails before it has a run identity', async () => {
     runFlow.mockRejectedValue(new Error('flows/broken.flow.yml: could not be parsed'));
 
@@ -939,6 +963,28 @@ describe('a suite of flows', () => {
     for (const [options] of runFlow.mock.calls) {
       expect(options.overrides.capture.dir).toBe(dir);
     }
+  });
+
+  /**
+   * 001 §14.4's set is a fact about the invocation, not about a flow in it — an invocation resolves
+   * one set of tiers, so every flow of a suite is masked against the same values a single run is.
+   */
+  it('gives every flow of the suite the same secret values a single run gets', async () => {
+    runFlow.mockImplementationOnce(finishedRun('run-a', 'passed', '/runs/a'));
+    runFlow.mockImplementationOnce(finishedRun('run-b', 'passed', '/runs/b'));
+    const { win, ended } = windowWatchingForTheEnd();
+
+    await startSuite(
+      win,
+      request({
+        tiers: {
+          environment: { name: 'staging', variables: [{ name: 'token', value: 'abracadabra', enabled: true, secret: true }] }
+        }
+      })
+    );
+    await ended;
+
+    expect(runFlow.mock.calls.map(([options]) => options.secrets)).toEqual([['abracadabra'], ['abracadabra']]);
   });
 
   it('announces the roster, each flow as it runs, and the end of the suite', async () => {

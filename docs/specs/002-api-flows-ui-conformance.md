@@ -1281,7 +1281,7 @@ capture the pane read, **and in the DevTools network tab**, with no UI affordanc
 flow setting `config.redactHeaders` has that header masked in the network tab too, not only the
 built-in denylist.
 
-*Pins 002 §9 and §8.5, and 001 §14.4.* `--show-sensitive` has no app equivalent by design. The second
+*Pins 002 §9 and §8.5, and 001 §14.4.* Masking has no override in either host. The second
 half is what `FlowContext.redactHeaders` exists for: a host masking the built-ins alone passes the
 first half and leaks the header the author actually named.
 

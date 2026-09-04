@@ -43,6 +43,18 @@ export type RunOptions = {
   /** --param, for a library flow (§12.5). */
   params?: Vars;
   /**
+   * The values this host knows to be secret — its `secret: true` environment entries — for §14.4's
+   * provenance tracking.
+   *
+   * **Values, not names.** §14.4 masks by value wherever it subsequently appears, which is what
+   * makes the mechanism robust: a secret extracted into an output, promoted into a shared slot
+   * (§9.1) or echoed back in an error body is caught without anyone predicting where it travels, and
+   * without the engine having to model each host's idea of which tier a name belongs to. The engine
+   * resolves auth-profile credentials and `secret: true` params itself and adds those on its own;
+   * this is the tier only a host can see.
+   */
+  secrets?: string[];
+  /**
    * Optional only because the conformance suite calls `runFlow` directly a few hundred times and a
    * required field would say those runs came from somewhere; both real hosts always supply it.
    */

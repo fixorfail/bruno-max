@@ -20,7 +20,7 @@ import StyledWrapper from './StyledWrapper';
  * question the capture answers.
  *
  * Redaction (001 §14.4) is applied by the engine before emission and before writing captures, so
- * this pane displays what it is given and has no `--show-sensitive` equivalent.
+ * this pane displays what it is given, and that masking has no override in either host.
  */
 
 const TABS = ['request', 'response', 'assertions', 'validation'];

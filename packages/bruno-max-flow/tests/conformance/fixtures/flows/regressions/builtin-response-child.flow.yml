@@ -1,0 +1,16 @@
+# The sub-flow half of the §8.3 fixture. A container step is not a request and has no response, so
+# nothing here changes what `steps.child.body` resolves to in the caller — which is nothing.
+version: 1
+
+meta:
+  name: a sub-flow with no response of its own
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: create_child
+    operation: regress-api#createThing
+    body:
+      name: child

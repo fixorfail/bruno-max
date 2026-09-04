@@ -401,9 +401,14 @@ const runFlow = async (file, options = {}) => {
     entry: flowPath(file),
     scope: { workspaceRoot: FIXTURES },
     ports,
-    variables: { environment: DEFAULT_VARS },
+    // `vars` adds to the corpus-wide set rather than replacing it, so a scenario needing one
+    // variable of its own does not have to restate every base URL the fixtures read.
+    variables: { environment: { ...DEFAULT_VARS, ...options.vars } },
     // §12.5's params, as a host running a library flow directly supplies them.
     params: options.params,
+    // §14.4's provenance input: the values a host knows are secret, which is the one of the three
+    // sources the engine cannot resolve for itself.
+    secrets: options.secrets,
     // §13.2's `origin`. Omitted unless a scenario supplies one, which is the shape of a host that
     // does not report where a run came from — most of this suite.
     origin: options.origin,

@@ -7,9 +7,9 @@
  * writes and what the layout says has to show up here rather than as the app failing to open a run
  * the CLI produced. The write ports are the harness's in-memory filesystem, so no test touches disk.
  *
- * R4n's provenance rows are not here: §13.2 has no field carrying which environment entries are
- * `secret: true`, so there is nothing yet for the primary mechanism to track — see the note under
- * that row in 001-C.
+ * R4n covers both of §14.4's mechanisms: the header denylist, and the provenance tracking that
+ * reaches everywhere a name-based rule cannot — `RunOptions.secrets` is what carries the entries a
+ * host knows are `secret: true`, and the engine adds the credentials it resolves itself.
  */
 const path = require('path');
 
@@ -456,6 +456,63 @@ describe('R4n — redaction reaches the capture directory', () => {
 
     expect(capture.request.headers.Authorization).toHaveLength(4);
     expect(JSON.stringify(capture)).not.toContain('sk_live');
+  });
+});
+
+/**
+ * R4n's other half — §14.4's primary mechanism, which masks by value rather than by header name.
+ *
+ * Asserted against the capture for the section's own reason: it is the copy a CI job uploads. What
+ * the same run reports to a host is in `regressions.spec.js`, beside the invariant that the wire
+ * still carries the real value.
+ */
+describe('R4n — provenance follows a secret to where a denylist cannot', () => {
+  const SECRET = 'sk_env_9f3a';
+  const PROFILE_SECRET = 'profile_pw_9';
+
+  const run = () =>
+    runFlow(flow('secret-provenance.flow.yml'), {
+      vars: { tenantApiKey: SECRET },
+      secrets: [SECRET],
+      params: { tenantPassword: 'pw_param_7c1d' },
+      responses: {
+        signIn: { status: 200, body: { data: { token: SECRET, role: PROFILE_SECRET } } },
+        createThing: CREATED,
+        getState: STATE
+      }
+    });
+
+  it('masks a secret placed in a query string', async () => {
+    const finished = await run();
+    const capture = finished.files.json(path.join(finished.captureDir, 'use_token/attempt-1.json'));
+
+    // The mask replaces the value in the assembled URL, so it lands there unescaped: a captured
+    // URL is a record to read, and one that re-encoded the mask would be harder to.
+    expect(capture.request.url).toBe('https://regress.example.com/things?token=••••');
+  });
+
+  // Tracking is by value, so the promotion that copied it into the slot carries the masking for
+  // free — nothing had to know the slot's name.
+  it('follows it into a shared slot', async () => {
+    const finished = await run();
+    const capture = finished.files.json(path.join(finished.captureDir, 'use_token/attempt-1.json'));
+
+    expect(JSON.parse(capture.request.body.text).ref).toBe('••••');
+  });
+
+  it('masks a value the service echoed back', async () => {
+    const finished = await run();
+    const capture = finished.files.json(path.join(finished.captureDir, 'sign_in/attempt-1.json'));
+
+    expect(JSON.parse(capture.response.body.text)).toEqual({ data: { token: '••••', role: '••••' } });
+  });
+
+  // An auth profile's credential is the engine's own to resolve (§6.4), so it needs no host input
+  // to be tracked — and it is not a header the denylist could have named.
+  it('masks an auth profile credential the response carried', async () => {
+    const finished = await run();
+
+    expect(finished.step('sign_in').outputs.role).toBe('••••');
   });
 });
 

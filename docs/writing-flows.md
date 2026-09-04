@@ -711,19 +711,21 @@ value that survives a transport error.
 001 §8.3 describes `steps.<id>.body.…` and `steps.<id>.headers.…` as a permitted escape hatch —
 warned about by the validator, drawn as a dashed edge in the graph, but usable.
 
-> **That escape hatch is not implemented at run time.** A step publishes its declared outputs and
-> the four built-ins above, and nothing else. `{{steps.create.body.data.id}}` resolves to nothing,
-> so the step reading it is **skipped with `unresolved-dependency`** — the validator warns, the graph
-> draws the edge, and then the run does not do it. Declare an output instead:
->
-> ```yaml
->   - id: create
->     outputs:
->       thingId: data.id            # then use {{steps.create.thingId}}
-> ```
+Header names are matched in lower case, whatever case the server sent them in — you cannot know
+that from the flow file, so `{{steps.create.headers.x-request-id}}` is the form that always works.
+A step that declares an output called `body` or `headers` keeps its own: the declaration wins, so
+naming an output after a built-in never silently hands you the raw response instead.
 
-Declaring outputs is the intended style regardless: they are what the graph draws as data edges, and
-what the step-detail pane shows with their values after a run.
+Declaring outputs is still the intended style: they are what the graph draws as data edges, what the
+step-detail pane shows with their values after a run, and what the validator can check before one.
+Raw access is warned about for that reason — `undeclared-dependency`, pointing at the step that
+reads it — and the warning is the whole of the cost:
+
+```yaml
+  - id: create
+    outputs:
+      thingId: data.id            # then use {{steps.create.thingId}}
+```
 
 ---
 
@@ -1061,6 +1063,23 @@ flow, with the row's columns under `row.`:
 
 Iterations are independent: state does not carry between them, and each gets its own captures.
 
+### Pointing a flow at different rows
+
+`--dataset` runs a flow over a file other than the one it declares:
+
+```bash
+bru flow run flows/signup.flow.yml --dataset rows/eu.csv
+```
+
+It also works on a flow that declares **no** `dataset:` at all — a flow written for one row set and
+pointed at another by CI is the case the flag exists for. A `parallel:` the flow declares still
+applies, since that is a statement about whether the steps can safely overlap rather than about the
+rows. The path is read relative to where you typed the command, and — like every other fixture path —
+has to stay inside the collection or workspace the flow belongs to.
+
+One `--dataset` covers every flow the command selected, so it is a flag for one flow or for a set
+that reads the same columns, not for a directory of unrelated ones.
+
 ---
 
 ## Sub-flows and library flows
@@ -1311,6 +1330,8 @@ The options you are most likely to want:
 | Option | Does |
 |---|---|
 | `--global-env name` | Run against a workspace environment — `<workspace>/environments/<name>.yml` |
+| `--dataset path` | Run each selected flow over this dataset file instead of the one it declares — see [Datasets](#datasets-running-a-flow-per-row) |
+| `--strict` | Treat validation warnings as errors: a flow that warns does not run, and the command exits 2 |
 | `--env-var name=value` | Override one variable (repeatable) |
 | `--param name=value` | Supply a library flow's declared param (repeatable) |
 | `--grep pattern` | Run only the flows the pattern matches — see [Picking flows with a pattern](#picking-flows-with-a-pattern) |
@@ -1324,6 +1345,11 @@ The options you are most likely to want:
 | `--capture-dir path` | Write captures somewhere other than `<scope>/.bruno-runs` |
 | `--reporter-junit` / `--reporter-json` / `--reporter-html path` | Write a report — see [Reports](#reports) below |
 | `--verbose` / `--quiet` / `--silent` | How much the console output prints |
+
+`--global-env` is the only environment file the command selects — there is no `--env` beside it, so
+a collection's own environment is not selectable from the command line and the collection tier is
+empty under `bru`. Supply those values with `--env-var` or from the process environment; the app's
+run control selects a collection environment normally.
 
 Each run writes a directory holding the flow as it was, every request and response, and the outcome —
 which is what the app's run selector reads back later. Every run opens its own **suite** to hold it:
@@ -1731,18 +1757,12 @@ A step that does not run reports why. These are the ones you will see on a graph
 
 So you do not write a flow that depends on it:
 
-- **Raw `steps.<id>.body` / `.headers` access** — validated and drawn, but does not resolve at run
-  time. Declare an output.
 - **The document schema** — unknown and misspelled keys are silently ignored.
-- **A collection-environment flag on `bru flow run`** — `--global-env` picks a workspace
-  environment, and there is no `--env` beside it, so the collection tier is empty under `bru`. Supply
-  those values with `--env-var` or from the process environment; the app's run control selects a
-  collection environment normally. 001 §14.1 specifies the flag.
 - **`bru flow run` reading a scope's `.env`** — the app does and the CLI does not, so a variable a
   flow resolves in the app can be missing in CI. Set it in the environment, or pass `--env-var`.
-- **`--dry-run`, `--strict`, `--show-sensitive` and `--dataset`** (001 §14.1) — specified, argued
-  for, and not flags today. `bru flow run` rejects each as unknown rather than ignoring it, so a CI
-  line using one fails loudly instead of quietly running without it.
+- **`--dry-run`** (001 §14.1) — specified and argued for, scheduled for v2 (001 §19.1), not a flag
+  today. `bru flow run` rejects it as unknown rather than ignoring it, so a CI line using it fails
+  loudly instead of quietly running without it.
 - **`bru flow schema`** (001 §14, §5.4) — the command takes `run`, `validate` and `list` only. There
   is no generated JSON Schema to point an editor at yet, which is the same reason unknown keys go
   unwarned above.

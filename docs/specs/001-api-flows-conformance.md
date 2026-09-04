@@ -892,6 +892,26 @@ The first row is the one that matters: the three formats exist to be interchange
 implementation that types CSV by its own rule rather than §10.2's passes every other row here while
 making a converted dataset behave differently from the one it replaced.
 
+### R4d3 — A host-supplied dataset
+
+**Pins:** §13.2's `overrides.dataset`, §14.1's `--dataset`, and §7.4's containment. Asserted through
+`runFlow` rather than through a command line, because both hosts reach it the same way — 002 §7.2's
+panel control and the CLI flag are one field.
+
+| Case | Expected |
+|---|---|
+| an override against a flow that declares `dataset:` | the override's rows, and the flow's own `parallel:` still governing |
+| an override against a flow that declares none | it iterates — the case the option exists for is a flow written against one row set and pointed at another |
+| that same flow with no override | one iteration, so the override is what makes it iterate at all |
+| an override resolving outside the scope root | refused before the run starts, naming the boundary — §7.4 holds a dataset the way it holds a `!file` |
+| the snapshot §14.5 writes | reports the dataset the run **used**, not the one the file declares |
+
+The last two rows are the ones a naive wiring fails. `dataset:` reached the `ReadFile` port without
+passing through §7.4's check, which mattered little while the only source was a path committed in
+the flow file and matters a great deal once one arrives from a command line. And 002 §5.5 decides
+whether to offer an iteration selector from the snapshot's `dataset` field, so a snapshot reporting
+the *declared* dataset leaves a flow running rows it has no way to display.
+
 ### R4e — Multipart and binary bodies
 
 **Pins:** §7.5. Fixtures come from the stubbed `ReadFile` port; assertions inspect the
@@ -1142,7 +1162,6 @@ and the reporters.
 | no ANSI escape sequences when stdout is not a TTY | a colour code in an archived CI log is corruption |
 | `NO_COLOR` set, on a TTY | still no escapes — the convention is honoured, not just the flag |
 | a secret-valued variable used in a request | masked in stdout, and in `--verbose` previews (§14.4) |
-| `--show-sensitive` | unmasks stdout while reporter files stay masked |
 | a failing run | names the failed step id, its §14.6 reason, and its capture path |
 | a failure whose block expands nothing else | its §14.6 message appears |
 | a skipped step with a message | it appears on that step's line — a skip gets no failure block |
@@ -1191,8 +1210,7 @@ only at §14.3. A schema that rejects them has grown semantic knowledge it canno
 ### R4n — Redaction
 
 **Pins:** §14.4, and §14.5's rule that the artifact directory is redacted exactly as reporter output
-is. Asserted against the capture rather than stdout, because that is the copy a CI job uploads and
-the one `--show-sensitive` can never reach.
+is. Asserted against the capture rather than stdout, because that is the copy a CI job uploads.
 
 | Case | Expected |
 |---|---|
@@ -1205,12 +1223,15 @@ the one `--show-sensitive` can never reach.
 | a host reporting `ExecutedResponse.requestHeaders` | those headers are what the capture records, masked on the same terms — a header the host added (auth, content type) is no more exempt than a declared one |
 | a value from a `secret: true` environment entry, used in a query param and echoed back in an error body | masked in both, by provenance rather than by name |
 | the same value promoted into a shared slot (§9.1) | still masked — tracking is by value, so promotion carries it for free |
-| `--show-sensitive` | changes stdout only; the capture file is byte-identical with and without it |
 
-The last three need a host that knows which environment entries are `secret: true`; §13.2's
-`VariableTiers` has no field for it and neither host loads environments for flows yet, so the
-provenance half of §14.4 has no input to track. The rows are here because the policy is one policy —
-a suite that tested only the denylist would read as if §14.4 had one mechanism.
+Provenance tracks by **value**, through §13.2's `RunOptions.secrets` — the values a host knows are
+secret, unioned with the auth-profile credentials and `secret: true` params the engine resolves for
+itself. Tracking by value rather than by name is what carries a secret into a shared slot for free.
+
+One host supplies nothing, and the reason is worth recording: `bruno-filestore`'s environment parser
+writes `value: ''` for every `secret: true` entry, so a secret's value never reaches `bru` at all —
+even one hand-written into the file. Under the CLI the provenance half therefore covers the
+credentials and params the engine derives, and nothing from the environment.
 
 ### R4o — Reading a run back
 

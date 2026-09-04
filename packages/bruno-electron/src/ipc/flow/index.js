@@ -19,14 +19,15 @@ const {
 } = require('@bruno-max/flow');
 const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
-const { buildVariables } = require('./variables');
+const { buildVariables, collectSecrets } = require('./variables');
 
 /**
  * The Electron host for API Flows — 002 §11.3.
  *
- * The main process owns an `AbortController` per run, assembles `RunOptions.variables` from the
- * tiers the renderer sends (002 §7.2) and supplies the seven ports of 001 §13.2. The renderer holds
- * no engine state beyond what its slice folds from events.
+ * The main process owns an `AbortController` per run, assembles `RunOptions.variables` — and the
+ * secret values 001 §14.4 masks — from the tiers the renderer sends (002 §7.2), and supplies the
+ * seven ports of 001 §13.2. The renderer holds no engine state beyond what its slice folds from
+ * events.
  */
 
 /**
@@ -494,6 +495,7 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
         onRequest: (log) => queueRequestLog(win, log)
       }),
       variables: buildVariables({ tiers, scope }),
+      secrets: collectSecrets({ tiers }),
       origin: originFor(tiers),
       params,
       overrides,

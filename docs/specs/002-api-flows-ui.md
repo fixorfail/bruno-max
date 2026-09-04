@@ -1101,11 +1101,11 @@ A rank narrower than the widest one is **centred** against it, so a branch reads
 the step before it rather than hanging off its top edge — as is a step against the steps it joins,
 which is what makes a fork and its rejoin symmetrical.
 
-Panning and zooming are not provided in v1. Flows are tens of steps; the graph is drawn at its own
-size and scrolls inside its box, in both directions. It is deliberately never scaled to fit — a
+Panning and zooming are **v2** (§15.1). Flows are tens of steps; the graph is drawn at its own size
+and scrolls inside its box, in both directions. It is deliberately never scaled to fit — a
 twelve-step flow shrunk to the tab's width is unreadable, and a graph you cannot read is worse than
-one you have to scroll. If a real flow arrives that needs a viewport, that is evidence for the graph
-library this spec declines to add (§13).
+one you have to scroll. That rule survives a viewport: whatever v2 adds, the *default* view still
+opens at full size, because the failure being avoided is a graph that arrives already illegible.
 
 **The view follows the step in flight, while nothing is selected.** Scrolling rather than scaling is
 what keeps a long flow legible, and its cost is that the run walks off the right edge of the box:
@@ -1429,7 +1429,7 @@ Resolving the environment in main *from a name* was the first design and is reje
   remove, arriving in the one place the design was not watching.
 
 This is symmetric with the CLI rather than divergent from it: `bru` also hands the engine values it
-resolved itself (`loadEnvFromFile` for `--env`), and each host resolving its own tiers is exactly
+resolved itself (`loadEnvFromFile` for `--global-env`), and each host resolving its own tiers is exactly
 what 001 §13.2 asks for. What is host-specific is *where* the values come from, which was never the
 engine's business.
 
@@ -1604,7 +1604,7 @@ describes; the UI uses the same two vocabularies in the same two places.
 environment(s), e.g. `cli · staging`.** It reads 001 §13.2's `RunResult.origin`: the app stamps
 `host: 'app'`, and the environment name is whatever §7.2's run configuration selected, resolved
 through the same electron host a request already runs against; `bru flow run` stamps `host: 'cli'`
-and its own `--env`/`--global-env` names (001 §14.1), so this badge and the CLI's JUnit suite
+and its own `--global-env` name (001 §14.1), so this badge and the CLI's JUnit suite
 properties (001 §14.8.1) read the one recorded field rather than two that could disagree. The badge
 shows for a live run and a past one alike, and shows nothing — not a guess — for a run recorded
 before the field existed.
@@ -1835,8 +1835,8 @@ you are looking at, and §10's stored runs — which were written by a different
 day — inherit whatever the control happens to say now.
 
 Redaction (001 §14.4) is applied by the engine before emission and before writing captures, so the
-app displays what it is given and has no `--show-sensitive` equivalent. A secret hidden in CI output
-is hidden here too, and for the same reason.
+app displays what it is given. 001 §14.4's masking has no override in either host, so a secret
+hidden in CI output is hidden here too, and for the same reason.
 
 ## 10. Past runs
 
@@ -2239,7 +2239,7 @@ an upload's content is already in the repository, and copying it in would put th
 every CI artifact.
 
 **Redaction has already been applied** (001 §14.4, §14.5), so nothing reading a `StepCapture` filters
-anything, and there is no `--show-sensitive` equivalent in the app (§9).
+anything, and nothing in the app unmasks what the engine already filtered (§9).
 
 **`ListDirectory` is a new port**, added to 001 §13.2's `ExecuteRequest` / `ReadFile` / `Clock` set,
 and it exists for the same reason they do: the engine stays free of `fs`, each host keeps its own
@@ -2859,7 +2859,9 @@ worth.
 **A graph library — React Flow, or dagre for layout alone.** ~~Rejected for v1~~ — **reversed for
 layout, on evidence.** The original argument was that a library's value is concentrated in
 interactive editing and this graph is a *view* of a document, so a dependency on an upstream
-`package.json` bought pan, zoom and a minimap nobody had asked for. What that argument missed is that
+`package.json` bought pan, zoom and a minimap nobody had asked for — true when written, and §15.1
+now schedules the first two for v2, which is a change in the *demand* rather than a fault in the
+reasoning. What that argument missed is that
 **edge routing is not an interaction feature**: it is what makes a static drawing legible, and the
 hand-rolled layout had none. The first real flow to arrive — `seed-verified-company`, 18 steps, 63
 edges — put 40 of those edges through boxes they did not connect, because an edge spanning six ranks
@@ -2943,12 +2945,24 @@ Details left to implementation, as they do not change a contract:
 Deferred deliberately. As in 001 §19, this is distinct from §3 (outside the feature's purpose) and
 §13 (considered and decided against): these are wanted, but not now.
 
+**The same split 001 §19 draws applies here**, and for the same reason: *v1* is what this fork ships
+and what the upstream pull request carries, *v2* is what begins once that merge lands, and §15.2 is
+everything wanted with no release attached. 001 §19 defines the line; this section applies it to the
+app so that a UI deferral is recorded once rather than in two tables that would drift.
+
+### 15.1 v2 — after the upstream merge
+
+| Item | Why not v1 | What it needs |
+|---|---|---|
+| **`--dry-run` in the app** | It arrives with the engine mode it displays: 001 §19.1 has the CLI half in v2 for the same reason, and an app dry-run pane with nothing behind it would show a request the engine never materialized. The premise this row used to carry — that the engine already supports it — was never true, which 001 §18 flags | The engine's dry-run mode first (001 §19.1), then a run mode in the app that materializes without dispatching and a pane showing §9's request tab with no response |
+| **Pan, zoom and a minimap** | §5's graph scrolls at its own size and is deliberately never scaled to fit, which holds for flows of tens of steps. `seed-verified-company` at 18 steps and 63 edges is the largest real flow so far and reads fine by scrolling — so this is scheduled on the strength of where flows are heading, not on a flow that has already failed to fit | A viewport model that keeps §5's no-scale-to-fit rule for the default view, an answer for how the follow-the-running-step behaviour composes with a user-controlled viewport, and a decision on whether §13's `@dagrejs/dagre` grows into React Flow or the viewport is hand-rolled over the existing SVG |
+
+### 15.2 Wanted, with no release attached
+
 | Item | Why not now | What it needs |
 |---|---|---|
 | **The flow builder** | 001 §3's judgement that the UI is trial-and-error applies hardest to editing; the viewer is the cheaper half and informs it | Its own spec: an editing model that round-trips losslessly per 001 §15, and an answer for unparseable intermediate states |
 | **Running one step or a subgraph** | 001 defines execution for a whole flow; a subset needs semantics for what its dependencies resolve to | A definition of partial-run state — probably seeding `steps.*` from a previous run's capture, which is a format question, not a UI one |
 | **Diffing two runs** | §10 makes both runs readable, which is the prerequisite; what to diff (bodies? outputs? timings?) is unclear without watching people use it | A diff model over `StepCapture`, and evidence about which comparison people reach for first |
-| **`--dry-run` in the app** | 001 §7.1's dry run prints the effective request per step and is the tool for seeing a spec change's blast radius; the engine already supports it | A run mode that materializes without dispatching, and a pane that shows the request tab of §9 with no response |
-| **Pan, zoom and a minimap** | Flows are tens of steps and the graph scrolls; no real flow has needed a viewport yet | A flow that does — which is also the evidence for reconsidering §13's graph library |
 | **OS-level run notifications** | §4.1 covers the ambient case; an OS notification is a third surface needing a preference, and no Electron `Notification` usage exists in the app to build on | Evidence that flows run long enough for people to leave the app during one |
 | **Cross-run trends** | §3 excludes analytics; `.bruno-runs/` retention (default 10) is too short a window to trend over anyway | A durable run store, which is a different feature from reading artifacts |

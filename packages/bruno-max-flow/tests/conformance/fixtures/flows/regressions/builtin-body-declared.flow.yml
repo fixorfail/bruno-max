@@ -1,0 +1,27 @@
+# §8.3's two new built-ins defer to a declared output of the same name, where `status`, `ok`,
+# `skipped` and `duration` still win over one. `body` was an ordinary output name until it became a
+# built-in, so a flow that declares one must keep reading its own value rather than silently
+# switching to the raw response.
+version: 1
+
+meta:
+  name: a declared output named body
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      body: data.id
+
+  - id: consume
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.create.body}}"

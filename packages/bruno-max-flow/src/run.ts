@@ -20,17 +20,18 @@ import {
   type NormalizedStep
 } from './document';
 import { evaluateCondition, evaluationContext } from './expression';
-import { createFileReader, FileAccessError, parseStructured } from './files';
+import { createFileReader, FileAccessError, parseStructured, resolveWithin } from './files';
 import { loadLibrary, withLibrary } from './functions';
 import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
-import { MASK } from './redact';
+import { createSecretTracker, MASK, type SecretTracker } from './redact';
 import { runAttempt, retryDelay, runPreScripts, sleepFor, wantsRetry, type ScriptRunner } from './step';
 import type { FlowSnapshot } from './types/capture';
 import type { RunOptions } from './types/options';
 import type { Clock, FlowContext, Vars } from './types/ports';
+import type { ExecutedResponse } from './types/request';
 import type {
   Diagnostic,
   FlowEvent,
@@ -106,6 +107,14 @@ type RunState = {
   stop: () => void;
   /** §14.5's artifact directory. Absent under `--no-capture`. */
   capture?: Capture;
+  /**
+   * §14.4's secret values, which everything this run *reports* is masked against.
+   *
+   * Run-scoped and growing: a host's `secret: true` values are known up front, a `secret: true`
+   * param resolves when its flow starts, and an auth profile's credentials only when the step using
+   * them materializes. Sub-flows share the set, because a value is no less secret one level down.
+   */
+  secrets: SecretTracker;
   /**
    * What happened during the run that did not stop it — §13.2's `RunResult.diagnostics`.
    *
@@ -239,14 +248,22 @@ const startedWith = (state: RunState, declared: NormalizedFlow['params'], params
 const flowSnapshot = async (
   state: RunState,
   entry: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  dataset: NormalizedFlow['dataset']
 ): Promise<FlowSnapshot | undefined> => {
   try {
     const [description, source] = await Promise.all([
       describeFlow({ entry, scope: state.options.scope, ports: state.options.ports }),
       readText(state, entry)
     ]);
-    return { description, source, params };
+    /**
+     * **The dataset is the run's, not the file's.** `describeFlow` reads the document, so under
+     * §14.1's `--dataset` it would report the source that was overridden — and 002 §5.5 decides
+     * whether to offer an iteration selector from precisely this field, so a flow given a dataset
+     * it does not declare would run its rows with no way to look at any but the first. `source`
+     * beside it stays the file verbatim, which is what §14.5's `flowChanged` digest is taken over.
+     */
+    return { description: { ...description, dataset }, source, params };
   } catch {
     return undefined;
   }
@@ -353,6 +370,16 @@ const unmetBy = (step: NormalizedStep, outcomes: Map<string, StepResult>): strin
     .map((entry) => `${entry.on} ${outcomes.get(entry.on)?.status || 'never ran'}`)
     .join(', ');
 
+/**
+ * §8.3's `steps.<id>.headers.<name>`, keyed so an author can write one.
+ *
+ * HTTP header names are case-insensitive and nothing tells a flow which case the server chose, so
+ * `{{steps.login.headers.x-request-id}}` has to resolve whatever `X-Request-Id` arrived as. Only the
+ * keys are touched — a value is reported as the response gave it, a repeated header included.
+ */
+const lowerCasedKeys = (headers: Record<string, string | string[]>): Record<string, string | string[]> =>
+  Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+
 const executeFlow = async (
   state: RunState,
   run: FlowRun
@@ -437,12 +464,25 @@ const executeFlow = async (
   resolvedVars = interpolateValue(await loadFileVars(flow.vars), scopeFor()).value as Vars;
   if (!prefix) {
     resolvedParams = interpolateValue(run.params, scopeFor()).value as Vars;
+  }
+
+  /**
+   * §12.5's `secret: true` params, as values (§14.4). `maskedParams` masks them by *name* in the
+   * run's own inputs record, which says nothing about the places the value travels to from there.
+   * A sub-flow declares its own, and they are resolved by the caller before this runs.
+   */
+  for (const [name, declared] of Object.entries(flow.params)) {
+    if (declared.secret) state.secrets.add(resolvedParams[name]);
+  }
+
+  if (!prefix) {
     // 002 §5.6: the values this iteration actually ran with, handed to the capture rather than
     // re-derived — `{{$guid}}` would generate a different one on a second evaluation. The entry
     // flow's own only: a sub-flow's `vars:` are its internals, and §5.4 does not draw them.
-    state.capture?.vars(run.iteration, resolvedVars);
+    const reported = state.secrets.mask(resolvedVars);
+    state.capture?.vars(run.iteration, reported);
     // The same values, to a host watching the run rather than reading it back afterwards (§5.6).
-    state.emit({ type: 'iteration:vars', index: run.iteration, vars: resolvedVars });
+    state.emit({ type: 'iteration:vars', index: run.iteration, vars: reported });
   }
 
   const profiles: Record<string, AuthProfile> = {
@@ -454,16 +494,33 @@ const executeFlow = async (
 
   const record = (step: NormalizedStep, result: StepResult) => {
     if (result.reason === 'unresolved-dependency' && step.flags.failOnUnresolved) verdictCauses.push(result.id);
-    outcomes.set(step.id, result);
-    results.push(result);
-    state.emit({ type: 'step:end', id: result.id, index: run.iteration, result });
+    /**
+     * §14.4 masks a **copy**, at the point a result leaves the run — this array becomes
+     * `RunResult.iterations`, and the event is the other way out. `publish` below is handed the
+     * unmasked result on purpose: a step reading `{{steps.login.token}}` has to be sent the token.
+     */
+    const reported = state.secrets.mask(result);
+    outcomes.set(step.id, reported);
+    results.push(reported);
+    state.emit({ type: 'step:end', id: reported.id, index: run.iteration, result: reported });
   };
 
   /** §8.3's built-in metadata, alongside the step's declared outputs under the same id. */
-  const publish = (step: NormalizedStep, result: StepResult, httpStatus?: number) => {
+  const publish = (step: NormalizedStep, result: StepResult, response?: ExecutedResponse) => {
     stepState[step.id] = {
+      /**
+       * §8.3's undeclared access to the response itself. Both are absent where there is no response
+       * to give — a `uses:` container, a step that never ran — rather than published as `undefined`,
+       * so `{{steps.x.body}}` there is a miss §11.2 can report.
+       *
+       * **They defer to a declared output of the same name**, where the four built-ins below still
+       * win over one. The asymmetry is deliberate: `body` and `headers` were ordinary output names
+       * until they became built-ins, and a flow that declares one must not silently start reading
+       * the raw response instead.
+       */
+      ...(response ? { body: response.body, headers: lowerCasedKeys(response.headers) } : {}),
       ...result.outputs,
-      status: httpStatus,
+      status: response?.status,
       ok: result.status === 'success',
       skipped: result.status === 'skipped',
       duration: result.durationMs
@@ -476,7 +533,7 @@ const executeFlow = async (
   const executeOperation = async (
     step: NormalizedStep,
     pre: Record<string, unknown>
-  ): Promise<{ result: StepResult; httpStatus?: number }> => {
+  ): Promise<{ result: StepResult; response?: ExecutedResponse }> => {
     const startedAt = state.clock.now();
     const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
     const spec = step.operation ? indexed[step.operation.alias] : undefined;
@@ -509,6 +566,13 @@ const executeFlow = async (
         }
       };
     }
+    /**
+     * §14.4's provenance, from the one source the engine resolves itself. It is known no earlier
+     * than this: a profile's `token:` may read `{{steps.login.token}}`, so the credential is a value
+     * the run produced rather than one it was started with.
+     */
+    for (const secret of materialized.secrets) state.secrets.add(secret);
+
     if (materialized.unresolved.length) {
       // §11.2 skips on *a* reference the run never produced; which one is the whole of what the
       // author has to go and fix, and it is known only here.
@@ -668,7 +732,7 @@ const executeFlow = async (
         : outcome.reason || (predicateError ? 'script-error' : undefined);
 
     return {
-      httpStatus: outcome.response?.status,
+      response: outcome.response,
       result: {
         ...identity(step, prefix),
         // §14.6: `cancelled` is the status of a step that had started, where a step the run never
@@ -807,16 +871,16 @@ const executeFlow = async (
     // sub-flow at `concurrency: 1` — the setting §9.2 recommends for debugging.
     const produced
       = step.kind === 'subflow'
-        ? { steps: await executeSubflow(step, pre), httpStatus: undefined }
+        ? { steps: await executeSubflow(step, pre), response: undefined }
         : await state.budget.run(async () => {
-            const { result, httpStatus } = await executeOperation(step, pre);
-            return { steps: [result], httpStatus };
+            const { result, response } = await executeOperation(step, pre);
+            return { steps: [result], response };
           });
 
     const [own, ...internals] = produced.steps;
     record(step, own);
     results.push(...internals);
-    publish(step, own, produced.httpStatus);
+    publish(step, own, produced.response);
   };
 
   const pending = new Set(flow.steps.map((step) => step.id));
@@ -943,6 +1007,9 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     },
     cleanupGrace: 30000,
     nestIterations: false,
+    // The values only this host can know are secret (§14.4); the engine adds the ones it resolves
+    // itself — a `secret: true` param, an auth profile's credentials — as the run reaches them.
+    secrets: createSecretTracker(options.secrets),
     diagnostics: [],
     stop: () => {
       if (state.stoppedAt === undefined) state.stoppedAt = state.clock.now();
@@ -992,9 +1059,25 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
    */
   const reportedParams = startedWith(state, flow.params, runParams);
 
+  /**
+   * The dataset this run iterates, which is the flow's unless the host replaced it — §14.1's
+   * `--dataset` and 002 §7.2's panel control, both arriving as `overrides.dataset` (§13.2).
+   *
+   * **An override supplies a dataset as readily as it replaces one.** A flow that declares none
+   * runs once per row of the given file, because the case the flag exists for is a flow written
+   * against one row set and pointed at another by CI — refusing unless the file already named a
+   * dataset would serve the rarer half of that and reject the common one. `parallel:` is the
+   * flow's either way: it is a statement about whether *these steps* can safely overlap, which is
+   * a property of the flow rather than of the rows, so a flow tuned for concurrent iterations
+   * keeps that tuning when the source changes under it.
+   */
+  const dataset = options.overrides?.dataset
+    ? { source: options.overrides.dataset, parallel: flow.dataset?.parallel || 1 }
+    : flow.dataset;
+
   state.budget = new Budget(options.overrides?.concurrency || flow.config.concurrency);
   state.cleanupGrace = flow.config.cleanupGrace;
-  state.nestIterations = flow.dataset !== undefined;
+  state.nestIterations = dataset !== undefined;
   // The root flow's policy governs the whole run, sub-flows included — the same value and the same
   // scope the capture below is given, so a host and a capture can never mask different sets.
   flowContext.redactHeaders = flow.config.redactHeaders;
@@ -1009,9 +1092,10 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
       dir: options.overrides?.capture?.dir,
       origin,
       startedAt: new Date(state.clock.now()).toISOString(),
-      redactHeaders: flow.config.redactHeaders
+      redactHeaders: flow.config.redactHeaders,
+      secrets: state.secrets
     });
-    snapshot = await flowSnapshot(state, options.entry, reportedParams);
+    snapshot = await flowSnapshot(state, options.entry, reportedParams, dataset);
     await state.capture.start(snapshot);
   }
 
@@ -1020,11 +1104,15 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   const maxRunDuration = options.overrides?.maxRunDuration ?? flow.config.maxRunDuration;
   if (maxRunDuration !== undefined) state.deadline = state.clock.now() + maxRunDuration;
 
-  const rows: (Vars | undefined)[] = flow.dataset
-    ? parseDataset(
-        flow.dataset.source,
-        await readText(state, path.resolve(path.dirname(flow.file), flow.dataset.source))
-      )
+  /**
+   * §7.4's containment applies here as it does to `!file`, through the same helper — a dataset is
+   * a fixture read like any other, and an override arrives from a command line where `../` costs
+   * nothing to type. The path is resolved against the flow's directory and refused if it leaves
+   * the scope root; `parseDataset` is still handed the source as written, so a format or parse
+   * error names the path the author typed rather than one this machine assembled.
+   */
+  const rows: (Vars | undefined)[] = dataset
+    ? parseDataset(dataset.source, await readText(state, resolveWithin(dataset.source, flow.file, scopeRoot(state))))
     : [undefined];
 
   // The snapshot is reported as well as written, so a watcher draws the flow this run is executing
@@ -1041,7 +1129,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   });
 
   const iterations: IterationResult[] = [];
-  const parallel = flow.dataset?.parallel || 1;
+  const parallel = dataset?.parallel || 1;
 
   /**
    * **After `run:start`, a run always ends with `run:end`.**

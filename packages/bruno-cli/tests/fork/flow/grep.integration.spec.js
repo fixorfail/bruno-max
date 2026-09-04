@@ -55,6 +55,13 @@ const suitesOf = (root) => {
 
 const idsOf = (suite) => suite.manifest.flows.map((entry) => entry.id);
 
+/**
+ * Each case spawns `bin/bru.js`, which costs a Node start plus a real filesystem walk — several run
+ * to 3.5s alone and longer when the workspace's suites share the machine. Jest's 5s default is
+ * inside that margin, so these specs fail on load rather than on behaviour without this.
+ */
+jest.setTimeout(30000);
+
 describe('bru flow run --grep', () => {
   const staged = [];
 

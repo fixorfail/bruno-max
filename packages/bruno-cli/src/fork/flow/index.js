@@ -279,8 +279,15 @@ const rosterOf = (records) =>
  * selection can span two workspaces.
  *
  * **Secret values are not in the file.** A `secret: true` variable's value lives in the app's
- * encrypted store (002 §7.2), so it arrives empty here exactly as it does for `bru run --global-env`
- * — the CLI's answer for a secret is `--env-var`, a `.env`, or the process environment.
+ * encrypted store (002 §7.2), and `parseEnvironment` zeroes a secret's value rather than reading
+ * one — so a value hand-written into the file does not arrive either, exactly as for
+ * `bru run --global-env`. The CLI's answer for a secret is `--env-var`, a `.env`, or the process
+ * environment.
+ *
+ * That is also why this host passes no `secrets` for 001 §14.4's provenance redaction: it holds no
+ * value it knows to be secret. `--env-var` is not one — the user typed it on a command line their
+ * shell has already recorded, and treating it as secret would mask ordinary values throughout a
+ * report. The engine still derives the auth credentials and the declared `secret: true` params.
  */
 const workspaceEnvironment = (name, workspaceRoot) => {
   const file = path.join(workspaceRoot, 'environments', `${name}.yml`);
@@ -389,6 +396,16 @@ const builder = (yargs) =>
       type: 'number',
       default: 0
     })
+    .option('dataset', {
+      describe:
+        'Run each selected flow over this dataset file instead of the one it declares (CSV, JSON or YAML), resolved from the current directory and held to the scope root',
+      type: 'string'
+    })
+    .option('strict', {
+      describe: 'Treat validation warnings as errors; a flow that warns does not run and the command exits 2',
+      type: 'boolean',
+      default: false
+    })
     .option('env-var', { describe: 'Override a single variable (repeatable)', type: 'string' })
     .option('param', { describe: 'Supply a declared params value (repeatable)', type: 'string' })
     .option('concurrency', { describe: 'Override config.concurrency', type: 'number' })
@@ -437,6 +454,8 @@ const builder = (yargs) =>
     .example('$0 flow run a.flow.yml,b.flow.yml', 'Name several flows in one argument')
     .example('$0 flow run --retry-failed', 'Re-run the flows of the newest suite that did not pass')
     .example('$0 flow run flows/ --retries 2', 'Re-run a flow that did not pass, up to twice more')
+    .example('$0 flow run checkout.flow.yml --dataset rows/eu.csv', 'Run a flow over a different dataset')
+    .example('$0 flow validate flows/ --strict', 'Fail validation on warnings as well as errors')
     .example('$0 flow validate flows/', 'Validate every flow in a directory')
     .example('$0 flow list flows/', 'Print the flows a run of those paths would execute')
     .example('$0 flow list --grep smoke', 'Check what a pattern selects without running it');
@@ -627,7 +646,19 @@ const handler = async (argv) => {
 
     const diagnostics = await validateFlow({ entry: file, scope, ports, params: asPairs(argv.param) });
     reporter.diagnostics(forDisplay(file), diagnostics);
-    if (diagnostics.some((entry) => entry.severity === 'error')) {
+    /**
+     * §14.1's `--strict`: a warning stops the flow the way an error does, exiting 2 for the reason
+     * §14.2 gives that code — the flow did not run.
+     *
+     * **It promotes §14.3's warnings and nothing else.** The engine's other warning,
+     * `capture-write-failed`, is raised *during* a run and is documented as not failing one; a flag
+     * that turned it into "did not run" would say something untrue about a flow whose every step
+     * passed, and would make a full disk look like a broken flow. The warnings promoted here are
+     * exactly the ones a validate pass can see before anything is dispatched, which is what makes
+     * `bru flow validate --strict` and `bru flow run --strict` agree about a given file.
+     */
+    const blocking = argv.strict ? ['error', 'warning'] : ['error'];
+    if (diagnostics.some((entry) => blocking.includes(entry.severity))) {
       // A flow that never ran is still in the report: a selection whose file was mis-typed and one
       // whose API broke look identical in a report listing only what executed.
       await record(started, { outcome: 'invalid', diagnostics });
@@ -660,6 +691,11 @@ const handler = async (argv) => {
         overrides: {
           concurrency: argv.concurrency,
           maxRunDuration: argv.maxRunDuration,
+          // Resolved here for the same reason --capture-dir is: a relative path on a command line
+          // means relative to where the command was typed, and the engine has no working directory
+          // (§13.2). The engine still holds it to §7.4's scope root, so an absolute path from here
+          // is checked exactly as a `dataset:` written in the file is.
+          dataset: argv.dataset === undefined ? undefined : path.resolve(process.cwd(), argv.dataset),
           capture: {
             enabled: argv.capture,
             // Named rather than left to default: the engine opens a suite of its own for a run that

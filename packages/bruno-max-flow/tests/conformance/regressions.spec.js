@@ -208,6 +208,85 @@ describe('R4 — slot and output resolution boundaries', () => {
     expect(diagnostics.filter((diagnostic) => diagnostic.severity === 'error')).not.toHaveLength(0);
   });
 
+  /**
+   * §13.2's `overrides.dataset` — §14.1's `--dataset` and 002 §7.2's panel control.
+   *
+   * The field was declared on `RunOptions` and read nowhere. The app already forwards its run
+   * configuration's `dataset` into it, so 002 §7.2's control would have shipped as a no-op the day
+   * someone added the input; the spec meanwhile recorded the CLI flag as the only missing half. A
+   * no-op is the worst shape for this option in particular, because a run against the wrong rows
+   * still passes.
+   */
+  describe('R4d3 — a host-supplied dataset', () => {
+    const DATASETS = path.join(FLOWS, '..', 'datasets');
+
+    it('replaces the source a flow declares, and keeps its parallel:', async () => {
+      const run = await runFlow(flow('r4-dataset-slots.flow.yml'), {
+        overrides: { dataset: path.join(DATASETS, 'pair.csv') },
+        responses: {
+          createThing: (request) => ({ status: 201, body: { data: { id: `thing-${request.body.value.name}` } } }),
+          getThing: { status: 200, body: { data: { id: 'thing-1', name: 'widget' } } }
+        }
+      });
+
+      // pair.csv's two rows, not things.csv's three — and the flow's own `parallel: 3` still
+      // governs, which is what keeps each iteration's slots separate (the case above).
+      expect(run.iterations).toHaveLength(2);
+      expect(run.iterations.map((iteration) => iteration.row.name)).toEqual(['first', 'second']);
+    });
+
+    /**
+     * The case the flag exists for: a flow written against no rows, pointed at a row set by CI.
+     * Refusing unless the file already named a dataset would serve the rarer half of the option.
+     */
+    it('supplies one to a flow that declares none', async () => {
+      const run = await runFlow(flow('r4o-dataset-override.flow.yml'), {
+        overrides: { dataset: path.join(DATASETS, 'things.csv') },
+        responses: { createThing: CREATED }
+      });
+
+      expect(run.iterations).toHaveLength(3);
+      expect(run.callsFor('createThing').map((call) => call.body.value.name)).toEqual(['alpha', 'beta', 'gamma']);
+    });
+
+    /** Without one it is a single iteration, so the override is what makes the flow iterate at all. */
+    it('leaves that flow at one iteration when no override is given', async () => {
+      const run = await runFlow(flow('r4o-dataset-override.flow.yml'), { responses: { createThing: CREATED } });
+
+      expect(run.iterations).toHaveLength(1);
+    });
+
+    /**
+     * §7.4 holds a dataset the way it holds a `!file`. This is the reason it has to: an override
+     * arrives from a command line or a text field, where `../` costs nothing to type, and the read
+     * had been going straight to the port with no containment check on either path.
+     */
+    it('refuses a source outside the scope root', async () => {
+      await expect(
+        runFlow(flow('r4o-dataset-override.flow.yml'), {
+          overrides: { dataset: path.join(FLOWS, '..', '..', '..', 'package.json') },
+          responses: { createThing: CREATED }
+        })
+      ).rejects.toThrow(/outside the scope root/);
+    });
+
+    /**
+     * §14.5's snapshot reports the dataset the run *used*. 002 §5.5 decides whether to offer an
+     * iteration selector from this field, so a flow given rows it does not declare would otherwise
+     * run all of them with no way to look at any but the first.
+     */
+    it('records the override in the snapshot the capture and the app read', async () => {
+      const run = await runFlow(flow('r4o-dataset-override.flow.yml'), {
+        overrides: { dataset: path.join(DATASETS, 'things.csv') },
+        responses: { createThing: CREATED }
+      });
+
+      const start = run.events.find((event) => event.type === 'run:start');
+      expect(start.iterationCount).toBe(3);
+      expect(start.description.dataset.source).toContain('things.csv');
+    });
+  });
+
   // §9.4: concurrent iterations run the same writers against different rows, so a single run-wide
   // set of slots would have the last row to finish decide every iteration's value.
   it('gives each concurrent iteration its own slots', async () => {
@@ -1999,5 +2078,180 @@ describe('a run records where it came from', () => {
     });
 
     expect(structuredClone(started(run)).origin).toEqual(ORIGIN);
+  });
+});
+
+/**
+ * §8.3's built-in step metadata — the two of the six that had no publisher.
+ *
+ * `status`, `ok`, `skipped` and `duration` were always written; `.body` and `.headers` were not, so
+ * a reference to either resolved to nothing and skipped the reading step `unresolved-dependency` —
+ * failing the run by default, while `bru flow validate` warned-but-allowed the same reference and
+ * the graph drew it as a working data edge.
+ */
+describe('§8.3 — a prior response is readable without declaring an output', () => {
+  // The server's own casing, which an author cannot know and therefore cannot write.
+  const CREATED_WITH_HEADER = {
+    status: 201,
+    headers: { 'content-type': 'application/json', 'X-Request-Id': 'req-9' },
+    body: { data: { id: 'thing-1' } }
+  };
+
+  let run;
+
+  beforeAll(async () => {
+    run = await runFlow(flow('builtin-response.flow.yml'), {
+      responses: { createThing: CREATED_WITH_HEADER, getThing: STATE }
+    });
+  });
+
+  it('resolves .body in an interpolated value', () => {
+    expect(run.outcome('consume')).toBe('success');
+    expect(run.call('getThing').url).toBe('https://regress.example.com/things/thing-1');
+  });
+
+  it('resolves .body in an assertion', () => {
+    expect(run.step('consume').assertions).toEqual([
+      { expr: 'steps.create.body.data.id eq "thing-1"', passed: true, expected: 'thing-1', actual: 'thing-1' }
+    ]);
+  });
+
+  // Header names are case-insensitive and nothing tells a flow which case the server chose, so the
+  // key an author can write is the only one there is.
+  it('keys .headers lower-case, whatever case the response carried', () => {
+    expect(run.call('getThing').headers['X-Request-Id']).toBe('req-9');
+  });
+
+  it('publishes neither for a sub-flow step, which has no response of its own', () => {
+    expect(run.outcome('child')).toBe('success');
+    expect(run.outcome('after_child')).toBe('skipped:unresolved-dependency');
+    expect(run.step('after_child').message).toContain('steps.child.body.data.id');
+  });
+
+  /**
+   * The two new keys defer to a declared output of the same name, where the four older built-ins
+   * still win over one. `body` was a safe output name until it became a built-in, so a flow that
+   * declares one must not silently start reading the raw response instead.
+   */
+  it('lets a declared output named body win over the built-in', async () => {
+    const shadowed = await runFlow(flow('builtin-body-declared.flow.yml'), {
+      responses: { createThing: CREATED, getThing: STATE }
+    });
+
+    expect(shadowed.outcome('consume')).toBe('success');
+    expect(shadowed.call('getThing').url).toBe('https://regress.example.com/things/thing-1');
+  });
+});
+
+/**
+ * §14.4's primary mechanism — provenance by value — over what a reporter is handed.
+ *
+ * §14.8 claims the masking is applied before a `FlowEvent` or a `RunResult` is emitted, and until
+ * this it was not: an extracted bearer token travelled through `StepResult.outputs`, an assertion's
+ * operands and a script's error message into `report.json` and the HTML report unaltered.
+ *
+ * The mechanism is by value rather than by name, which is what makes it hold where a secret has
+ * been copied — into an output, into a shared slot (§9.1), into an error body a service echoed
+ * back. What must *not* change is the wire: the run's own state keeps the real value.
+ */
+describe('§14.4 — a secret is masked wherever it appears, in what the run reports', () => {
+  /** A `secret: true` environment entry, which only a host can identify (§13.2's `secrets`). */
+  const FROM_HOST = 'sk_env_9f3a';
+  /** §12.5's `secret: true` param, which the engine knows from the flow itself. */
+  const FROM_PARAM = 'pw_param_7c1d';
+  /** The auth profile's `password:`, resolved by the engine while the step materializes (§6.4). */
+  const FROM_PROFILE = 'profile_pw_9';
+
+  const start = (overrides = {}) =>
+    runFlow(flow('secret-provenance.flow.yml'), {
+      vars: { tenantApiKey: FROM_HOST },
+      secrets: [FROM_HOST],
+      params: { tenantPassword: FROM_PARAM },
+      responses: {
+        // The service echoes both back: the token it minted, and the credential it was given.
+        signIn: { status: 200, body: { data: { token: FROM_HOST, role: FROM_PROFILE } } },
+        createThing: CREATED,
+        getState: STATE
+      },
+      ...overrides
+    });
+
+  let run;
+
+  beforeAll(async () => {
+    run = await start();
+  });
+
+  it('masks an extracted output, whichever source the value came from', () => {
+    expect(run.step('sign_in').outputs).toEqual({ token: '••••', role: '••••' });
+  });
+
+  it('masks both operands of an assertion', () => {
+    expect(run.step('sign_in').assertions).toEqual([
+      { expr: 'res.body.data.token eq "{{tenantApiKey}}"', passed: true, expected: '••••', actual: '••••' }
+    ]);
+  });
+
+  it('masks a message that echoed one back', () => {
+    expect(run.outcome('reject')).toBe('failed:script-error');
+    expect(run.step('reject').message).toBe('outputs.audit threw: rejected ••••');
+  });
+
+  // The stream and the result are two views of one outcome (§13.2), so a reporter reading events
+  // cannot be handed the copy the result had masked.
+  it('masks the step:end payload as well as the result', () => {
+    const ended = run.events.find((event) => event.type === 'step:end' && event.result.id === 'sign_in');
+
+    expect(ended.result.outputs).toEqual({ token: '••••', role: '••••' });
+  });
+
+  it('masks the captured request and response bodies', () => {
+    const capture = run.files.json(path.join(run.captureDir, 'sign_in/attempt-1.json'));
+
+    expect(JSON.parse(capture.request.body.text)).toEqual({ email: 'qa@example.com', password: '••••' });
+    expect(JSON.parse(capture.response.body.text)).toEqual({ data: { token: '••••', role: '••••' } });
+  });
+
+  /**
+   * §14.5's flow snapshot is excluded, and only that: it is a verbatim copy of a committed file,
+   * whose digest is what `listRuns` compares against the flow on disk to answer whether it has
+   * changed since. Rewriting a credential someone wrote into the file would make that comparison
+   * report every run as stale, and the credential is in the repository either way — which is the
+   * case §14.4 has the header denylist for.
+   */
+  it('leaves no occurrence of any of the three in what the run recorded', () => {
+    const written = run.files
+      .paths()
+      .filter((target) => target.startsWith(`${run.captureDir}${path.sep}`))
+      .filter((target) => !['flow.yml', 'flow.json'].includes(path.basename(target)))
+      .map((target) => run.files.read(target).toString('utf8'))
+      .join('\n');
+
+    for (const secret of [FROM_HOST, FROM_PARAM, FROM_PROFILE]) {
+      expect(JSON.stringify(run.result)).not.toContain(secret);
+      expect(JSON.stringify(run.events)).not.toContain(secret);
+      expect(written).not.toContain(secret);
+    }
+  });
+
+  /**
+   * The regression that would make the fix worse than the defect: masking is applied to copies on
+   * the way out, so a step reading `{{steps.sign_in.token}}` — or the shared slot the value was
+   * promoted into — is still sent the real one.
+   */
+  it('sends the real value on the wire', () => {
+    const sent = run.call('createThing');
+
+    expect(sent.headers['X-Token']).toBe(FROM_HOST);
+    expect(sent.json.ref).toBe(FROM_HOST);
+    expect(sent.query).toEqual([{ name: 'token', value: FROM_HOST }]);
+  });
+
+  // A `secret: true` variable with no value would otherwise contribute a pattern that matches at
+  // every position of every string.
+  it('ignores an empty or blank secret', async () => {
+    const blank = await start({ secrets: ['', '   '] });
+
+    expect(blank.step('sign_in').outputs).toEqual({ token: FROM_HOST, role: '••••' });
   });
 });

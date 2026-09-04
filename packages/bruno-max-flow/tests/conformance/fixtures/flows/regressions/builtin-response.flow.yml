@@ -1,0 +1,46 @@
+# §8.3's built-in step metadata: `.body` and `.headers.<name>` are available with nothing declared.
+# `create` declares no outputs at all, so the built-ins are the only thing a path param, an embedded
+# reference and an assertion here can be resolving against.
+#
+# `child` is the other half of the rule: a `uses:` step has no response of its own, so it publishes
+# neither key and the step reading one is skipped `unresolved-dependency`. That skip is the
+# assertion rather than a defect, so it does not fail the run (§11.2).
+version: 1
+
+meta:
+  name: the response is readable without an output
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: consume
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.create.body.data.id}}"
+    headers:
+      # Written lower-case whatever case the response carried, since nothing tells a flow which the
+      # server chose (§8.3).
+      X-Request-Id: "{{steps.create.headers.x-request-id}}"
+    assert:
+      - steps.create.body.data.id eq "thing-1"
+
+  - id: child
+    uses: ./builtin-response-child.flow.yml
+    depends: [consume]
+
+  - id: after_child
+    operation: regress-api#createThing
+    depends: [child]
+    failOnUnresolved: false
+    body:
+      name: after
+      ref: "{{steps.child.body.data.id}}"

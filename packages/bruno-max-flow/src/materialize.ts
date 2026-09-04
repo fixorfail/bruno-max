@@ -258,6 +258,49 @@ const resolveAuth = (
 /** Every mode's fields live under its own name in `Auth`; only Akamai's key is not the mode string. */
 const authFieldKey = (mode: AuthMode): string => (mode === 'akamai-edgegrid' ? 'akamaiEdgegrid' : mode);
 
+/**
+ * §14.4's provenance half, over the credentials the engine resolves itself: which field of each
+ * mode *is* the secret.
+ *
+ * The line drawn is between a field that **authenticates** — a password, a token, a shared secret, a
+ * signing key — and one that only identifies who is calling. `username`, `clientId`, `consumerKey`,
+ * an AWS `accessKeyId`, an Akamai `clientToken` and an API key's header `key` are names: useless on
+ * their own, and masking them would blank a recognizable string out of every URL, body and message a
+ * report shows while protecting nothing. §14.4's own examples — `token`, `password`, `clientSecret`,
+ * `privateKey` — are all of the first kind.
+ */
+const CREDENTIAL_FIELDS: Record<AuthMode, string[]> = {
+  'inherit': [],
+  'none': [],
+  'awsv4': ['secretAccessKey', 'sessionToken'],
+  'basic': ['password'],
+  'bearer': ['token'],
+  'digest': ['password'],
+  'ntlm': ['password'],
+  'oauth1': ['consumerSecret', 'accessToken', 'accessTokenSecret', 'privateKey'],
+  'oauth2': ['password', 'clientSecret'],
+  'wsse': ['password'],
+  'apikey': ['value'],
+  'akamai-edgegrid': ['clientSecret', 'accessToken']
+};
+
+/**
+ * The credential values this request's auth resolved to, for the run to mask wherever they later
+ * appear (§14.4).
+ *
+ * Read off the resolved `Auth` rather than the profile's authored fields, so a credential written as
+ * `{{loginPassword}}` is tracked as the value that went out rather than as the reference.
+ */
+const credentialValues = (auth: Auth): string[] => {
+  const fields = (auth as unknown as Record<string, unknown>)[authFieldKey(auth.mode)] as
+    | Record<string, unknown>
+    | undefined;
+  if (!fields) return [];
+  return CREDENTIAL_FIELDS[auth.mode]
+    .map((name) => fields[name])
+    .filter((value): value is string => typeof value === 'string');
+};
+
 const substitute = (template: string, params: Record<string, unknown>): string =>
   template.replace(/\{([^}]+)\}/g, (match, name: string) =>
     params[name] === undefined ? match : encodeURIComponent(String(params[name]))
@@ -273,6 +316,8 @@ export type Materialized = {
   mediaType?: string;
   /** `steps.*` references naming an output the run never produced (§11.2). */
   unresolved: string[];
+  /** What the resolved auth profile contributed to §14.4's set of secret values. */
+  secrets: string[];
 };
 
 /**
@@ -335,9 +380,12 @@ export const materialize = async (
     body = asStructuredBody(mediaType, value.body);
   }
 
+  const auth = resolveAuth(step, binding, profiles);
+
   return {
     mediaType,
     unresolved,
+    secrets: credentialValues(auth),
     request: {
       method: resolved.method,
       url,
@@ -346,7 +394,7 @@ export const materialize = async (
         Object.entries(value.headers as Record<string, unknown>).map(([name, entry]) => [name, String(entry)])
       ),
       body,
-      auth: resolveAuth(step, binding, profiles),
+      auth,
       operation: {
         api: binding?.alias || '',
         operationId: resolved.operationId,
