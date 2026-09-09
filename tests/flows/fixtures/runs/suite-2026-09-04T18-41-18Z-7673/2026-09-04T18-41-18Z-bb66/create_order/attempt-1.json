@@ -1,0 +1,48 @@
+{
+  "stepId": "create_order",
+  "iteration": 0,
+  "attempt": 1,
+  "startedAt": "2026-09-04T18:41:18.547Z",
+  "durationMs": 17,
+  "request": {
+    "method": "POST",
+    "url": "http://localhost:8081/api/echo/json",
+    "headers": {},
+    "body": {
+      "kind": "text",
+      "contentType": "application/json",
+      "text": "{\"channel\":\"web-checkout\",\"id\":\"ord_1\"}"
+    }
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "headers": {
+      "x-powered-by": "Express",
+      "access-control-allow-origin": "*",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "39",
+      "etag": "W/\"27-jrPPIUbNE4h0ag1m8DOzGVmpJVc\"",
+      "date": "Fri, 04 Sep 2026 18:41:18 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "body": {
+      "kind": "text",
+      "contentType": "application/json; charset=utf-8",
+      "text": "{\"channel\":\"web-checkout\",\"id\":\"ord_1\"}"
+    },
+    "responseTimeMs": 7
+  },
+  "assertions": [],
+  "validation": {
+    "request": {
+      "valid": true,
+      "errors": []
+    },
+    "response": {
+      "valid": true,
+      "errors": []
+    }
+  }
+}

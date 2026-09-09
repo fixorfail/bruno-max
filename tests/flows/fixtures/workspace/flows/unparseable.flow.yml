@@ -1,0 +1,9 @@
+version: 1
+
+meta:
+  name: Unparseable
+
+steps:
+  - id: create_order
+   operation: orders#createOrder
+  bad: [unclosed

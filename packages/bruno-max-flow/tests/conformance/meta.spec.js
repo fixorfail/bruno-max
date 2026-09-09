@@ -9,7 +9,8 @@
  * moved*, and the ways a YAML serializer quietly rewrites a document it re-emits are exactly what a
  * property dialog would otherwise ship.
  */
-const { readFlowProperties, writeFlowProperties } = require('../../src/meta');
+const { normalizeFlow, parseDocument } = require('../../src/document');
+const { readFlowProperties, writeFlowProperties, writeNewFlowDocument } = require('../../src/meta');
 
 const NONE = { tags: [], library: false };
 
@@ -235,5 +236,54 @@ describe('R4z — writing a flow\'s properties', () => {
     };
 
     expect(readFlowProperties(writeFlowProperties('version: 1\nsteps:\n  - id: a\n', properties))).toEqual(properties);
+  });
+});
+
+/**
+ * 002 §4.1c's opening document. The engine is the format's only writer, so the skeleton a new flow
+ * starts from is written here too — with `steps:` deliberately absent, as §4.1c says.
+ */
+describe('R4z — writing a new flow', () => {
+  const properties = { name: 'Checkout', description: 'Creates a payment.', tags: ['checkout', 'smoke'], library: false };
+  const apis = { 'payments-api': './payments.yml', 'auth-api': '../shared/auth.yml' };
+
+  it('writes version, then meta, then the bindings — and no steps: key', () => {
+    expect(writeNewFlowDocument({ properties, apis })).toBe(
+      [
+        'version: 1',
+        'meta:',
+        '  name: Checkout',
+        '  description: Creates a payment.',
+        '  tags:',
+        '    - checkout',
+        '    - smoke',
+        'apis:',
+        '  payments-api: ./payments.yml',
+        '  auth-api: ../shared/auth.yml',
+        ''
+      ].join('\n')
+    );
+  });
+
+  it('parses and normalizes cleanly, reading back what was written', () => {
+    const text = writeNewFlowDocument({ properties, apis });
+    const parsed = parseDocument(text);
+    const { model } = parsed;
+    const flow = normalizeFlow(parsed, '/scope/flows/checkout.flow.yml');
+
+    expect(parsed.errors).toEqual([]);
+    expect(flow.errors).toEqual([]);
+    expect(readFlowProperties(text)).toEqual(properties);
+    expect(Object.keys(flow.apis)).toEqual(['payments-api', 'auth-api']);
+    expect(flow.apis['auth-api'].source).toBe('../shared/auth.yml');
+    expect(flow.steps).toEqual([]);
+    expect(model).not.toHaveProperty('steps');
+  });
+
+  /** A default is an absence here as in the dialog, and a binding with nothing to bind is not one. */
+  it('omits apis: with nothing to bind, and meta: with nothing to say', () => {
+    expect(writeNewFlowDocument({ properties: NONE, apis: {} })).toBe('version: 1\n');
+    expect(writeNewFlowDocument({ properties: NONE, apis: { '': './x.yml', 'api': '  ' } })).toBe('version: 1\n');
+    expect(writeNewFlowDocument({ properties: { ...NONE, library: true }, apis: {} })).toBe('version: 1\nmeta:\n  library: true\n');
   });
 });

@@ -1,0 +1,12 @@
+opencollection: 1.0.0
+info:
+  name: "Flows Workspace"
+  type: workspace
+
+collections:
+  - name: "Payments"
+    path: "collections/payments"
+
+specs:
+
+docs: ''

@@ -1,0 +1,19 @@
+openapi: 3.0.3
+# One `operationId` on two operations, which §6.5 makes a validation error. `operationId` is unique
+# by the OpenAPI specification and is routinely not, because nothing in a generator enforces it — and
+# an index built by assignment keeps whichever came last, so the step silently calls the other
+# endpoint.
+info: { title: Duplicate ids, version: 1.0.0 }
+servers:
+  - url: https://duplicates.example.com
+paths:
+  /v1/tickets:
+    post:
+      operationId: createTicket
+      responses:
+        '201': { description: Created }
+  /v2/tickets:
+    post:
+      operationId: createTicket
+      responses:
+        '201': { description: Created }

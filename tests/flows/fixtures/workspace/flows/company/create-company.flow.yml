@@ -1,0 +1,13 @@
+version: 1
+
+meta:
+  name: Create a company
+
+apis:
+  orders: ../../apispec/orders-v1.yml
+
+steps:
+  - id: create_company
+    operation: orders#createOrder
+    body:
+      id: co_1

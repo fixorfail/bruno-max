@@ -1,0 +1,28 @@
+# R10.3 — the step's own block over what both connector files supply: `thingId` suppressed, `title`
+# overridden, `own` added, and `thingName` still inherited from the collection file (§8.5).
+version: 1
+
+meta:
+  name: R10 — override
+
+apis:
+  svc: ../../../../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: get_thing
+    operation: svc#getThing
+    pathParams:
+      id: thing-1
+    outputs:
+      thingId: !...
+      title: data.id
+      own: data.name
+
+  - id: create
+    operation: svc#createThing
+    body:
+      name: "{{steps.get_thing.own}}"
+      ref: "{{steps.get_thing.title}}"

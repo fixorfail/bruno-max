@@ -40,17 +40,35 @@ should break something here.
 ```
 tests/flows/
   fixtures/
-    workspace/                  # a workspace with apispec/ and flows/, copied to a temp dir
-      apispec/
-      flows/
-      collections/payments/flows/
-    runs/                       # a committed .bruno-runs/ directory — see §6
+    workspace/                  # a workspace copied to a temp dir per test
+      workspace.yml
+      apispec/                  # the documents the workspace's flows bind
+      environments/             # Local.yml, Staging.yml — §7.2's tiers, and the picker's list
+      flows/                    # one flow per shape a scenario needs: linear, parallel, polling,
+                                # dataset, cancel, cleanup, skips, redaction, cyclic, unparseable, …
+        company/                # §4.1a's folder derivation needs a flow below the top level
+        fixtures/               # the CSVs a dataset: and a !file resolve to
+        scripts/                # §4.5's editable script
+      collections/payments/     # bruno.json, apispec/ and flows/ — the collection-scoped half
+    runs/                       # committed suite directories — see §6
+  init-user-data/               # the preferences the app is launched with
   graph.spec.ts                 # §3
   run.spec.ts                   # §4
   diagnostics.spec.ts           # §5
   inspect-history.spec.ts       # §6
   regressions.spec.ts           # §8
 ```
+
+`fixtures/runs/` holds whole suites rather than a single run, because §6 reads them through 002 §11.2's
+`listSuites` / `listRuns` and a lone run directory exercises neither. One of them deliberately has no
+`summary.json` — the run a process death interrupted — because §10 has to list it as `interrupted`
+and draw it from its step directories, claiming no outcome for it at all, and a fixture set that
+always had one would never take that path. §6's *live* captures are written to a real `.bruno-runs/`
+under the copied workspace and are not these.
+
+**`tests/utils/page/flows.ts` is the page module.** Every scenario reaches the UI through
+`common.flows` rather than through raw selectors, which is what keeps a `data-testid` rename to one
+file; 002 §12.1 counts the two upstream lines that put it in the locator tree.
 
 **§7's host scenarios are Jest, not Playwright**, and live beside the code they cover in
 `packages/bruno-electron/src/ipc/flow/`. They are about what crosses IPC — which tier arrives in
@@ -64,10 +82,12 @@ app; stubbing HTTP inside the renderer would test a different application. `echo
 request/response, `auth` covers the token-passing shapes, and `wait-for` (`?time=<ms>`) is what makes
 an in-flight request last long enough for a cancellation scenario to be deterministic.
 
-**One new route is required.** §4.3's polling scenario needs an endpoint whose response *changes* —
-`pending` for the first N calls, then `settled` — and nothing in `bruno-tests` is stateful in that
-way today. Add a small counter-backed route rather than driving the poll off a flaky timing
-assumption; the alternative is asserting on wall-clock, which is how a suite becomes flaky in CI.
+**One new route was required, and it is `GET /api/settle/:key?after=N`.** §4.3's polling scenario
+needs an endpoint whose response *changes* — `pending` for the first N calls, then `settled` — and
+nothing in `bruno-tests` was stateful in that way. It is counter-backed rather than timed: a poll that
+terminates after a known number of attempts is deterministic, where one that terminates after a known
+duration is asserting on wall-clock, which is how a suite becomes flaky in CI. It lives in its own
+router file and costs the two mounting lines 002 §12.1 counts.
 
 **Fixture flows are real files**, following 001-C §2's rule for the same reason: they double as the
 worked examples, and a format change should surface as a failure at a path rather than a diff inside
@@ -323,11 +343,19 @@ is drawn to or from them. A flow declaring neither draws neither panel. Each exp
 reference while that step is running, and still the reference if it ends without producing the
 output. A stored run whose description predates the panels draws the graph with them absent.
 
+An export sourced from a slot (`shared.<slot>`, 001 §12.1) resolves from `slots[].writes` instead:
+the **last write in declaration order** whose step ran. Two exclusive branches show whichever one
+ran; two branches that both ran show the later-declared one's value; a branch still running holds
+the row on its reference even where an earlier writer has finished; every branch skipped leaves it
+on the reference. A description whose slots carry no `writes` at all draws the row on its reference.
+
 *Pins 002 §5.6, §11.1.* The panels are layers beside the graph, not ranks in it: a box inserted at
 rank -1 or one past the last would renumber every column and make the drawing disagree with the run
 the CLI executes. The mid-run half is the one that fails quietly — a value read before its step is
 terminal is the previous attempt's on any step that retries, which reads as an export that changed
-its mind.
+its mind. A slot has the same failure one step out: taking the first writer that finished rather
+than the last one declared makes the panel disagree with the value the caller was actually handed,
+and the two only differ on a machine where the branches settled out of order.
 
 ---
 
@@ -430,6 +458,12 @@ to correct it.
 
 Cancel a run with a `wait-for` step in flight. The in-flight node ends `cancelled`, unstarted nodes
 show `run-cancelled`, and the flow's status word is `cancelled`.
+
+**The first sentence is a claim about the engine, and the app only renders what it is told.** An
+aborted request comes back to the engine as a rejection, and the distinction between "this connection
+died" and "we killed it" is the engine's to draw — so this scenario passing means both halves work,
+and it failing does not say which. [001-C](./001-api-flows-conformance.md) R9.8 pins the engine half
+on its own, and is the one to read first when this goes red.
 
 Cancel one during a **polling** step's retry delay: it stops there rather than when the delay would
 have elapsed, the node ends `cancelled`, and no further request goes out. A poll's delay is where a
@@ -601,6 +635,10 @@ scope holding nothing but libraries still shows one.
 flag is on the watcher's tree entry precisely because the sidebar lists flows nobody has opened, and
 an implementation reading it from a description instead groups a library only after it has been
 opened — by which point the reader has already found out.
+
+**What `library: true` decides here is the grouping, not the params panel.** §7.2 shows parameter
+inputs for any flow that declares `params:`, so a non-library flow with a `params:` block gets them
+too; this scenario names a library because that is the flow it is also asserting the label for.
 
 ### U3.6a A flow reads by the name it declares
 
@@ -806,18 +844,19 @@ snapping the view back to `current` would throw away the outcomes it was started
 
 ### U4.10 Capture-disabled runs degrade honestly, and only themselves
 
-With capture disabled in run configuration, the request and response tabs say so; assertion and
-validation outcomes still render.
+Start a run through the control's **Run without capture** menu item (§7.1). Its request and response
+tabs say the run captured nothing; assertion and validation outcomes still render.
 
-Then the converse, which is the one with teeth: run a flow **with** capture on, open a step's
-request, and *now* uncheck capture in the run control. The captures on screen are unaffected, and
-still are after switching steps and tabs. Opening a stored run from §10 while the box is unchecked
-shows its captures too.
+Then the converse, which is the one with teeth: run the same flow again **with** capture — the plain
+`Run` — open a step's request, and *now* start a third run without capture from the menu. The
+captured run's request and response are unaffected: reopening it from §10's selector still shows
+them, after switching steps and tabs, and a run `bru` wrote last week opens the same way.
 
-*Pins 002 §9.* Assertion and validation outcomes arrive in `StepResult`, so there is no excuse for
-losing them. The second half catches the pane reading the checkbox instead of the run: it ties what a
-*finished* run can show to a setting for the *next* one, so configuring the next run erases the
-evidence from the last, and a run written by `bru` last week inherits whatever the control says now.
+*Pins 002 §9, and §7.1's does-not-remember rule.* Assertion and validation outcomes arrive in
+`StepResult`, so there is no excuse for losing them. The second half catches the pane deciding what it
+can show from the app's most recent choice instead of from the run in front of it — which would let
+starting one run erase the evidence from the last, and would make a run's contents depend on
+something that is deliberately not remembered anywhere.
 
 ### U4.10a A running flow is not redrawn by an edit to its file
 
@@ -1181,6 +1220,23 @@ resolves sub-flows and OpenAPI documents over the network. All three come from o
 watcher has already read, so a second read here is a regression rather than a detail. A watcher that
 failed on a file it could not parse would drop the flow that most needs opening — the broken one.
 
+### U5.6c The watcher follows the files a flow's diagnostics come from
+
+A file under `flows/` that no row stands for — a `flows/connectors.yml` (001 §8.5) — emits
+`main:flow-dependency-changed` carrying its path, and **not** `main:flow-tree-updated`: it is neither
+a flow, a script nor a fixture, and a list of flows is not where it belongs. The OpenAPI document a
+flow's `apis:` binds is followed by path even though it sits outside the watched directory, and
+changing it emits the same event; so does one bound by an edit made after the watcher started. A
+remote document is not followed at all.
+
+The renderer's half is §6's: either event drops every stored description, so what is open is
+re-described against the file as it is now.
+
+*Pins 002 §6, §11.3, and 001 §6.2.* Watching the directory alone made a whole class of fix invisible
+— correcting the OpenAPI document left every `unknown-operation` and `unknown-field` standing, with
+nothing on screen admitting the flow had not been re-read. The two events are separate because only
+one of them has a row to draw; what the renderer does with either is the same.
+
 ### U5.6a A workspace flow's scripts run
 
 A **workspace-scoped** flow whose step declares an `outputs` script, a `when:` condition and a
@@ -1255,17 +1311,117 @@ rather than sent.
 run would be inventing a grouping the panel does not have. Copying U5.5's shape here is the mistake
 worth pinning.
 
+### U5.10 A run's cookie jar is its own, seeded once from the app's own
+
+Two requests in the same run, to the same host, share whatever cookies the first response set. Two
+iterations of a dataset flow each log in as a different user: iteration two's requests carry only
+iteration two's session, never iteration one's. A fresh run's jar starts with whatever the app's own
+process-wide jar held for that host at the moment the jar was minted, and diverges from there — a
+cookie the app's jar receives after the run starts (from an ordinary request, or a concurrent run)
+never reaches this run's jar, and nothing a run does reaches the app's own jar or a sibling run's.
+
+*Pins 001 §7.6.* The dispatch port used to read and write the app's single process-wide jar directly
+(`utils/cookies`), which is exactly what §7.6 forbids: two iterations of a dataset flow shared one
+session, and `parallel:` made which session a request carried depend on timing.
+
+### U5.11 A safe-mode collection's flow scripts run, in QuickJS
+
+A flow step's `outputs` script, `when:` condition and `shouldRetry` each run and their value is used,
+for a collection whose `securityConfig.jsSandboxMode` is `safe` (the default) — the same as a
+developer-mode collection, except the script runs in the QuickJS sandbox rather than node:vm. A
+throwing script still fails the step with `script-error` (001 §8.2).
+
+*Pins 001 §8.2.* The port used to refuse outright: QuickJS's own script closure
+(`bruno-js/src/sandbox/quickjs/index.js`) discards whatever a script evaluates to, and running the
+script in node:vm instead would hand a safe-mode collection's author an unsandboxed script — neither
+is "no new security posture." `runScriptInQuickJsForValue`
+(`bruno-js/src/fork/quickjs-value-runner.js`) is a second QuickJS entry point that returns the value.
+
+### U5.12 The implicit `collection` auth profile is the host's to supply
+
+A collection-scoped run hands `runFlow` an `authProfiles.collection` carrying that collection's own
+configured auth, flattened to the shape a flow's own `authProfiles:` block uses — `mode:` beside that
+mode's fields, with an interpolation left unresolved for §6.4 to resolve in the flow's scope. A
+collection declaring `mode: none`, and one whose root file will not parse, each still get a profile,
+with `mode: 'none'`. A **workspace-scoped** run supplies no profiles at all.
+
+*Pins 001 §6.4, 002 §7.2 and §11.3.* Only a host knows what a collection is: the engine can resolve
+the profile and cannot open `collection.bru`. Two failures this rules out — supplying Bruno's nested
+on-disk auth verbatim, which the engine would re-nest into `bearer.bearer.token`; and resolving the
+collection's `{{...}}` in main, which would read the request path's tiers rather than the run's and
+disagree with `bru` for the same file. The parse failure is deliberately not fatal: a collection that
+will not parse must not stop a flow that never mentions auth, and taking the whole main process down
+on an unhandled rejection is what a naive read of `parseCollection` does.
+
+### U5.13 A created flow's document is the engine's, byte for byte
+
+`renderer:flow-create` writes exactly what the engine's `writeNewFlowDocument` returns for the same
+properties and the same `apis:` mapping — compared as text, not as parsed YAML.
+
+*Pins 002 §4.4's single serializer and 002-C R4.* Main used to emit a two-key `js-yaml` skeleton for
+the properties writer to splice `meta:` into, which made the app a second author of a format 001 §5.1
+bought exactly one of. Asserting the parsed tree is what cannot catch that: a hand-assembled skeleton
+and the engine's document load to the same object while differing in key order, quoting and where
+`meta:` sits. The host keeps one thing — resolving each binding's absolute source to a path relative
+to the flow's directory (§6.2), because the renderer's `path` is a POSIX shim.
+
+### U5.14 §6.1's normalization corpus, asserted against `openapi-sync.js`
+
+The five references 001-C R8.10 asserts against the engine — a trailing slash, doubled slashes, an
+origin, a query, a lowercase method — each reduce, through `openapi-sync.js`'s own `normalizeUrlPath`
+and `METHOD:/path` key, to the identity the plain `POST /orders/{orderId}/refund` reduces to. A
+leading `{{baseUrl}}` interpolation reduces to it too.
+
+*Pins 001 §6.1.* §6.1 asks for a committed corpus **asserted by both**, and until now only the
+engine's half existed — so the two eight-line regexes could drift into a flow that cannot resolve an
+operation openapi-sync matches fine. The rows are copied rather than shared on purpose: §6.1 rules
+out extracting `normalizeUrlPath`, which is private to one of the most-churned files in the app.
+
+### U5.15 A flow step's proxy and certificates come from its collection, and interpolate
+
+A collection whose proxy config names `{{proxyHost}}` and whose client certificate names
+`{{certDir}}` runs a flow step: the app's own `getCertsAndProxyConfig`, given what the dispatch port
+passed, resolves both from the **run's** variables. The collection's config is read once per run
+however many steps dispatch, and a workspace-scoped flow gets the empty config.
+
+*Pins 001 §7.4 and 002 §7.3.* §7.3's whole claim is that a flow step inherits the app's proxy
+settings and client certificates by going through the app's request path — which it did not: the port
+passed an empty collection, so `getBrunoConfig` (keyed by a `collectionUid` main cannot derive) found
+nothing, and there was no variable map for the fields that do interpolate. Two wrong implementations
+this rules out — reading the config and leaving the variables empty, which leaves `{{proxyHost}}` as
+a literal hostname; and re-implementing the interpolation in the flow host, which drifts from the one
+`setupProxyAgents` actually uses.
+
+### U5.16 A workspace-scoped flow's scripts run in the safe sandbox
+
+A flow with no collection runs its `outputs`, `when:` and `shouldRetry` scripts through the QuickJS
+runner and never node:vm, whatever any collection's stored `securityConfig` says; a throwing script
+still fails the position. A collection that chose `developer` still gets node:vm.
+
+*Pins 001 §8.2 and 002 §7.3.* `jsSandboxMode` is a collection's setting and a workspace flow has no
+collection, so the absent answer has to mean something — and the gate used to key on the presence of
+a collection, which made absence mean `developer`. The flow the app can *least* attribute to a
+collection's own decision was the one running unsandboxed; `safe` is both `bru run`'s default and the
+default a collection gets when nobody has chosen.
+
 ---
 
 ## 8. Regressions not owned by a single scenario
 
-### R1 — Bodies are never read from events
+### R1 — No event carries a body past the preview cap, and every body it carries is masked
 
-Instrument the IPC boundary: no `main:flow-run-event` payload contains a response body. The step pane
-still shows one.
+Instrument the IPC boundary: no `main:flow-run-event` payload carries a body larger than
+`config.capturePreviewBytes`, and every body one does carry is masked. The step pane still shows the
+whole body, read from the capture.
 
-*Pins 002 §8.1, §9, and 001 §13.2.* The cheap wrong implementation attaches bodies to events and
-works perfectly until a large response is serialized twice per step across IPC.
+*Pins 002 §8.1, §9, and 001 §13.2 and §14.4.* The cheap wrong implementation attaches bodies to
+events and works perfectly until a large response is serialized twice per step across IPC. What the
+engine does put on an event is 001-C R9.4's `step:end.preview` — the request as sent and the response
+body, each cut at the cap and masked *before* the cut — which is what `bru --verbose` prints and what
+the reporters read. Worded as *no body at all*, R1 contradicted that and could only be asserted by
+deciding which of the two specs was wrong; worded as the bound it always was about, it holds the
+thing the rationale names: the size of what crosses the channel, and the masking that crosses with
+it.
 
 ### R2 — Events are batched
 
@@ -1385,7 +1541,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U4.5–U4.7 | §10 | A second, weaker viewer for stored runs |
 | U4.8, U4.9 | §10, §11.2 | A run with no `summary.json` shown as failed, or hidden entirely |
 | U4.9a | §10 | The flow as it stands unreachable after a run; a run's outcomes discarded when it ends |
-| U4.10 | §9 | Blank panels instead of an explanation; the next run's setting erasing the last run's captures |
+| U4.10 | §9 | Blank panels instead of an explanation; a later run's choice erasing the last run's captures |
 | U4.15 | §4.4, 001 §5.2 | A property edit that reformats the whole file, or a rename that quietly moves the flow to another scope |
 | U4.15a | §4.4, §4.2 | A rename folded as an unlink and an add — every tab of the flow left on a path that is gone |
 | U4.15b | §4.4 | A properties write that the next auto-save of a stale draft silently reverts |
@@ -1402,8 +1558,171 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U5.7a | §4.1, §4.2 | The borrowed scratch collection showing through as workspace chrome |
 | U5.8 | §4.2 | A cancelled quit that kills the run anyway; a confirmed one that skips cleanup |
 | U5.9 | §8.5 | Copying U5.5's per-run batching onto a chronological panel |
-| R1, R2 | §8.1, §9 | Bodies on events; an unbatched stream |
+| R1, R2 | §8.1, §9 | A whole body on an event, or an unmasked one; an unbatched stream |
 | R3 | §9, §8.5 | A secret visible in the app but not in CI; a panel that masks only the built-ins |
 | R4 | §11.1, §11.2 | The renderer growing its own parser |
 | R5 | §12.1 | Manifest drift after an upstream merge |
 | R6 | §8.2 | A UI-only status |
+
+---
+
+## 11. U6 — Configuring a run, and what survives
+
+The scenarios above assume a run configuration exists and that a flow tab comes back after a restart.
+Both were assumptions rather than facts: §7.2's panel had one control of the five it tables, and the
+two fields with complete renderer→main→engine plumbing — variable overrides and the dataset — could
+only ever be `undefined` because nothing could put a value in either.
+
+### U6.1 Variable overrides and a dataset reach the run
+
+Open a flow, open the run configuration, add a variable override and name a dataset file, and run.
+`renderer:flow-run` carries the override in `tiers.envVarOverrides` and the file in
+`overrides.dataset`; the run interpolates the override at 001 §7.3's precedence and iterates the rows
+of the named file rather than of the one the flow declares.
+
+A row whose name was never typed is not sent — an empty box is a box somebody is still typing, not an
+override of the empty string.
+
+*Pins 002 §7.2, §11.3, and 001 §9.4.* The wrong implementation is the one that was there: two fields
+on the wire, no control anywhere, and a panel that looks complete because the one control it does have
+is the one nobody was missing.
+
+### U6.2 A run configuration outlives a restart, and a password does not
+
+Set a concurrency and a dataset on a flow, type a value into a library flow's params and into a
+variable override, quit and relaunch. The concurrency and the dataset come back on that flow and on no
+other; the params and the overrides are empty, and neither value appears anywhere in the snapshot file
+on disk.
+
+*Pins 002 §7.2.* §7.2 asks for the configuration to be remembered and the snapshot is a plaintext file
+under `userData` — so the half that can hold a credential is deliberately not written, and the
+assertion has to be that it is *absent from the file*, not merely absent from the panel.
+
+### U6.3 A flow tab comes back named
+
+Open a collection-scoped flow and a workspace-scoped one, quit and relaunch. Both tabs are in the
+strip, each labelled with its flow's `meta.name` — not with the literal word `Flow` — and each opens
+onto its own flow.
+
+Rename a flow's `meta.name` through §4.4's dialog while its tab is open: the tab's label and §4.1's
+sidebar row change together.
+
+*Pins 002 §4.2, §4.1.* Two different failures with one shape. A workspace-scoped flow borrows the
+scratch collection, which upstream's serializer skips and its hydration excludes by uid, so that tab
+was simply gone. A collection-scoped one survived and came back nameless, because `addTab` keeps
+`tabName` and the snapshot records `name`.
+
+### U6.4 The tab label carries the run mark, and opening the flow clears it
+
+Start a run and switch to another tab: the flow's tab in the strip carries a running indicator. Let it
+finish: the indicator becomes a pass or fail mark, and the sidebar row's matches it. Click the flow in
+§4.1's sidebar: both marks are gone. Run it again and let it end: both are back.
+
+§4.3's raw editor, §4.5's script and §4.6's fixture tabs carry no mark at any point.
+
+*Pins 002 §4.1, §4.2.* The label component structurally could not render one — it receives `type` and
+`tabName` and nothing that identifies the flow — and *cleared the next time the flow is opened* was
+implemented nowhere, so a mark once raised stood for the rest of the session.
+
+### U6.5 Cancel shows the cleanup window
+
+Run a flow with a `depends: [{ status: [cancelled] }]` cleanup step and press Cancel. The control stops
+offering Cancel and says it is cleaning up, for as long as 001 §11.3's grace runs; the cleanup step
+executes; the run ends `cancelled` and the control is back to **Run**.
+
+*Pins 002 §7.1, and 001 §11.3.* §7.1 requires the state to be shown *explicitly rather than appearing
+hung*, and a control still offering to cancel something already cancelling is the exact appearance it
+rules out — for up to thirty seconds, by design.
+
+### U6.6 The rows of a dataset are all visible, not only the one drawn
+
+Run a dataset flow at `parallel: 3`. A strip above the graph carries one chip per iteration: the rows
+in flight are marked as running — more than one at a time — the finished ones carry 001 §14.6's own
+outcome word, and the ones not reached yet are pending. Clicking a chip draws that iteration.
+
+*Pins 002 §8.3.* The graph draws one iteration by contract, so without the strip a parallel dataset
+shows a third of what is happening and says nothing about the rest.
+
+### U6.7 The summary says how much ran and how long it took
+
+A finished run's header line carries the total the counts are of, the four counts, the flow's status
+word and the elapsed time — read from 001 §13.2's `RunResult.duration` rather than timed by the view.
+A run recorded before the field existed, and an interrupted one, show no elapsed time rather than a
+zero.
+
+*Pins 002 §8.4.* §8.4 tables six things and the line carried four of them.
+
+### U6.8 A diagnostic and a node both reach the line they are about
+
+Open a flow with a diagnostic that carries a position and click the line it names: §4.3's editor opens
+on that flow — focused if it was already open — with the caret on that line. Click the same line again
+after scrolling away: it goes back.
+
+In that editor, click a node on the graph above: the document scrolls to that step's own line.
+
+A diagnostic that names no position is stated and is not clickable. The run's own diagnostics (001
+§13.2) are where those actually come from now — a `capture-write-failed` warning, or the `run-failed`
+error a run that died on its own carries — because they describe what happened while the flow
+executed and no line of the file is about them. A bad `apis:` binding and a `uses:` that escapes the
+scope root are *not* examples: both anchor, the first at its `apis:` entry and the second at the step
+that named it, which is exactly what the first half of this scenario tests.
+
+*Pins 002 §6, §11.1.* §6 makes the document the primary diagnostic surface and §11.1 returns
+`FlowNode.position` for exactly this; the run view rendered an unanchored `line 12` with no click
+handler, and nothing anywhere read a node's position.
+
+### U6.9 A flow that declares params is asked for them, library or not
+
+Open a flow that declares a required param and is **not** a library. §7.2's panel shows a box for it,
+and the run control refuses until the box holds a value, naming the param it is waiting for. Typing a
+value runs the flow. A flow that declares no params shows no Parameters section and is gated by
+nothing.
+
+*Pins 002 §7.2, and 001 §12.5.* `library: true` says a flow is meant to be *called* by another one;
+it says nothing about whether the flow takes params. Keyed on the flag, the panel offered boxes to
+one kind of flow and the gate followed it — so the other kind was run with nothing supplied, refused
+by the engine with `run-refused`, and had no surface anywhere to supply a value from. §5.6's inputs
+node already drew the block for both.
+
+### U6.10 An output the step does not declare says where it was declared
+
+Open a flow whose steps take their outputs from a `flows/connectors.yml` (001 §8.5). A step supplied
+by the connector file carries a marker on §5.1's footer bar, and the marker names the outputs and the
+layer each came from — the workspace file, the collection file, or both. A step whose outputs are all
+its own carries no such marker.
+
+*Pins 002 §5.1, and 001 §8.5.* 001 §8.5 names locality as the price of a connector file: *a step's
+available outputs are no longer visible by reading the step*, and it answers that for `bru flow
+validate` and `--dry-run` by printing each output's origin. On the graph the distance is one further —
+an edge leaves a box carrying a value the box never mentions — and the drawing said nothing at all.
+
+### U6.11 A workspace flow's tab is restored at a known point
+
+Quit with a workspace-scoped flow tab open and relaunch. The tab comes back on the pass that mounts
+the workspace's scratch collection — the workspace switch — rather than on whichever flow scope
+happens to be watched afterwards, and the tab focused at the end is the one the snapshot recorded as
+active, not the restored flow.
+
+*Pins 002 §4.2.* The restore needs the scratch collection §4.2's workspace-scoped tabs borrow, and it
+hung off watching a flow scope — a path that runs *alongside* the workspace switch rather than after
+it. So it skipped every workspace whose collection was not mounted yet and depended on a later scope
+watch to try again: whether a tab came back on the first pass, a later one, or not at all was decided
+by which of two unordered paths finished first. `switchWorkspace` mounts the collection and then
+hydrates its tabs, and the fork restores in that sequence; the scope watcher's attempt remains as the
+fallback for a workspace whose mount had not landed.
+
+### U6.12 A diagnostic is marked on the line it is about
+
+Open §4.3's raw editor on a flow carrying a positioned diagnostic. The line it names carries a mark in
+the editor's own gutter, coloured by its severity and naming its code and message on hover, and
+clicking the mark puts the caret on that line — the same anchor §6's `line N` control uses. A line
+carrying two diagnostics carries one mark, listing both and taking the louder severity. A diagnostic
+whose `file` is not this flow — a `connectors.yml` entry (001 §8.5) — is marked nowhere, because its
+line is a line in another file. The marks go when the diagnostics do.
+
+*Pins 002 §4.3, §6.* §6 makes the document view the primary diagnostic surface and 001 §13.2 carries
+the position for exactly that, but the anchors were readable only from a list under the graph: while
+reading the file — the one place a diagnostic is actually about — the file said nothing. The wrong
+implementation the exclusion catches is the tempting one, marking the flow's own gutter at a connector
+file's line number: it lands on unrelated text with every appearance of having answered, which is the
+same reason §6 withholds the `line N` control there.

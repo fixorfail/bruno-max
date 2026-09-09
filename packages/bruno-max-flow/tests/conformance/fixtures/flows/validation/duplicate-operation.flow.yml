@@ -1,0 +1,15 @@
+# R8.10 — the same `operationId` on two operations, which is a reference that names both (§6.5).
+version: 1
+
+meta:
+  name: R8 — a duplicated operation id
+
+apis:
+  tickets-api: ../../specs/validation-duplicates-v1.yml
+
+config:
+  baseUrl: "{{externalBaseUrl}}"
+
+steps:
+  - id: open
+    operation: tickets-api#createTicket

@@ -1,0 +1,27 @@
+# R4m's sub-flow, so the documents beside it can carry a `uses:` step: §12.4's table has a row for
+# every field such a step may and may not hold, and the schema decides both halves.
+version: 1
+
+meta:
+  name: R4m — a library flow
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+params:
+  email: { required: true }
+
+exports:
+  token: steps.login.token
+
+steps:
+  - id: login
+    operation: regress-api#signIn
+    body:
+      email: "{{params.email}}"
+    outputs:
+      token: data.token

@@ -1,0 +1,48 @@
+{
+  "id": "flows/polling.flow.yml",
+  "name": "Polling settlement",
+  "isLibrary": false,
+  "params": [],
+  "vars": [
+    {
+      "name": "settleKey",
+      "expression": "{{$randomUUID}}"
+    }
+  ],
+  "exports": [],
+  "apis": [
+    {
+      "alias": "orders"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "settle_order",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/settle/{key}",
+        "operationId": "settleOrder"
+      },
+      "rank": 0,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "retryMaxAttempts": 10,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 13,
+        "column": 5
+      }
+    }
+  ],
+  "edges": [],
+  "slots": [],
+  "stages": [],
+  "diagnostics": []
+}

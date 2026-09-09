@@ -1,0 +1,41 @@
+# R8.1 — a document with nothing wrong with it, which is what makes the variants below mean
+# something: each is this file minus one correct line, so what a check reports is the edit.
+version: 1
+
+meta:
+  name: R8 — a well-formed graph
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [thingId]
+
+steps:
+  - id: sign_in
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+    outputs:
+      token: data.token
+
+  - id: create
+    operation: regress-api#createThing
+    headers:
+      Authorization: "Bearer {{steps.sign_in.token}}"
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+    shared:
+      thingId: thingId
+    assert:
+      - res.status eq 201
+
+  - id: read_back
+    operation: regress-api#getThing
+    when: steps.create.ok eq true
+    pathParams:
+      id: "{{shared.thingId}}"

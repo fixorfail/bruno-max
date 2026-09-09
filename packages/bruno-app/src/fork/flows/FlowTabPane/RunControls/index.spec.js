@@ -28,7 +28,7 @@ const flow = { pathname, filename: 'checkout.flow.yml', workspaceRoot: '/workspa
 
 const summary = { total: 2, passed: 1, failed: 0, skipped: 1, cancelled: 0 };
 
-const renderControls = (run, configuration = {}) => {
+const renderControls = (run, configuration = {}, description = { diagnostics: [], params: [], isLibrary: false }) => {
   const store = configureStore({ reducer: { flows: flowsReducer } });
 
   render(
@@ -36,7 +36,7 @@ const renderControls = (run, configuration = {}) => {
       <ThemeProvider theme={theme}>
         <RunControls
           flow={flow}
-          description={{ diagnostics: [], params: [], isLibrary: false }}
+          description={description}
           run={run}
           configuration={configuration}
           onConfigurationChange={() => {}}
@@ -202,5 +202,180 @@ describe('the run control', () => {
 
     expect(screen.getByTestId('flow-run')).toBeDisabled();
     expect(screen.getByTestId('flow-run-options').className).toContain('is-disabled');
+  });
+});
+
+/**
+ * 001 §12.5 — a flow's required params, which the engine refuses a run for before `run:start` and
+ * answers with 001 §14.6's `run-refused`. Ungated, the button spent a click to reach that refusal:
+ * the empty box was on screen the whole time, in §7.2's panel and on §5.6's inputs.
+ */
+describe('the required params gate (001 §12.5)', () => {
+  const library = (params) => ({ diagnostics: [], params, isLibrary: true });
+  const email = { name: 'email', required: true, secret: false };
+
+  it('blocks both halves while a required param has no value', () => {
+    renderControls(undefined, {}, library([email]));
+
+    expect(screen.getByTestId('flow-run')).toBeDisabled();
+    expect(screen.getByTestId('flow-run-options').className).toContain('is-disabled');
+  });
+
+  /** The tooltip the errors gate already answers "why is this disabled" through. */
+  it('names the param that has no value', () => {
+    renderControls(undefined, {}, library([email]));
+
+    expect(screen.getByTestId('flow-run')).toHaveAttribute('title', 'No value for the required param email');
+  });
+
+  it('names every one of them, so the second is not found by trying again', () => {
+    renderControls(undefined, {}, library([email, { name: 'password', required: true, secret: true }]));
+
+    expect(screen.getByTestId('flow-run')).toHaveAttribute(
+      'title',
+      'No value for the required params email, password'
+    );
+  });
+
+  it('runs once the value has been typed', () => {
+    renderControls(undefined, { params: { email: 'qa@example.com' } }, library([email]));
+
+    fireEvent.click(screen.getByTestId('flow-run'));
+
+    expect(runFlow).toHaveBeenCalledTimes(1);
+  });
+
+  /** `actions.js` drops a box that was typed into and then cleared, so the run would be refused too. */
+  it('counts a box that holds only whitespace as unsupplied', () => {
+    renderControls(undefined, { params: { email: '   ' } }, library([email]));
+
+    expect(screen.getByTestId('flow-run')).toBeDisabled();
+  });
+
+  /** §12.5: each param takes its `default` where nothing was supplied, so this one has a value. */
+  it('takes a param with a default as supplied by that default', () => {
+    renderControls(undefined, {}, library([{ name: 'password', required: true, default: '{{pw}}', secret: true }]));
+
+    expect(screen.getByTestId('flow-run')).toBeEnabled();
+  });
+
+  it('lets an optional param stay empty', () => {
+    renderControls(undefined, {}, library([{ name: 'namespace', required: false, secret: false }]));
+
+    expect(screen.getByTestId('flow-run')).toBeEnabled();
+  });
+
+  /**
+   * §7.2 offers the boxes to any flow that declares params, so the gate follows: the engine refuses
+   * a run missing a required one whether or not the flow is a library.
+   */
+  it('gates a flow that declares a required param and is not a library', () => {
+    renderControls(undefined, {}, { diagnostics: [], params: [email], isLibrary: false });
+
+    expect(screen.getByTestId('flow-run')).toBeDisabled();
+    expect(screen.getByTestId('flow-run')).toHaveAttribute('title', 'No value for the required param email');
+  });
+
+  it('runs a flow that is not a library once its required param has a value', () => {
+    renderControls(undefined, { params: { email: 'qa@example.com' } }, {
+      diagnostics: [],
+      params: [email],
+      isLibrary: false
+    });
+
+    fireEvent.click(screen.getByTestId('flow-run'));
+
+    expect(runFlow).toHaveBeenCalledTimes(1);
+  });
+
+  /** A flow declaring nothing has nothing to be missing, whichever kind it is. */
+  it('says nothing about params for a flow that declares none', () => {
+    renderControls(undefined, {}, { diagnostics: [], params: [], isLibrary: false });
+
+    expect(screen.getByTestId('flow-run')).toBeEnabled();
+  });
+
+  /** A flow that does not parse has no reliable params to be missing; §6's answer comes first. */
+  it('reports the errors where the flow has both', () => {
+    renderControls(
+      undefined,
+      {},
+      { diagnostics: [{ severity: 'error', code: 'x', message: 'y' }], params: [email], isLibrary: true }
+    );
+
+    expect(screen.getByTestId('flow-run')).toHaveAttribute('title', 'This flow has errors');
+  });
+});
+
+/**
+ * 002 §7.1: while 001 §11.3's cleanup steps run, the control *shows that state explicitly rather than
+ * appearing hung* — a flow with `depends: [{ status: [cancelled] }]` steps keeps working for up to
+ * thirty seconds after the click by design.
+ */
+describe('the cleanup window (§7.1)', () => {
+  const running = { runId: 'run-1', state: 'running', selectedIteration: 0, steps: {} };
+
+  it('offers Cancel until the cancel has been accepted', () => {
+    renderControls(running);
+
+    expect(screen.getByTestId('flow-cancel')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-cleanup')).not.toBeInTheDocument();
+  });
+
+  it('says it is cleaning up once the run reports the grace window', () => {
+    renderControls({ ...running, cleanupDeadline: Date.now() + 30000 });
+
+    expect(screen.getByTestId('flow-cleanup')).toHaveTextContent('Cleaning up');
+    // Nothing left to ask for: the cancel was accepted, and what remains is 001 §11.3's grace.
+    expect(screen.queryByTestId('flow-cancel')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flow-run')).not.toBeInTheDocument();
+  });
+
+  it('goes back to Run when the run ends', () => {
+    renderControls({ runId: 'run-1', state: 'complete', status: 'cancelled', selectedIteration: 0, steps: {} });
+
+    expect(screen.getByTestId('flow-run')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-cleanup')).not.toBeInTheDocument();
+  });
+});
+
+/** §8.4's line is *total, passed, failed, skipped, cancelled, plus elapsed time and the status word*. */
+describe('the summary line (§8.4)', () => {
+  const complete = (extras) => ({
+    runId: 'run-1',
+    state: 'complete',
+    status: 'passed',
+    summary,
+    selectedIteration: 0,
+    steps: {},
+    ...extras
+  });
+
+  it('reports the total the counts are of', () => {
+    renderControls(complete());
+
+    expect(screen.getByTestId('flow-run-total')).toHaveTextContent('2 steps');
+  });
+
+  it('reports the elapsed time the engine measured', () => {
+    renderControls(complete({ duration: 4212 }));
+
+    expect(screen.getByTestId('flow-run-elapsed')).toHaveTextContent('4.21s');
+  });
+
+  it('reads a long run in minutes rather than in hundreds of seconds', () => {
+    renderControls(complete({ duration: 184000 }));
+
+    expect(screen.getByTestId('flow-run-elapsed')).toHaveTextContent('3m 4s');
+  });
+
+  /**
+   * A run recorded before the field existed has none, and an interrupted one wrote no summary to
+   * carry it. Nothing is drawn rather than a zero, which would claim the run took no time at all.
+   */
+  it('says nothing about a run that did not record one', () => {
+    renderControls(complete());
+
+    expect(screen.queryByTestId('flow-run-elapsed')).not.toBeInTheDocument();
   });
 });

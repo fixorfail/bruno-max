@@ -18,6 +18,11 @@ npx playwright test --project=default      # Run specific project
 npx playwright test --headed               # Watch mode
 ```
 
+Electron has no headless mode, so every test launch opens a real window — but under
+`PLAYWRIGHT=true` (set by the fixture) the app reveals it **inactive and off the Dock**
+(`packages/bruno-electron/src/fork/window.js`, called from one line in `src/index.js`'s
+`ready-to-show`), so a running suite never takes focus from you. `--headed` has no effect on Electron.
+
 Projects: `default` (main), `system-pac` (depends on `default`), `auth`, `ssl`.
 `npm run test:e2e` runs `default` + `system-pac`; the rest have their own
 `test:e2e:*` scripts. Config: `playwright.config.ts` — `fullyParallel: true`, `workers` unset

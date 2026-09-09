@@ -2,10 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import find from 'lodash/find';
 import { usePersistedState } from 'hooks/usePersistedState';
+import { addTab } from 'providers/ReduxStore/slices/tabs';
+import { uuid } from 'utils/common';
 import { useVerticalSplit } from 'fork/hooks/useVerticalSplit';
-import { describeFlow } from '../actions';
-import { stepSelected, iterationSelected, configurationChanged } from '../slice';
+import { describeFlow, scopeRootOf } from '../actions';
+import { documentAnchored, stepSelected, iterationSelected, configurationChanged } from '../slice';
 import FlowGraph from './FlowGraph';
+import IterationStrip from './IterationStrip';
 import RunControls from './RunControls';
 import StepDetail from './StepDetail';
 import RunSelector from './RunSelector';
@@ -35,13 +38,51 @@ const DEFAULT_DETAIL_HEIGHT = 260;
  */
 const EMPTY_CONFIGURATION = {};
 
-const DiagnosticLine = ({ diagnostic }) => (
+/**
+ * §6 anchors a diagnostic at its line, and the document view is the primary surface for it — which
+ * is §4.3's tab, not this one: §4.2 is explicit that the raw `.flow.yml` is a separate tab rather
+ * than a second view here. So the line is a control that *goes* there, opening the editor if it is
+ * not already open and putting the reader on the line the diagnostic names.
+ *
+ * A diagnostic with no position — a bad `apis:` binding, a scope-root escape (§6) — has nowhere to
+ * go and is stated rather than offered.
+ */
+/**
+ * A diagnostic names its file (001 §13.2), and §6's "line N" opens *that* file. Today the app can
+ * open only the flow's own document — a `flows/connectors.yml` entry (001 §8.5) has no tab type to
+ * land in (002 §15.2) — so a line in another file is stated, with the file named, and is not a
+ * control: a control that opened the flow's YAML at a connector file's line number would jump to
+ * the wrong text with every appearance of having answered.
+ */
+const inAnotherFile = (diagnostic, flowPathname) =>
+  Boolean(diagnostic.file && flowPathname && diagnostic.file !== flowPathname);
+
+const basenameOf = (file) => file.split('/').pop();
+
+const DiagnosticLine = ({ diagnostic, flowPathname, onOpenDocument }) => (
   <div className={`diagnostic ${diagnostic.severity}`}>
     <span className="diagnostic-code">{diagnostic.code}</span>
     <span>{diagnostic.message}</span>
-    {/* §6 anchors a diagnostic at its line — the document view is the primary surface, and the
-        position is what lets a click land there. */}
-    {diagnostic.line ? <span className="diagnostic-line">{`line ${diagnostic.line}`}</span> : null}
+    {diagnostic.line && inAnotherFile(diagnostic, flowPathname) ? (
+      <span
+        className="diagnostic-file"
+        title={diagnostic.file}
+        data-testid={`flow-diagnostic-file-${diagnostic.line}`}
+      >
+        {`${basenameOf(diagnostic.file)}, line ${diagnostic.line}`}
+      </span>
+    ) : null}
+    {diagnostic.line && !inAnotherFile(diagnostic, flowPathname) ? (
+      <button
+        type="button"
+        className="diagnostic-line"
+        title="Open this line in the flow's YAML"
+        data-testid={`flow-diagnostic-line-${diagnostic.line}`}
+        onClick={() => onOpenDocument(diagnostic)}
+      >
+        {`line ${diagnostic.line}`}
+      </button>
+    ) : null}
   </div>
 );
 
@@ -56,7 +97,7 @@ const DiagnosticLine = ({ diagnostic }) => (
  * they belong to no step, so no node and no step pane will ever show them, and a run whose only
  * account of itself is the word `failed` is the state this whole surface exists to prevent.
  */
-const Errors = ({ diagnostics, runDiagnostics }) => {
+const Errors = ({ diagnostics, runDiagnostics, flowPathname, onOpenDocument }) => {
   const errors = diagnostics.filter((entry) => entry.severity === 'error');
   const fromRun = runDiagnostics || [];
 
@@ -75,10 +116,10 @@ const Errors = ({ diagnostics, runDiagnostics }) => {
         ) : null}
       </div>
       {errors.map((error, index) => (
-        <DiagnosticLine key={`file-${index}`} diagnostic={error} />
+        <DiagnosticLine key={`file-${index}`} diagnostic={error} flowPathname={flowPathname} onOpenDocument={onOpenDocument} />
       ))}
       {fromRun.map((entry, index) => (
-        <DiagnosticLine key={`run-${index}`} diagnostic={entry} />
+        <DiagnosticLine key={`run-${index}`} diagnostic={entry} flowPathname={flowPathname} onOpenDocument={onOpenDocument} />
       ))}
     </div>
   );
@@ -96,7 +137,7 @@ const Errors = ({ diagnostics, runDiagnostics }) => {
  *
  * Focusable, so the list is reachable without a pointer.
  */
-const Warnings = ({ diagnostics }) => {
+const Warnings = ({ diagnostics, flowPathname, onOpenDocument }) => {
   const warnings = diagnostics.filter((entry) => entry.severity === 'warning');
 
   if (!warnings.length) {
@@ -110,7 +151,7 @@ const Warnings = ({ diagnostics }) => {
       </span>
       <div className="flow-warnings-list" role="tooltip" data-testid="flow-warnings-list">
         {warnings.map((warning, index) => (
-          <DiagnosticLine key={index} diagnostic={warning} />
+          <DiagnosticLine key={index} diagnostic={warning} flowPathname={flowPathname} onOpenDocument={onOpenDocument} />
         ))}
       </div>
     </div>
@@ -206,6 +247,31 @@ const FlowTabPane = ({ tab }) => {
   const toggleSubflow = (id) =>
     setExpandedSubflows((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
 
+  /**
+   * §6: a diagnostic is read next to the line that caused it, and the document view is §4.3's tab.
+   *
+   * The anchor is dispatched before the tab is opened, because the editor reads it when it mounts —
+   * and it is dispatched whether or not the tab was already there, since `addTab` on an open
+   * pathname focuses it rather than reopening it and would otherwise land the reader on the tab and
+   * nowhere in particular in it.
+   *
+   * The tab borrows this one's `collectionUid` (§4.2): it is a view of the same file in the same
+   * scope, and resolving the collection a second way is a second chance to disagree.
+   */
+  const openDocumentAt = (position) => {
+    dispatch(documentAnchored({ pathname: flow.pathname, line: position.line, column: position.column }));
+    dispatch(
+      addTab({
+        uid: uuid(),
+        type: 'flow-yaml',
+        pathname: flow.pathname,
+        tabName: flow.filename,
+        collectionUid: tab.collectionUid,
+        preview: false
+      })
+    );
+  };
+
   return (
     <StyledWrapper>
       <RunControls
@@ -265,13 +331,29 @@ const FlowTabPane = ({ tab }) => {
         {/* At the end of the row the flow's other controls are on, rather than over the drawing:
             they are the same kind of thing — what this view is showing and what it is showing about
             — and a count that floated over the graph was the only one of them that moved with it. */}
-        {description ? <Warnings diagnostics={description.diagnostics} /> : null}
+        {description ? (
+          <Warnings diagnostics={description.diagnostics} flowPathname={flow.pathname} onOpenDocument={openDocumentAt} />
+        ) : null}
       </div>
+
+      {/* §8.3: the selector says which iteration is drawn; the strip says what all of them are
+          doing. Under `parallel: > 1` several rows advance at once and the drawing shows one. */}
+      <IterationStrip
+        run={run}
+        onSelect={(index) => dispatch(iterationSelected({ pathname: flow.pathname, iteration: index }))}
+      />
 
       {described?.loading ? <div className="flow-loading">Reading the flow…</div> : null}
       {described?.error ? <div className="flow-error">{described.error}</div> : null}
 
-      {description ? <Errors diagnostics={description.diagnostics} runDiagnostics={run?.diagnostics} /> : null}
+      {description ? (
+        <Errors
+          diagnostics={description.diagnostics}
+          runDiagnostics={run?.diagnostics}
+          flowPathname={flow.pathname}
+          onOpenDocument={openDocumentAt}
+        />
+      ) : null}
 
       {/* The element the split divides, so the drag clamps against the room the graph and the pane
           actually share rather than against the whole tab. */}
@@ -333,6 +415,7 @@ const FlowTabPane = ({ tab }) => {
               stepId={selectedStep}
               node={selectedNode}
               running={isRunning}
+              scopeRoot={flow ? scopeRootOf(flow) : undefined}
               runDir={run?.dir}
               /* 001 §14.5 nests captures under `iteration-N` only for a `dataset:` flow, so the
                  reader has to ask the same way the writer wrote — naming an iteration for a flow

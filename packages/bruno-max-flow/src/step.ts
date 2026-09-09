@@ -17,7 +17,7 @@ import type { Scope } from './interpolate';
 import { requestSchema, responseSchema, type ResolvedOperation } from './openapi';
 import type { Materialized } from './materialize';
 import type { Clock } from './types/ports';
-import type { ExecutedResponse } from './types/request';
+import type { ExecutedResponse, MaterializedRequest } from './types/request';
 import type { AssertionResult, SchemaResult, StepReason } from './types/result';
 
 const ajv = new Ajv({ allErrors: true, strict: false });
@@ -128,7 +128,70 @@ const validateAgainst = (schema: Record<string, any> | undefined, value: unknown
   };
 };
 
+/**
+ * §10.1's `format: binary` carve-out, taken off both sides of the check at once: the part leaves
+ * the value, and its name leaves `required`.
+ *
+ * Bytes are not something a keyword describes — an array of them least of all — and a schema that
+ * still required the part would report every upload as a missing property. A binary part that is
+ * genuinely absent is caught earlier, while the request is assembled, as `missing-binary-part`.
+ */
+const withoutBinaryParts = (
+  schema: Record<string, any> | undefined,
+  value: unknown
+): { schema?: Record<string, any>; value: unknown } => {
+  const properties: Record<string, any> = schema?.properties || {};
+  const binary = Object.keys(properties).filter(
+    (name) => properties[name]?.format === 'binary' || properties[name]?.items?.format === 'binary'
+  );
+  if (!binary.length || !value || typeof value !== 'object' || Array.isArray(value)) return { schema, value };
+
+  return {
+    schema: { ...schema, required: (schema?.required || []).filter((name: string) => !binary.includes(name)) },
+    value: Object.fromEntries(Object.entries(value).filter(([name]) => !binary.includes(name)))
+  };
+};
+
 export type ScriptRunner = (source: string, args: unknown[]) => Promise<unknown>;
+
+/**
+ * Header names as a flow addresses them — `steps.<id>.headers.<name>` (§8.3) and `req.headers.<name>`
+ * (§10.2) — keyed so an author can write one.
+ *
+ * HTTP header names are case-insensitive and nothing tells a flow which case the server chose, or
+ * which the host wrote, so `{{steps.login.headers.x-request-id}}` has to resolve whatever
+ * `X-Request-Id` arrived as, and `req.headers.authorization` whatever the host spelled it. Only the
+ * keys are touched — a value is reported as it was given, a repeated header included.
+ */
+export const lowerCasedKeys = <T>(headers: Record<string, T>): Record<string, T> =>
+  Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+
+/**
+ * §10.2's `req.*` — the request as it went out, in the shape Bruno's own `req` gives a script:
+ * `url` (query string included), `method`, `headers` and `body`.
+ *
+ * The headers are the host's report of what it wrote (§13.2's `requestHeaders`) where it made
+ * one, for the reason the capture prefers them: auth, the content type and cookies are applied
+ * after the engine hands the request over, and an assertion on the declared set alone would be
+ * checking a request that was never sent. Their names are lower-cased, as `steps.<id>.headers`
+ * are, so one spelling addresses a header whichever side wrote it. `body` is the value for a
+ * structured or text body and absent for a multipart or raw one, whose content is a file (§7.5)
+ * rather than something an assertion compares.
+ */
+const requestView = (request: MaterializedRequest, sentHeaders?: Record<string, string>): Record<string, unknown> => {
+  const query = new URLSearchParams(request.query.map((entry) => [entry.name, entry.value])).toString();
+  const { body } = request;
+  return {
+    method: request.method,
+    url: query ? `${request.url}?${query}` : request.url,
+    headers: lowerCasedKeys(sentHeaders || request.headers),
+    body: body.kind === 'json' || body.kind === 'text'
+      ? body.value
+      : body.kind === 'urlencoded'
+        ? Object.fromEntries(body.fields.map((field) => [field.name, field.value]))
+        : undefined
+  };
+};
 
 export class ScriptError extends Error {
   constructor(readonly position: string, cause: unknown) {
@@ -240,11 +303,12 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
 
   // Request validation leads because it runs *before* dispatch: a step that fails it never sends,
   // so it has no status to be judged on (§10.1).
-  if (step.flags.validateRequest && materialized.mediaType && materialized.request.body.kind === 'json') {
-    validation.request = validateAgainst(
+  if (step.flags.validateRequest && materialized.mediaType && materialized.validatableBody !== undefined) {
+    const checkable = withoutBinaryParts(
       requestSchema(resolved, materialized.mediaType),
-      materialized.request.body.value
+      materialized.validatableBody
     );
+    validation.request = validateAgainst(checkable.schema, checkable.value);
     if (!validation.request.valid) {
       return {
         assertions,
@@ -271,11 +335,14 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
   }
 
   const context = evaluationContext(scope, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    body: response.body,
-    responseTime: response.responseTimeMs
+    req: requestView(materialized.request, response.requestHeaders),
+    res: {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+      body: response.body,
+      responseTime: response.responseTimeMs
+    }
   });
 
   // Outputs are extracted whenever a response arrived, even when a check below then fails — which

@@ -7,6 +7,7 @@ import {
   WORKSPACE_TAB_TYPES
 } from 'utils/snapshot';
 import { normalizePath } from 'utils/common/path';
+import { serializeForkSnapshot } from 'fork/registry';
 
 const { ipcRenderer } = window;
 
@@ -281,6 +282,8 @@ export const serializeSnapshot = async (state, options = {}) => {
         : (Array.isArray(existingCollection.tabs) ? existingCollection.tabs : [])
     });
   });
+
+  snapshot.extras.flows = serializeForkSnapshot(state, existingSnapshot);
 
   return snapshot;
 };

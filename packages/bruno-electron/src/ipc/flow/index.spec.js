@@ -7,6 +7,7 @@ jest.mock('@bruno-max/flow', () => ({
   describeFlow: jest.fn(),
   listRuns: jest.fn(),
   listSuites: jest.fn(),
+  readRun: jest.fn(),
   readCapture: jest.fn()
 }));
 /** Every file the ports were asked to write, so a suite's roster can be read back as bytes. */
@@ -338,6 +339,93 @@ describe('the raw YAML editor host', () => {
   });
 });
 
+/**
+ * 002-C U5.12 — 001 §6.4's implicit `collection` auth profile, which only a host can supply.
+ *
+ * The collection is written to disk rather than stubbed: the whole of what this does is read a
+ * collection the way the request path's `setAuthHeaders` reads one, and a mocked reader would assert
+ * that `collection.bru` was parsed by the test's own idea of the format.
+ */
+describe('a run\'s implicit collection auth profile (002-C U5.12)', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+
+  let collectionRoot;
+
+  const writeCollection = (auth) => {
+    collectionRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flow-auth-'));
+    fs.writeFileSync(path.join(collectionRoot, 'bruno.json'), JSON.stringify({ version: '1', name: 'payments' }));
+    fs.writeFileSync(path.join(collectionRoot, 'collection.bru'), auth);
+    return collectionRoot;
+  };
+
+  const profileFor = async (scope) => {
+    runFlow.mockReset();
+    runFlow.mockImplementation(scriptedRun('run-auth'));
+    const { runId } = await startRun(makeWindow(), { entry: 'checkout.flow.yml', scope, tiers: {} });
+    const { authProfiles } = runFlow.mock.calls[0][0];
+    cancelRun({ runId });
+    return authProfiles;
+  };
+
+  afterEach(() => {
+    if (collectionRoot) {
+      fs.rmSync(collectionRoot, { recursive: true, force: true });
+      collectionRoot = undefined;
+    }
+  });
+
+  /**
+   * The profile's fields are flat — `mode:` beside that mode's own fields — because that is how a
+   * flow author writes one and how the engine nests it back when it resolves a step's auth. Bruno
+   * stores collection auth already nested, so the host is the side that undoes the nesting.
+   */
+  it('hands the collection\'s own auth over as the profile named collection', async () => {
+    const root = writeCollection('auth {\n  mode: bearer\n}\n\nauth:bearer {\n  token: {{authToken}}\n}\n');
+
+    const authProfiles = await profileFor({ workspaceRoot: '/workspace', collectionRoot: root });
+
+    expect(authProfiles.collection.fields).toEqual({ mode: 'bearer', token: '{{authToken}}' });
+  });
+
+  /** The credential is handed over as written; §6.4 resolves `{{authToken}}` in the flow's scope. */
+  it('leaves an interpolation in a credential for the engine to resolve', async () => {
+    const root = writeCollection('auth {\n  mode: basic\n}\n\nauth:basic {\n  username: bruno\n  password: {{pw}}\n}\n');
+
+    const authProfiles = await profileFor({ workspaceRoot: '/workspace', collectionRoot: root });
+
+    expect(authProfiles.collection.fields).toEqual({ mode: 'basic', username: 'bruno', password: '{{pw}}' });
+  });
+
+  /**
+   * A collection that authenticates with nothing still has a profile: `auth: collection` is then a
+   * reference that resolves everywhere rather than one that errors depending on whether anybody had
+   * filled the collection's auth in.
+   */
+  it('supplies a none profile for a collection that declares no auth', async () => {
+    const root = writeCollection('auth {\n  mode: none\n}\n');
+
+    const authProfiles = await profileFor({ workspaceRoot: '/workspace', collectionRoot: root });
+
+    expect(authProfiles.collection.fields).toEqual({ mode: 'none' });
+  });
+
+  /** A collection whose root file will not parse must not stop a flow that never mentions auth. */
+  it('supplies a none profile rather than failing on a collection it cannot read', async () => {
+    const root = writeCollection('auth {\n');
+
+    const authProfiles = await profileFor({ workspaceRoot: '/workspace', collectionRoot: root });
+
+    expect(authProfiles.collection.fields).toEqual({ mode: 'none' });
+  });
+
+  /** 002 §7.2: a workspace-scoped flow has no collection, so there is no profile to imply. */
+  it('supplies none at all for a workspace-scoped run', async () => {
+    expect(await profileFor({ workspaceRoot: '/workspace' })).toBeUndefined();
+  });
+});
+
 /** 002 §4.1 — the Create Flow form's two handlers. */
 describe('creating a flow', () => {
   const fs = require('fs');
@@ -364,43 +452,131 @@ describe('creating a flow', () => {
     expect(() => flowsFolderHandler({})).toThrow('needs a scope root');
   });
 
+  const yaml = require('js-yaml');
+
+  const create = async (request) => {
+    const directory = path.join(scopeRoot, 'flows');
+    const pathname = await createFlowHandler({ directory, filename: 'checkout.flow.yml', ...request });
+    return { pathname, text: fs.readFileSync(pathname, 'utf8') };
+  };
+
   /** The first flow of a workspace lands in a directory nothing has made yet. */
   it('creates the directory the flow is written into', async () => {
-    const directory = path.join(scopeRoot, 'flows');
+    const { pathname, text } = await create({ properties: { name: 'Checkout' } });
 
-    const pathname = await createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 1\n' });
+    expect(pathname).toBe(path.join(scopeRoot, 'flows', 'checkout.flow.yml'));
+    expect(yaml.load(text)).toEqual({ version: 1, meta: { name: 'Checkout' } });
+  });
 
-    expect(pathname).toBe(path.join(directory, 'checkout.flow.yml'));
-    expect(fs.readFileSync(pathname, 'utf8')).toBe('version: 1\n');
+  /**
+   * 002-C R4: the renderer sends what the flow declares and the host writes the document, through
+   * the engine's own `meta:` writer — so the app is not a second writer of a format 001 §5.1 bought
+   * exactly one of.
+   */
+  it('writes the version, the name and the description', async () => {
+    const { text } = await create({
+      properties: { name: 'Checkout', description: 'the happy path', tags: ['smoke'] }
+    });
+
+    expect(yaml.load(text)).toEqual({
+      version: 1,
+      meta: { name: 'Checkout', description: 'the happy path', tags: ['smoke'] }
+    });
+  });
+
+  /** An empty `description:` says the author declined to describe the flow; the absent key says it. */
+  it('omits a description and a tag list that were left blank', async () => {
+    const { text } = await create({ properties: { name: 'Checkout', description: '   ', tags: [] } });
+
+    expect(yaml.load(text).meta).toEqual({ name: 'Checkout' });
+  });
+
+  /** `library: false` and an absent key are the same flow, so only one of them is ever written. */
+  it('writes the library flag only when it is set', async () => {
+    expect(yaml.load((await create({ properties: { name: 'Login', library: true } })).text).meta)
+      .toEqual({ name: 'Login', library: true });
+
+    scopeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'flow-create-'));
+    expect(yaml.load((await create({ properties: { name: 'Login', library: false } })).text).meta)
+      .toEqual({ name: 'Login' });
+  });
+
+  /** A name with a colon in it is the case a hand-written template gets wrong. */
+  it('quotes a name YAML would otherwise read as a mapping', async () => {
+    const { text } = await create({ properties: { name: 'checkout: v2' } });
+
+    expect(yaml.load(text).meta.name).toBe('checkout: v2');
+  });
+
+  /**
+   * 001 §6.2 resolves a binding against the flow's own directory, so the absolute path the form sends
+   * is written relative to where the file is about to land — by the host, which is the side whose
+   * `path` knows what a separator is here.
+   */
+  it('binds each spec by a path relative to the flow', async () => {
+    const { text } = await create({
+      properties: { name: 'Checkout' },
+      apis: [
+        { alias: 'auth-v2', source: path.join(scopeRoot, 'apispec', 'auth-v2.yaml') },
+        { alias: 'payments', source: path.join(scopeRoot, 'flows', 'payments.yaml') }
+      ]
+    });
+
+    expect(yaml.load(text).apis).toEqual({
+      'auth-v2': '../apispec/auth-v2.yaml',
+      'payments': './payments.yaml'
+    });
+  });
+
+  /**
+   * 002-C U5.13 — 002 §4.4's single serializer, asserted as text rather than as parsed YAML.
+   *
+   * Every case above reads the file back through `yaml.load`, which is exactly the assertion that
+   * cannot tell one writer from another: a hand-assembled skeleton and the engine's document parse
+   * to the same tree while differing in key order, quoting and where `meta:` sits. The bytes are the
+   * only thing that says main is not writing the format itself.
+   */
+  it('writes exactly what the engine writes, byte for byte', async () => {
+    const { writeNewFlowDocument } = jest.requireActual('@bruno-max/flow');
+    const properties = { name: 'Checkout', description: 'the happy path', tags: ['smoke'], library: true };
+    const { text } = await create({
+      properties,
+      apis: [{ alias: 'payments', source: path.join(scopeRoot, 'flows', 'payments.yaml') }]
+    });
+
+    expect(text).toBe(writeNewFlowDocument({ properties, apis: { payments: './payments.yaml' } }));
+  });
+
+  it('writes no apis block when nothing was selected', async () => {
+    const { text } = await create({ properties: { name: 'Checkout' }, apis: [] });
+
+    expect(yaml.load(text).apis).toBeUndefined();
   });
 
   /** The only thing the form knows about a file already there is that the author did not mean it. */
   it('refuses to overwrite a flow that already exists', async () => {
-    const directory = path.join(scopeRoot, 'flows');
-    await createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 1\n' });
+    await create({ properties: { name: 'Checkout' } });
 
-    await expect(
-      createFlowHandler({ directory, filename: 'checkout.flow.yml', content: 'version: 2\n' })
-    ).rejects.toThrow('a flow already exists at');
-    expect(fs.readFileSync(path.join(directory, 'checkout.flow.yml'), 'utf8')).toBe('version: 1\n');
+    await expect(create({ properties: { name: 'Something else' } })).rejects.toThrow('a flow already exists at');
+    const onDisk = fs.readFileSync(path.join(scopeRoot, 'flows', 'checkout.flow.yml'), 'utf8');
+    expect(yaml.load(onDisk)).toEqual({ version: 1, meta: { name: 'Checkout' } });
   });
 
   /** `scanFlows` matches on the extension, so a file written without it is created and then unseen. */
   it('refuses a filename the watcher would never report', async () => {
-    await expect(createFlowHandler({ directory: scopeRoot, filename: 'checkout.yml', content: '' })).rejects.toThrow(
+    await expect(createFlowHandler({ directory: scopeRoot, filename: 'checkout.yml', properties: {} })).rejects.toThrow(
       'not a valid flow filename'
     );
   });
 
   it('refuses a filename that is a path', async () => {
     await expect(
-      createFlowHandler({ directory: scopeRoot, filename: '../escaped.flow.yml', content: '' })
+      createFlowHandler({ directory: scopeRoot, filename: '../escaped.flow.yml', properties: {} })
     ).rejects.toThrow('not a valid flow filename');
   });
 
-  it('refuses a create with no directory and one with no text', async () => {
-    await expect(createFlowHandler({ filename: 'a.flow.yml', content: '' })).rejects.toThrow('needs a directory');
-    await expect(createFlowHandler({ directory: scopeRoot, filename: 'a.flow.yml' })).rejects.toThrow('needs text');
+  it('refuses a create with no directory', async () => {
+    await expect(createFlowHandler({ filename: 'a.flow.yml', properties: {} })).rejects.toThrow('needs a directory');
   });
 });
 
@@ -1271,5 +1447,23 @@ describe('a suite of flows', () => {
     ]);
     expect(listSuites.mock.calls[0][0].scopeRoot).toBe('/w');
     expect(typeof listSuites.mock.calls[0][0].ports.listDirectory).toBe('function');
+  });
+
+  /**
+   * 002 §11.2: the two history reads carry the scope root the renderer sent, unchanged, to the
+   * engine — which is where the containment check lives. The handler forwards and adds nothing,
+   * because a second check here could disagree with the engine's.
+   */
+  it('hands the scope root through to the engine on both history reads', async () => {
+    const { readRun, readCapture } = require('@bruno-max/flow');
+    const { readRunHandler, readCaptureHandler } = require('./index');
+    readRun.mockResolvedValue({ dir: '/w/.bruno-runs/suite-a/run-1', capturedSteps: [] });
+    readCapture.mockResolvedValue({ stepId: 'login', attempt: 1 });
+
+    await readRunHandler({ scopeRoot: '/w', dir: '/w/.bruno-runs/suite-a/run-1', stepIds: ['login'] });
+    await readCaptureHandler({ scopeRoot: '/w', dir: '/w/.bruno-runs/suite-a/run-1', stepId: 'login', attempt: 1 });
+
+    expect(readRun.mock.calls[0][0]).toMatchObject({ scopeRoot: '/w', dir: '/w/.bruno-runs/suite-a/run-1', stepIds: ['login'] });
+    expect(readCapture.mock.calls[0][0]).toMatchObject({ scopeRoot: '/w', dir: '/w/.bruno-runs/suite-a/run-1', stepId: 'login', attempt: 1 });
   });
 });

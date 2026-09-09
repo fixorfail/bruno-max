@@ -1,0 +1,19 @@
+{
+  "suiteId": "63f090b4-2180-42ed-b107-2ba2fdbb677b",
+  "startedAt": "2026-09-04T18:40:49.168Z",
+  "finishedAt": "2026-09-04T18:40:49.848Z",
+  "exitCode": 0,
+  "origin": {
+    "host": "cli"
+  },
+  "flows": [
+    {
+      "file": "{{workspaceRoot}}/flows/polling.flow.yml",
+      "id": "flows/polling",
+      "name": "Polling settlement",
+      "tags": [],
+      "outcome": "passed",
+      "runDir": "2026-09-04T18-40-49Z-883c"
+    }
+  ]
+}

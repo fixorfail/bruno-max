@@ -1,0 +1,38 @@
+# R9.4 — §14.5's inline preview, carried on `step:end`. The cap is deliberately small — room for
+# the sign-in request whole, not for a response a few hundred bytes long — so the cut is observable
+# while the attempt file beside it keeps the whole body.
+version: 1
+
+meta:
+  name: R9.4 — a step:end carries a capped, masked preview
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  capturePreviewBytes: 256
+
+steps:
+  - id: sign_in
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+      password: "{{testUserPassword}}"
+    outputs:
+      token: data.token
+
+  - id: fetch
+    operation: regress-api#getThing
+    pathParams: { id: "{{steps.sign_in.token}}" }
+
+  # A binary response is never previewed (§14.5); the schema check is off because the fixture spec
+  # documents this operation as JSON.
+  - id: scan
+    operation: regress-api#getThing
+    validateSchema: false
+    pathParams: { id: scan }
+
+  - id: never
+    operation: regress-api#getState
+    when: steps.fetch.status eq 999

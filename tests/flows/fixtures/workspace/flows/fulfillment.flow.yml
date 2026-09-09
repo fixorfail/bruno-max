@@ -1,0 +1,91 @@
+version: 1
+
+meta:
+  name: Order fulfillment with carrier fallback
+
+apis:
+  orders: ../apispec/orders-v1.yml
+  carrier:
+    source: ../apispec/carrier-v1.yml
+    color: "#8ab4f8"
+
+config:
+  concurrency: 4
+
+authProfiles:
+  service:
+    mode: bearer
+    token: your_secret_token
+
+shared:
+  quoteId: { writers: any }
+  carrierRef: { writers: any }
+
+stages:
+  setup: sign_in
+  fulfil: quote_primary
+  teardown: archive_receipt
+
+steps:
+  - id: sign_in
+    uses: ./sign-in.flow.yml
+    with:
+      email: qa@example.com
+
+  - id: create_order
+    operation: orders#createOrder
+    auth: service
+    body:
+      id: ord_1
+      sku: WIDGET-1
+    outputs:
+      orderId: id
+      channel: channel
+
+  - id: quote_primary
+    operation: carrier#createQuote
+    body:
+      id: quote_primary_1
+      reference: "{{steps.create_order.orderId}}"
+    outputs:
+      quoteId: id
+      carrierRef: reference
+    shared: [quoteId, carrierRef]
+
+  - id: quote_fallback
+    operation: carrier#createQuote
+    depends:
+      - on: quote_primary
+        status: [failed]
+    body:
+      id: quote_fallback_1
+      reference: "{{steps.create_order.orderId}}"
+    outputs:
+      rateId: id
+      rateRef: reference
+    shared:
+      quoteId: rateId
+      carrierRef: rateRef
+
+  - id: book_shipment
+    operation: orders#createOrder
+    auth: service
+    depends:
+      any:
+        - on: quote_primary
+        - on: quote_fallback
+    body:
+      id: "{{shared.quoteId}}"
+      sku: "{{steps.create_order.orderId}}-{{steps.create_order.channel}}"
+      # Reads the raw response rather than a declared output — 001 §8.3 permits it and warns.
+      channel: "{{steps.create_order.body.channel}}"
+    outputs:
+      # The echo answers with the body it was sent, which carries no tracking — so this output is
+      # never produced and the step below it has a reference that cannot resolve.
+      trackingId: tracking.id
+
+  - id: archive_receipt
+    operation: orders#createOrder
+    body:
+      id: "{{steps.book_shipment.trackingId}}"
+      sku: "{{steps.create_order.orderId}}"

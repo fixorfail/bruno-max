@@ -1897,6 +1897,7 @@ module.exports.cleanupSpecFilesForCollection = cleanupSpecFilesForCollection;
 /* istanbul ignore next */
 if (process.env.NODE_ENV === 'test') {
   module.exports._test = {
+    normalizeUrlPath,
     maskJsonInterpolations,
     unmaskJsonInterpolations,
     mergeJsonValues,

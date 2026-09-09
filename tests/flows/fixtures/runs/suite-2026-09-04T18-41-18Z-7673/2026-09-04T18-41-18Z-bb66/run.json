@@ -1,0 +1,9 @@
+{
+  "runId": "bb665b60-ba5a-4515-873c-a145c104378f",
+  "flow": "{{workspaceRoot}}/flows/skips.flow.yml",
+  "startedAt": "2026-09-04T18:41:18.532Z",
+  "origin": {
+    "host": "cli"
+  },
+  "flowHash": "f95ca48a2ee362f0ffd8a19960cb9a1d04c4082f03ebdcdfc75ed3a90a8e1d7e"
+}

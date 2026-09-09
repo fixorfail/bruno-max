@@ -1,14 +1,17 @@
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
+const { CookieJar } = require('tough-cookie');
 const { runScriptInNodeVm } = require('@usebruno/js');
+const { runScriptInQuickJsForValue } = require('@usebruno/js/src/fork/quickjs-value-runner');
 const { createRedactor } = require('@bruno-max/flow');
 const { configureRequest } = require('../network');
 const { setAuthHeaders } = require('../network/prepare-request');
 const { proxySwaggerFetch } = require('../swagger-fetch');
-const { addCookieToJar } = require('../../utils/cookies');
+const { cookieJar: globalCookieJar } = require('../../utils/cookies');
 const { preferencesUtil } = require('../../store/preferences');
 const CollectionSecurityStore = require('../../store/collection-security');
+const { readBrunoConfig } = require('./collectionConfig');
 
 /**
  * The app's half of the engine boundary — 001 §13.2.
@@ -23,11 +26,29 @@ const CollectionSecurityStore = require('../../store/collection-security');
 const collectionSecurityStore = new CollectionSecurityStore();
 
 /**
- * `configureRequest` reads only `promptVariables` and the bruno config off the collection, and a
- * flow has neither — it resolves its own operations from OpenAPI (001 §6). `proxySwaggerFetch`
- * passes the same empty shape for the same reason.
+ * The collection `configureRequest` is handed, which it reads exactly two things off: the prompt
+ * variables — a flow has none, it resolves its own operations from OpenAPI (001 §6) — and the bruno
+ * config, which is where §7.4's proxy and client-certificate configuration lives.
+ *
+ * **The config arrives through `draft`** because that is `getBrunoConfig`'s caller-supplied branch:
+ * its other branch is a cache keyed by the `collectionUid` the renderer mints with `uuid()`, and the
+ * flow host is handed a path (002 §7.2) rather than a uid, so there is nothing to look up with. Read
+ * once per run and only when a step actually dispatches — `createPorts` is also called for a describe
+ * or a validate, which never open a socket.
  */
-const flowCollection = { promptVariables: {} };
+const collectionReader = (collectionRoot) => {
+  // The promise, not its value: at `concurrency: 5` five first steps ask at once, and memoizing the
+  // answer would read the file five times before the first read had one to memoize.
+  let collection;
+  return () => {
+    if (!collection) {
+      collection = (collectionRoot ? readBrunoConfig(collectionRoot) : Promise.resolve({})).then(
+        (brunoConfig) => ({ promptVariables: {}, draft: { brunoConfig } })
+      );
+    }
+    return collection;
+  };
+};
 
 const bodyForRequest = (body) => {
   switch (body.kind) {
@@ -78,7 +99,61 @@ const parseBody = (bytes, contentType) => {
 const plainHeaders = (headers) =>
   typeof headers?.toJSON === 'function' ? headers.toJSON() : { ...(headers || {}) };
 
-const saveCookies = (url, headers) => {
+/**
+ * 001 §7.6: one jar per run, its own jar per dataset iteration, inherited by sub-flows — the engine
+ * expresses exactly that scoping as `ctx.cookieJar.id` and never looks inside it. A jar is created
+ * the moment its id is first seen in this run and lives for the rest of the run in `jars`, seeded
+ * from the app's own process-wide jar the way a single request is today (001 §7.6's "cookies set
+ * before a run"); from there it diverges, so two iterations that log in as different users each
+ * carry only their own session, and a sub-flow reusing its caller's id shares that caller's cookies
+ * without touching anyone else's.
+ */
+const jarFor = (jars, cookieJar) => {
+  let jar = jars.get(cookieJar.id);
+  if (!jar) {
+    jar = CookieJar.deserializeSync(globalCookieJar.serializeSync());
+    jars.set(cookieJar.id, jar);
+  }
+  return jar;
+};
+
+const cookieHeaderName = (headers) => Object.keys(headers).find((name) => name.toLowerCase() === 'cookie');
+
+const parseCookiePairs = (value) =>
+  (value || '').split(';').reduce((cookies, pair) => {
+    const [name, ...rest] = pair.split('=');
+    if (name && name.trim()) {
+      cookies[name.trim()] = rest.join('=').trim();
+    }
+    return cookies;
+  }, {});
+
+/**
+ * Mirrors `configureRequest`'s own cookie-header merge (`ipc/network/index.js`), against this run's
+ * jar instead of the app's process-wide one. `configureRequest` already wrote a `Cookie` header from
+ * the process-wide jar by the time this runs — §7.6 gives the run's jar the final say, so this
+ * replaces it rather than merging with it, keeping only what the step itself declared plus what this
+ * run's jar carries for the URL.
+ */
+const applyCookieJar = (axiosRequest, jar, declaredName, declaredCookie) => {
+  if (!preferencesUtil.shouldSendCookies()) {
+    return;
+  }
+
+  const jarCookieString = jar.getCookieStringSync(axiosRequest.url);
+  const merged = { ...parseCookiePairs(declaredCookie), ...parseCookiePairs(jarCookieString) };
+  const combined = Object.entries(merged)
+    .map(([name, value]) => `${name}=${value}`)
+    .join('; ');
+
+  if (combined) {
+    axiosRequest.headers[declaredName || 'Cookie'] = combined;
+  } else if (declaredName) {
+    delete axiosRequest.headers[declaredName];
+  }
+};
+
+const saveCookiesToJar = (jar, url, headers) => {
   if (!preferencesUtil.shouldStoreCookies()) {
     return;
   }
@@ -86,7 +161,7 @@ const saveCookies = (url, headers) => {
   const setCookie = headers['set-cookie'];
   for (const header of [].concat(setCookie || [])) {
     if (typeof header === 'string' && header.length) {
-      addCookieToJar(header, url);
+      jar.setCookieSync(header, url, { ignoreError: true });
     }
   }
 };
@@ -155,17 +230,16 @@ const requestLog = ({ request, axiosRequest, ctx, startedAt, response, bytes, er
   };
 };
 
-/**
- * 001 §7.6's per-run and per-iteration jar scoping is not honoured yet: `utils/cookies` is a single
- * process-wide jar, so `ctx.cookieJar` has nowhere to map to. Iterations of a dataset flow therefore
- * share cookies in the app, which 001 §7.6 says they must not.
- */
-const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) => {
+const executeRequest = ({ collectionRoot, readCollection, onRequest, jars }) => async (request, ctx) => {
   const { data, contentType } = bodyForRequest(request.body);
   const headers = { ...request.headers };
   if (contentType && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
     headers['content-type'] = contentType;
   }
+
+  const jar = jarFor(jars, ctx.cookieJar);
+  const declaredCookieName = cookieHeaderName(headers);
+  const declaredCookie = declaredCookieName ? headers[declaredCookieName] : '';
 
   const axiosRequest = {
     method: request.method,
@@ -181,12 +255,27 @@ const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) =
   };
 
   setAuthHeaders(axiosRequest, request, undefined);
+  /**
+   * 001 §7.4 — the run's variables, in the slot the request path interpolates proxy and certificate
+   * configuration from.
+   *
+   * `getCertsAndProxyConfig` builds one `interpolationOptions` out of the maps it is handed and uses
+   * it for a client certificate's `domain`, `certFilePath`, `keyFilePath`, `pfxFilePath` and
+   * `passphrase`; `setupProxyAgents` uses the same object later for the proxy's `protocol`,
+   * `hostname`, `port` and `auth`. Handing the run's variables in as `runtimeVariables` is therefore
+   * the whole of it — every field the request path interpolates, interpolated from the flow's own
+   * scope, with no second implementation of the interpolation here to drift from that one.
+   *
+   * `runtimeVariables` rather than one of the other four tiers because `ctx.variables` is already
+   * §7.3's chain resolved: the engine merged the tiers, and re-splitting a resolved map across slots
+   * whose only purpose is precedence would invent a precedence the flow does not have.
+   */
   const axiosInstance = await configureRequest(
     undefined,
-    flowCollection,
+    await readCollection(),
     axiosRequest,
     {},
-    {},
+    ctx.variables || {},
     {},
     collectionRoot || '',
     {}
@@ -197,6 +286,10 @@ const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) =
   if (ctx.timeoutMs) {
     axiosRequest.timeout = ctx.timeoutMs;
   }
+
+  // After `configureRequest`, which wrote a `Cookie` header from the app's process-wide jar —
+  // §7.6 gives this run's own jar the final say over what actually goes out.
+  applyCookieJar(axiosRequest, jar, declaredCookieName, declaredCookie);
 
   const startedAt = Date.now();
   let response;
@@ -214,7 +307,7 @@ const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) =
   const duration = headersReceived['request-duration'];
   delete headersReceived['request-duration'];
 
-  saveCookies(axiosRequest.url, headersReceived);
+  saveCookiesToJar(jar, axiosRequest.url, headersReceived);
 
   const bytes = Buffer.isBuffer(response.data) ? response.data : Buffer.from(response.data || '');
   const executed = {
@@ -236,19 +329,29 @@ const executeRequest = ({ collectionRoot, onRequest }) => async (request, ctx) =
 };
 
 /**
- * The script's value comes back through a host object on the context, because the sandbox wraps a
- * script in an async closure and discards what it evaluates to — the same mechanism the CLI uses.
- *
- * **A safe-mode collection refuses rather than silently escalating.** `getJsSandboxRuntime` gives
- * quickjs by default, and quickjs discards the evaluated value entirely
- * (`bruno-js/src/sandbox/quickjs/index.js` returns nothing), so there is no way to serve a flow's
- * `script:` form from it without changing bruno-js. Running it in the node VM instead would hand a
- * user who chose the sandbox an unsandboxed script.
+ * 001 §8.2: flow scripts run in the collection's own sandbox mode, never a stronger one than the
+ * collection chose — and, where there is no collection to have chosen, in the safe one.
+ * `getJsSandboxRuntime`'s node:vm path returns its value through a host object on
+ * the context, because that sandbox wraps a script in an async closure and discards what it
+ * evaluates to; QuickJS's own closure (`wrapScriptInClosure`, `bruno-js/src/sandbox/quickjs/index.js`)
+ * does the same, always resolving to the fixed string `'done'`. `runScriptInQuickJsForValue`
+ * (`bruno-js/src/fork/quickjs-value-runner.js`) is a second QuickJS entry point built for exactly
+ * this: it dumps the value out of the VM instead of discarding it, so a safe-mode collection gets a
+ * real sandbox rather than a refusal or an escalation to node:vm.
  */
 const runScript = ({ collectionRoot, workspaceRoot }) => async (source, args) => {
+  /**
+   * **A flow with no collection has no `securityConfig` to read, and defaults to `safe`.**
+   * `jsSandboxMode` is a collection's setting, and a workspace-scoped flow has no collection by
+   * construction (002 §7.2) — so the absent answer has to mean something, and the only safe reading
+   * is the one `bru run` already makes and the one a collection gets when nobody has chosen:
+   * QuickJS. Keying the gate on `collectionRoot` made the absence mean `developer` instead, so the
+   * flow the app can least attribute to a collection's own decision was the one that got node:vm.
+   */
   const { jsSandboxMode } = collectionRoot ? collectionSecurityStore.getSecurityConfigForCollection(collectionRoot) : {};
-  if (collectionRoot && jsSandboxMode !== 'developer') {
-    throw new Error('flows cannot run scripts in a safe-mode collection: the quickjs sandbox discards the value');
+
+  if (jsSandboxMode !== 'developer') {
+    return runScriptInQuickJsForValue({ source, args, console });
   }
 
   const box = { args, result: undefined };
@@ -261,8 +364,10 @@ const runScript = ({ collectionRoot, workspaceRoot }) => async (source, args) =>
      * `outputs`, `when:` and `shouldRetry` — so the failure lands as a `script-error` on the step,
      * blaming the author's script for a host that handed the VM nothing.
      *
-     * A workspace-scoped flow has no collection (002 §7.2), and its scope root is the workspace —
-     * the same fallback `bru` makes, so a script behaves identically in both hosts.
+     * The fallback is the scope-root rule (002 §7.3), not a live branch: since the safe default
+     * above took the no-collection case, only a collection that chose `developer` reaches node:vm,
+     * so `collectionRoot` is always the answer here. It stays stated because the path this VM gets
+     * is the flow's scope root either way, and a gate that changes should not have to rediscover it.
      */
     collectionPath: collectionRoot || workspaceRoot,
     scriptingConfig: {}
@@ -283,7 +388,15 @@ const readSpec = async (source) => {
 };
 
 const createPorts = ({ collectionRoot, workspaceRoot, onRequest }) => ({
-  executeRequest: executeRequest({ collectionRoot, onRequest }),
+  // One map per `createPorts` call, which is one per run (`ipc/flow/index.js`) — its lifetime is
+  // the run's, exactly what §7.6's per-run and per-iteration jars need. The collection reader is
+  // scoped the same way: one read of the bruno config per run, however many steps dispatch.
+  executeRequest: executeRequest({
+    collectionRoot,
+    readCollection: collectionReader(collectionRoot),
+    onRequest,
+    jars: new Map()
+  }),
   readFile: async (target) => fs.promises.readFile(target),
   writeFile: async (target, data) => {
     await fs.promises.mkdir(path.dirname(target), { recursive: true });

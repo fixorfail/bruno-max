@@ -2,7 +2,7 @@ const fs = require('fs/promises');
 const { readFileSync } = require('fs');
 const path = require('path');
 const chokidar = require('chokidar');
-const { readFlowMeta, flowSearchTerms } = require('@bruno-max/flow');
+const { readFlowMeta, flowSearchTerms, flowSpecSources } = require('@bruno-max/flow');
 
 const FLOW_SUFFIX = '.flow.yml';
 const IGNORED_DIRECTORIES = ['node_modules', '.git'];
@@ -97,12 +97,26 @@ const flowFieldsOf = (pathname, scope) => {
   const scopeRoot = scopeRootOf(scope);
   try {
     const source = readFileSync(pathname, 'utf8');
-    return { ...readFlowMeta(source), terms: flowSearchTerms(scopeRoot, pathname, source) };
+    return {
+      ...readFlowMeta(source),
+      terms: flowSearchTerms(scopeRoot, pathname, source),
+      // 002 §6: the documents this flow's diagnostics depend on, which live outside `flows/` and so
+      // are watched by path rather than found by the directory walk. From the read already made,
+      // for the reason the terms are.
+      specs: flowSpecSources(pathname, source)
+    };
   } catch (error) {
-    return { terms: flowSearchTerms(scopeRoot, pathname) };
+    return { terms: flowSearchTerms(scopeRoot, pathname), specs: [] };
   }
 };
 
+/**
+ * The sidebar's row, and the paths watching it implies.
+ *
+ * The two are returned together because they come from one read of one file: a flow's `apis:` is in
+ * the same document as its `meta:`, and reading it twice would spend the saving `flowFieldsOf` was
+ * written for. Only the entry crosses to the renderer.
+ */
 const buildEntry = (pathname, scope) => {
   const { workspaceRoot, collectionRoot } = scope;
   const entry = { pathname, filename: path.basename(pathname), workspaceRoot };
@@ -120,10 +134,10 @@ const buildEntry = (pathname, scope) => {
     } else {
       entry.script = true;
     }
-    return entry;
+    return { entry, specs: [] };
   }
 
-  const { name, library, terms } = flowFieldsOf(pathname, scope);
+  const { name, library, terms, specs } = flowFieldsOf(pathname, scope);
   if (name) {
     entry.name = name;
   }
@@ -137,7 +151,7 @@ const buildEntry = (pathname, scope) => {
   // the sidebar's so that the box and `bru flow run --grep` agree about what a flow contains — which
   // is why a flow may match on a tag or a step name no row displays.
   entry.terms = terms;
-  return entry;
+  return { entry, specs };
 };
 
 const scanFlows = async (directory, scope) => {
@@ -177,6 +191,8 @@ const scanFlows = async (directory, scope) => {
 class FlowsWatcher {
   constructor() {
     this.watchers = {};
+    /** Per watched directory, the spec paths already handed to chokidar — see `watchSpecs`. */
+    this.watchedSpecs = {};
   }
 
   addWatcher(win, scope) {
@@ -201,15 +217,60 @@ class FlowsWatcher {
       depth: 20
     });
 
+    // Registered before the handlers: `ignoreInitial: false` replays the directory as `add`s, and
+    // `watchSpecs` has to find the watcher those events are extending.
+    this.watchers[watchDirectory] = watcher;
+    this.watchedSpecs[watchDirectory] = new Set();
+
+    /**
+     * 002 §6: a listed file reaches the sidebar as an entry; everything else the watcher sees is a
+     * file some flow's diagnostics may depend on, and says so.
+     *
+     * The second channel exists because the tree cannot carry these. A `flows/connectors.yml`
+     * (001 §8.5) and an OpenAPI document watched by path are not rows in the sidebar, and sending
+     * them as entries would put files in a list of flows. What the renderer does with either is the
+     * same — re-describe what is open — but only one of them is a thing to draw.
+     */
     const report = (event) => (pathname) => {
-      if (isListedFile(pathname, scope)) {
-        win.webContents.send('main:flow-tree-updated', event, buildEntry(pathname, scope));
+      if (!isListedFile(pathname, scope)) {
+        win.webContents.send('main:flow-dependency-changed', pathname);
+        return;
       }
+
+      const { entry, specs } = buildEntry(pathname, scope);
+      // Before the entry, so a renderer re-describing on this event resolves against a watcher that
+      // is already following whatever the edit just bound.
+      this.watchSpecs(watchDirectory, specs);
+      win.webContents.send('main:flow-tree-updated', event, entry);
     };
 
     watcher.on('add', report('addFile')).on('change', report('changeFile')).on('unlink', report('unlinkFile'));
+  }
 
-    this.watchers[watchDirectory] = watcher;
+  /**
+   * The OpenAPI documents the flows under this directory bind (001 §6.2), added to the directory's
+   * own watcher so a change to one reaches the renderer as a dependency change.
+   *
+   * **Added and never removed.** A document stops being watched when its scope closes, not when the
+   * last flow binding it stops: a path is dropped the moment a flow is mid-edit and its `apis:` block
+   * is briefly gone, and re-adding it on the next keystroke would make the watch flicker exactly
+   * while the author is working. Chokidar deduplicates an `add` of a path it already holds, so the
+   * set is only here to keep this from asking on every change of every flow.
+   */
+  watchSpecs(watchDirectory, specs) {
+    const watcher = this.watchers[watchDirectory];
+    const watched = this.watchedSpecs[watchDirectory];
+    if (!watcher || !watched) {
+      return;
+    }
+
+    const unwatched = specs.filter((pathname) => !watched.has(pathname));
+    if (!unwatched.length) {
+      return;
+    }
+
+    unwatched.forEach((pathname) => watched.add(pathname));
+    watcher.add(unwatched);
   }
 
   /**
@@ -217,9 +278,16 @@ class FlowsWatcher {
    * rather than accumulating the watcher's initial `add` burst forever (002 §11.3).
    */
   async listFlows(scope) {
-    const pathnames = await scanFlows(flowsDirectoryFor(scope), scope);
+    const watchDirectory = flowsDirectoryFor(scope);
+    const pathnames = await scanFlows(watchDirectory, scope);
     // Path order rather than directory-read order, so the sidebar reads the same on every machine.
-    return pathnames.sort().map((pathname) => buildEntry(pathname, scope));
+    const built = pathnames.sort().map((pathname) => buildEntry(pathname, scope));
+
+    // The listing is the one pass over every flow in the scope, so it is where the documents they
+    // bind are picked up: a flow nobody has touched since the app opened would otherwise have its
+    // OpenAPI document unwatched until it was edited.
+    this.watchSpecs(watchDirectory, built.flatMap(({ specs }) => specs));
+    return built.map(({ entry }) => entry);
   }
 
   removeWatcher(scope) {
@@ -231,11 +299,13 @@ class FlowsWatcher {
 
     watcher.close();
     delete this.watchers[watchDirectory];
+    delete this.watchedSpecs[watchDirectory];
   }
 
   closeAllWatchers() {
     const closing = Object.values(this.watchers).map((watcher) => watcher.close());
     this.watchers = {};
+    this.watchedSpecs = {};
     return Promise.allSettled(closing);
   }
 }

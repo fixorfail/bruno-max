@@ -1,0 +1,49 @@
+{
+  "runId": "883c4a80-d2b7-4507-8921-fee57aaf48c1",
+  "origin": {
+    "host": "cli"
+  },
+  "status": "passed",
+  "iterations": [
+    {
+      "index": 0,
+      "status": "passed",
+      "steps": [
+        {
+          "id": "settle_order",
+          "kind": "operation",
+          "status": "success",
+          "attempts": 3,
+          "durationMs": 651,
+          "assertions": [
+            {
+              "expr": "res.body.state eq settled",
+              "passed": true,
+              "expected": "settled",
+              "actual": "settled"
+            }
+          ],
+          "validation": {
+            "response": {
+              "valid": true,
+              "errors": []
+            }
+          },
+          "outputs": {},
+          "capturePath": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-49Z-63f0/2026-09-04T18-40-49Z-883c/settle_order"
+        }
+      ],
+      "decidedBy": []
+    }
+  ],
+  "decidedBy": [],
+  "summary": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "diagnostics": [],
+  "captureDir": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-49Z-63f0/2026-09-04T18-40-49Z-883c"
+}

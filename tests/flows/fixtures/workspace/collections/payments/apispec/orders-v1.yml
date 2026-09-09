@@ -1,0 +1,84 @@
+openapi: 3.0.3
+info:
+  title: Orders API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8081
+
+paths:
+  /api/echo/json:
+    post:
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                sku: { type: string }
+                channel: { type: string }
+            # Seeded into every request built from this operation, so a materialized request
+            # carries a field no flow file mentions.
+            example:
+              channel: web-checkout
+      responses:
+        '200':
+          description: The order, echoed back
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/echo/headers:
+    get:
+      operationId: getOrder
+      responses:
+        '200':
+          description: The request as it arrived
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/wait-for:
+    get:
+      operationId: awaitOrder
+      parameters:
+        - name: time
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: OK
+
+  /api/settle/{key}:
+    get:
+      operationId: settleOrder
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string }
+        - name: after
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: The resource, pending until it has been asked for often enough
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/auth/bearer/protected:
+    get:
+      operationId: auditOrder
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object

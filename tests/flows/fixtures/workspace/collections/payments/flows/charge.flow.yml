@@ -1,0 +1,14 @@
+version: 1
+
+meta:
+  name: Charge a card
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+steps:
+  - id: create_charge
+    operation: orders#createOrder
+    body:
+      id: ch_1
+      sku: "{{region}}"

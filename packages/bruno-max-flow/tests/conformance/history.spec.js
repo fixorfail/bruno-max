@@ -255,6 +255,29 @@ describe('R4o — readCapture', () => {
     expect(await run.readCapture({ stepId: 'child/use', attempt: 1 })).toMatchObject({ stepId: 'child/use' });
   });
 
+  /**
+   * 002 §11.2: a run directory outside the capture root is refused *before the port is called*. The
+   * renderer names `dir` across IPC, and `readCapture` reads `<dir>/<step>/attempt-N.json` — so an
+   * unchecked `dir` is a way to read any JSON on the machine. The reads log is the proof: a refusal
+   * that had already touched the port would be a check after the fact.
+   */
+  it('refuses a run directory outside the capture root, before reading anything', async () => {
+    const run = await simple();
+    const before = run.reads.length;
+
+    await expect(
+      run.readCapture({ dir: path.join(FIXTURES, 'environments'), stepId: 'create', attempt: 1 })
+    ).rejects.toThrow(/outside the scope root/);
+    await expect(
+      run.readCapture({ dir: path.join(CAPTURE_ROOT, '..', '..', 'elsewhere'), stepId: 'create', attempt: 1 })
+    ).rejects.toThrow(/outside the scope root/);
+    await expect(
+      run.readCapture({ dir: run.captureDir, scopeRoot: path.join(FIXTURES, 'other'), stepId: 'create', attempt: 1 })
+    ).rejects.toThrow(/outside the scope root/);
+
+    expect(run.reads.length).toBe(before);
+  });
+
   it('names a binary body rather than inlining it', async () => {
     const run = await runFlow(flow('r1-dead-service.flow.yml'), {
       responses: {
@@ -285,6 +308,16 @@ describe('R4o — readCapture', () => {
 });
 
 describe('R4o — readRun', () => {
+  /** The same rule as `readCapture`, on the reader the app opens a past run through. */
+  it('refuses a run directory outside the capture root, before reading anything', async () => {
+    const run = await simple();
+    const before = run.reads.length;
+
+    await expect(run.readRun({ dir: path.join(FIXTURES, 'flows') })).rejects.toThrow(/outside the scope root/);
+
+    expect(run.reads.length).toBe(before);
+  });
+
   it('recovers every step result the run recorded', async () => {
     const run = await simple();
     const stored = await run.readRun();
@@ -603,6 +636,19 @@ describe('R4o — listSuites', () => {
 });
 
 describe('R4o — readSuite', () => {
+  /**
+   * Deliberately NOT contained: `--capture-dir` (§14.1) can put a suite outside the scope, and the
+   * `dir` here is one the CLI's own user typed after `--retry-failed`. The renderer never names a
+   * suite directory. So an outside directory fails as "not a suite", never as "outside the scope".
+   */
+  it('still opens a suite that --capture-dir put outside the scope', async () => {
+    const run = await simple();
+
+    await expect(run.readSuite({ dir: path.join(FIXTURES, '..', 'relocated', 'suite-x') })).rejects.toThrow(
+      /not a suite directory/
+    );
+  });
+
   it('answers for one directory exactly what the listing says about it', async () => {
     const run = await simple();
 

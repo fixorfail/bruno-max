@@ -1,0 +1,20 @@
+# R8.5 — a required `format: binary` part nobody supplied. §7.1 seeds no placeholder for a file, so
+# the request goes out without it and the server rejects it for reasons the flow cannot explain.
+version: 1
+
+meta:
+  name: R8 — a missing required part
+
+apis:
+  orders-api: ../../specs/validation-v1.yml
+
+config:
+  baseUrl: "{{ordersBaseUrl}}"
+
+steps:
+  - id: attach
+    operation: orders-api#attachDocument
+    pathParams:
+      orderId: order-1
+    body:
+      note: signed copy

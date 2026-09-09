@@ -159,7 +159,16 @@ describe('R4q — shared slots', () => {
   it('reports each slot with its writers and readers', async () => {
     const description = await describeFlow(flow('r4q-graph.flow.yml'));
 
-    expect(description.slots).toEqual([{ name: 'ref', writers: ['create'], readers: ['audit'] }]);
+    expect(description.slots).toEqual([
+      {
+        name: 'ref',
+        writers: ['create'],
+        // §9.1's declaration order, with the output each writer publishes — what resolves a
+        // `shared.<slot>` export's value, since it has no producing step of its own (001 §12.1).
+        writes: [{ step: 'create', output: 'thingId' }],
+        readers: ['audit']
+      }
+    ]);
   });
 });
 
@@ -209,6 +218,46 @@ describe('R4q — nodes', () => {
     const description = await describeFlow(flow('r4q-graph.flow.yml'));
 
     expect(description.diagnostics).toEqual(await validate(flow('r4q-graph.flow.yml')));
+  });
+
+  /**
+   * §8.5 makes an output declarable somewhere the step's own text does not show, and 002 §5 marks
+   * those — so the node says where each came from, and only when a connector file contributed one.
+   */
+  describe('where each output was declared', () => {
+    const CONNECTORS = path.join(FLOWS, 'connectors');
+    const scope = { workspaceRoot: CONNECTORS, collectionRoot: path.join(CONNECTORS, 'collections', 'payments') };
+    const connected = (name) => describeFlow(`connectors/collections/payments/flows/${name}`, { scope });
+
+    it('names the connector layer each output came from, beside the inline ones', async () => {
+      const description = await connected('override.flow.yml');
+
+      expect(node(description, 'get_thing').outputs).toEqual(['title', 'thingName', 'own']);
+      expect(node(description, 'get_thing').outputOrigins).toEqual({
+        title: 'inline',
+        thingName: 'collection',
+        own: 'inline'
+      });
+    });
+
+    it('tells a workspace layer from a collection one', async () => {
+      const description = await connected('inherit.flow.yml');
+
+      expect(node(description, 'sign_in').outputOrigins).toEqual({ token: 'workspace' });
+      expect(node(description, 'get_thing').outputOrigins).toEqual({
+        thingId: 'workspace',
+        title: 'collection',
+        thingName: 'collection'
+      });
+    });
+
+    it('is absent where every output is inline, and where there are none', async () => {
+      const connectedFlow = await connected('inherit.flow.yml');
+      const plain = await describeFlow(flow('r4q-graph.flow.yml'));
+
+      expect(node(connectedFlow, 'create')).not.toHaveProperty('outputOrigins');
+      for (const entry of plain.nodes) expect(entry).not.toHaveProperty('outputOrigins');
+    });
   });
 });
 

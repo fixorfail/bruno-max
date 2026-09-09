@@ -1,0 +1,14 @@
+# R12.1 — an ordinary relative `uses:` path, resolved against the invoking flow and staying inside
+# the collection's own scope root: the case the `workspace:` prefix leaves unchanged (§12.2).
+version: 1
+
+meta:
+  name: R12 — relative ok
+
+steps:
+  - id: auth
+    uses: ./local-login.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+    assert:
+      - steps.auth.token isDefined

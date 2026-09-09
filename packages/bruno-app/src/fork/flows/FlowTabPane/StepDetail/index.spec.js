@@ -39,7 +39,7 @@ const renderPane = (props) => {
   const tree = (extra) => (
     <Provider store={store}>
       <ThemeProvider theme={theme}>
-        <StepDetail stepId="login" node={node} running runDir="/runs/one" {...props} {...extra} />
+        <StepDetail stepId="login" node={node} running scopeRoot="/w" runDir="/runs/one" {...props} {...extra} />
       </ThemeProvider>
     </Provider>
   );
@@ -88,6 +88,7 @@ describe('StepDetail', () => {
     // without one reads a directory that was never created, and the step pane then reported the
     // step as having sent nothing.
     expect(window.ipcRenderer.invoke).toHaveBeenCalledWith('renderer:flow-read-capture', {
+      scopeRoot: '/w',
       dir: '/runs/one',
       stepId: 'login',
       iteration: undefined,
@@ -116,6 +117,7 @@ describe('StepDetail', () => {
     update({ node: { state: 'success', attempts: 1, assertions: [], outputs: {}, capturePath: '/runs/one/login' } });
 
     await waitFor(() => expect(window.ipcRenderer.invoke).toHaveBeenCalledWith('renderer:flow-read-capture', {
+      scopeRoot: '/w',
       dir: '/runs/one',
       stepId: 'login',
       iteration: undefined,

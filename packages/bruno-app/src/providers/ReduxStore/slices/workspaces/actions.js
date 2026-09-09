@@ -26,6 +26,7 @@ import { hydrateMockServerInstances } from 'utils/mock-server/mock-server-instan
 import { hydrateTabs, getActiveTabFromSnapshot, hydrateSnapshotLookups, getCollectionSnapshotFromLookups, WORKSPACE_TAB_UID_SUFFIX_BY_TYPE } from 'utils/snapshot';
 import toast from 'react-hot-toast';
 import { closeAiSidebar } from '../chat';
+import { restoreForkWorkspaceTabs } from 'fork/registry';
 
 const { ipcRenderer } = window;
 let snapshotHydrationTimer = null;
@@ -678,6 +679,8 @@ export const switchWorkspace = (workspaceUid) => {
           }));
         }
       }
+
+      await dispatch(restoreForkWorkspaceTabs(fullSnapshot));
 
       // Restore active collection from snapshot using lastActiveCollectionPathname
       const lastActiveCollectionPathname = workspaceSnapshot?.lastActiveCollectionPathname || null;

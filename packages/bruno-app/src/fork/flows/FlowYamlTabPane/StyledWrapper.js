@@ -119,6 +119,76 @@ const StyledWrapper = styled.div`
     .CodeMirror {
       height: 100%;
     }
+
+    /*
+     * 002 §6's marks, in the fork's own gutter column (diagnosticGutter.js) to the left of the line
+     * numbers. CodeMirror names a gutter's column after its id, and gives it no width of its own —
+     * a column narrower than the mark clips it, and one wider pushes the text away from the numbers
+     * that address it.
+     */
+    .CodeMirror-gutter.flow-diagnostics {
+      width: 0.75rem;
+    }
+
+    .flow-gutter-marker {
+      width: 0.75rem;
+      text-align: center;
+      cursor: pointer;
+      /* The dot carries the severity, so it is drawn at the weight of a bullet rather than of text:
+         large enough to read as a mark at a glance in either theme, small enough not to sit taller
+         than the line it is on. */
+      font-size: 0.6875rem;
+      line-height: inherit;
+
+      &.error {
+        color: ${(props) => props.theme.colors.text.danger};
+      }
+
+      &.warning {
+        color: ${(props) => props.theme.colors.text.warning};
+      }
+    }
+  }
+
+  /* 002 §6's list, under the graph and above the editor it anchors into — between the two things it
+     talks about, rather than at one end of the tab away from both. */
+  .yaml-diagnostics {
+    display: flex;
+    flex-direction: column;
+    max-height: 8rem;
+    overflow-y: auto;
+    border-top: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
+  }
+
+  .yaml-diagnostic {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.125rem 1rem;
+    text-align: left;
+    font-size: 0.75rem;
+    color: ${(props) => props.theme.colors.text.muted};
+
+    &.error .yaml-diagnostic-code {
+      color: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &.warning .yaml-diagnostic-code {
+      color: ${(props) => props.theme.colors.text.warning};
+    }
+  }
+
+  button.yaml-diagnostic:hover {
+    background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
+  }
+
+  .yaml-diagnostic-message {
+    flex: 1 1 auto;
+  }
+
+  .yaml-diagnostic-line {
+    flex: 0 0 auto;
+    font-variant-numeric: tabular-nums;
   }
 `;
 

@@ -1,0 +1,40 @@
+# R9.1 — §9.1's tiebreak: last writer in **declaration** order, not completion order. Two branches
+# both write the slot and both run; the scenario holds the first-declared writer's response until the
+# second-declared writer has finished, so a completion-order implementation resolves the slot the
+# other way round.
+version: 1
+
+meta:
+  name: R9.1 — a slot written by two branches resolves by declaration order
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  concurrency: 5
+
+shared: [thingId]
+
+steps:
+  - id: probe
+    operation: regress-api#getState
+
+  - id: writer_first
+    operation: regress-api#getThing
+    depends: [probe]
+    pathParams: { id: seed }
+    outputs: { thingId: data.id }
+    shared: [thingId]
+
+  - id: writer_second
+    operation: regress-api#createThing
+    depends: [probe]
+    body: { name: widget }
+    outputs: { thingId: data.id }
+    shared: [thingId]
+
+  - id: reader
+    operation: regress-api#getThing
+    depends: [writer_first, writer_second]
+    pathParams: { id: "{{shared.thingId}}" }

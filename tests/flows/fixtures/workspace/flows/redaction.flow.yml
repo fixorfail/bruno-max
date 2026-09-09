@@ -1,0 +1,23 @@
+version: 1
+
+meta:
+  name: Redacted auth
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+config:
+  # A header the built-in denylist does not know about — 001 §14.4's author-named mask.
+  redactHeaders: [X-Legacy-Key]
+
+authProfiles:
+  service:
+    mode: bearer
+    token: "{{secretToken}}"
+
+steps:
+  - id: read_order
+    operation: orders#getOrder
+    auth: service
+    headers:
+      X-Legacy-Key: "{{secretToken}}"

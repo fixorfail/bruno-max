@@ -208,32 +208,37 @@ const capturedRequest = (
 
 type Artifact = (bytes: Buffer, contentType: string | undefined, role: 'request' | 'response') => string;
 
+/** §14.5 writes a binary body out as a sibling and never previews it — the one body no text represents. */
+const isBinary = (response: ExecutedResponse): boolean => {
+  const contentType = headerValue(response.headers, 'content-type');
+  return Boolean(response.bytes) && Boolean(contentType) && !TEXTUAL.test(contentType as string);
+};
+
+/**
+ * A textual response body as the capture records it: the raw bytes where the host supplied them.
+ * No raw bytes means the host handed back a parsed value only; re-serializing is the closest record
+ * available, and §14.5 would rather store that than drop the body.
+ */
+const responseText = (response: ExecutedResponse): string | undefined => {
+  if (response.bytes) return response.bytes.toString('utf8');
+  if (response.body === undefined || response.body === null) return undefined;
+  return typeof response.body === 'string' ? response.body : JSON.stringify(response.body);
+};
+
 const capturedResponse = (
   response: ExecutedResponse,
   redactor: Redactor,
   artifact: Artifact
 ): CapturedResponse => {
   const contentType = headerValue(response.headers, 'content-type');
-  const textual = !contentType || TEXTUAL.test(contentType);
 
   let body: CapturedBody | undefined;
-  if (!textual && response.bytes) {
-    body = {
-      kind: 'binary',
-      contentType,
-      byteLength: response.bytes.length,
-      file: artifact(response.bytes, contentType, 'response')
-    };
-  } else if (response.bytes) {
-    body = { kind: 'text', contentType, text: response.bytes.toString('utf8') };
-  } else if (response.body !== undefined && response.body !== null) {
-    // No raw bytes means the host handed back a parsed value only; re-serializing is the closest
-    // record available, and §14.5 would rather store that than drop the body.
-    body = {
-      kind: 'text',
-      contentType,
-      text: typeof response.body === 'string' ? response.body : JSON.stringify(response.body)
-    };
+  if (isBinary(response)) {
+    const bytes = response.bytes as Buffer;
+    body = { kind: 'binary', contentType, byteLength: bytes.length, file: artifact(bytes, contentType, 'response') };
+  } else {
+    const text = responseText(response);
+    if (text !== undefined) body = { kind: 'text', contentType, text };
   }
 
   return {
@@ -242,6 +247,52 @@ const capturedResponse = (
     headers: redactor.headers(response.headers),
     body,
     responseTimeMs: response.responseTimeMs
+  };
+};
+
+/**
+ * The request as sent, as one readable text: the request line, the headers, and — where the body
+ * is stored inline — the body. A multipart or raw body is a file (§7.5), captured by reference and
+ * left out here for the same reason.
+ */
+const requestText = (captured: CapturedRequest): string => {
+  const head = [`${captured.method} ${captured.url}`, ...Object.entries(captured.headers).map(([name, value]) => `${name}: ${value}`)];
+  const body = captured.body && captured.body.kind === 'text' ? captured.body.text : undefined;
+  return body === undefined ? head.join('\n') : `${head.join('\n')}\n\n${body}`;
+};
+
+/** Cut at a byte count, not a character count — the cap is `capturePreviewBytes` (§5.2). */
+const truncateBytes = (text: string, bytes: number): string => {
+  const buffer = Buffer.from(text, 'utf8');
+  if (buffer.length <= bytes) return text;
+  // A cut inside a multi-byte character decodes as U+FFFD at the very end; drop it rather than
+  // report a character no response contained.
+  return buffer.subarray(0, bytes).toString('utf8').replace(/�$/, '');
+};
+
+export type AttemptPreview = { request?: string; response?: string };
+
+/**
+ * §14.5's inline copy of an attempt — what "storage is split" gives a reporter, where the attempt
+ * file keeps the untruncated payload. The same redaction as the file, applied **before** the cut:
+ * a secret truncated mid-way would otherwise leave its prefix in the clear.
+ *
+ * Absent when there is nothing to show — a step that never dispatched — and a binary response is
+ * never previewed (§14.5).
+ */
+export const previewAttempt = (
+  record: Pick<AttemptRecord, 'request' | 'response'>,
+  redactor: Redactor,
+  secrets: SecretTracker,
+  bytes: number
+): AttemptPreview | undefined => {
+  const request = record.request && requestText(capturedRequest(record.request, redactor, record.response?.requestHeaders));
+  const response = record.response && !isBinary(record.response) ? responseText(record.response) : undefined;
+  if (request === undefined && response === undefined) return undefined;
+
+  return {
+    ...(request === undefined ? {} : { request: truncateBytes(secrets.mask(request), bytes) }),
+    ...(response === undefined ? {} : { response: truncateBytes(secrets.mask(response), bytes) })
   };
 };
 

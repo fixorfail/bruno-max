@@ -443,7 +443,7 @@ naming the field. Paying that is what buys an editor that never lies about the f
 and §14.3's check list is where the rule is enforced either way.
 
 Editors need the tags registered or they will flag valid files. For the YAML language server that is
-a one-time workspace setting, which `bru flow schema --editor` emits alongside the schema:
+a one-time workspace setting, written by hand once per workspace:
 
 ```jsonc
 // .vscode/settings.json
@@ -474,8 +474,10 @@ when a team wants the stricter posture.
 
 #### Versioning
 
-**One schema per format `version`.** `bru flow schema --version 1` emits v1's; the current version
-is the default. Within a version the schema only ever gains optional properties, matching §15's
+**One schema per format `version`.** `bru flow schema --format-version 1` emits v1's; the current
+version is the default. The flag is not `--version`: yargs owns that name on every command — the
+CLI's root parser (`bruno-cli/src/index.js`) disables neither `--version` nor its handler — so a
+second meaning for it would have been a flag the parser answers before the command sees it. Within a version the schema only ever gains optional properties, matching §15's
 additive rule, so a v1 schema shipped today still accepts a v1 file written a year from now.
 
 A new `version` means a new schema file rather than a modified one, which is what lets §15's golden
@@ -568,7 +570,10 @@ extracting it would mean editing one of the most-churned files in the app and pa
 upstream merge. The engine therefore owns its own implementation, and agreement is enforced by a
 **committed corpus of input/output pairs asserted by both** — the engine's tests and a test over
 `openapi-sync.js`. Drift becomes a failing test rather than a flow that silently cannot resolve an
-operation openapi-sync matches fine.
+operation openapi-sync matches fine. Both halves are written: the engine's is 001-C R8.10, and the
+electron half is `packages/bruno-electron/src/ipc/openapi-sync.spec.js` (002-C U5.14), which reaches
+the private function through the file's existing `NODE_ENV=test` `_test` export block — one name
+added to a list that is already there, which is the whole of §13.4's row for that file.
 
 Shared code would be the stronger guarantee, and it is the wrong trade here: eight lines of regex
 duplicated behind a shared corpus costs one test file, where the extraction costs a merge conflict
@@ -731,10 +736,18 @@ apis:
     auth: service-account
 ```
 
-A profile body carries the **fields of the existing Bruno auth modes** (the `mode` union in
-`bruno-schema-types/src/common/auth.ts`). Every mode Bruno already supports — bearer, basic,
-oauth2, apikey, awsv4, digest, ntlm, wsse — works unchanged, and OAuth2 profiles reuse the
-existing token cache and `clear-oauth2-cache` handling. Flows introduce no new auth mechanics.
+A profile body carries the **fields of the existing Bruno auth modes** (the `AuthMode` union in
+`bruno-schema-types/src/common/auth.ts`). All twelve names in that union are what a profile's `mode:`
+may say — `bearer`, `basic`, `apikey`, `wsse`, `awsv4`, `oauth1`, `oauth2`, `digest`, `ntlm`,
+`akamai-edgegrid`, `none` and `inherit` — and the engine passes each one through to the host's own
+auth code unchanged. OAuth2 profiles reuse the existing token cache and `clear-oauth2-cache`
+handling. Flows introduce no new auth mechanics.
+
+Two of the twelve are not credentials. `none` is §6.4's opt-out and the engine short-circuits it
+before any field is read. `inherit` is in the union because Bruno's own request files use it to mean
+"whatever is above me", and a flow has nothing above it: the engine's `collectionAuthProfile`
+(§13.1) maps a collection whose stored mode is `inherit` to `mode: none`, because a collection root
+is already the top of that chain.
 
 **A profile is authored flat and delivered nested.** Bruno's `Auth` puts each mode's fields under a
 key named for the mode — `{ mode: 'bearer', bearer: { token } }` — which is what a request carries
@@ -765,17 +778,59 @@ same whether the profile sets a header, a query parameter, or several of both:
 
 To disable authentication for a step entirely, use `auth: none`.
 
-**Signing modes are the exception, and validation enforces it.** `awsv4`, `digest`, `ntlm` and
-`wsse` compute a signature across several request fields; overriding one of those fields leaves a
-signature that no longer matches what was signed, producing a 401 that looks like a credentials
-problem rather than a configuration one. `bru flow validate` therefore **errors** when a step
-explicitly sets a field that its resolved signing-mode profile would compute, and directs the
-author to `auth: none` plus a fully hand-built request instead.
+**Signing modes are the exception, and validation says so.** A signing mode computes a header
+across several request fields, so a step that writes that header itself and a profile that computes
+it are two answers to one question — and the hosts do not agree on which wins: `aws4` deletes any
+`Authorization` it finds and signs over what is left, while Bruno's digest interceptor skips the
+challenge entirely for a request that already carries one. Either way the request goes out as
+something nobody wrote and the API answers 401, which reads as a credentials problem rather than the
+configuration one it is. `bru flow validate` therefore reports `signed-header-override` when a
+step's own `headers:` sets a header its resolved profile computes:
+
+| Mode | Headers it computes |
+|---|---|
+| `awsv4` | `Authorization`, `X-Amz-Date`, `X-Amz-Security-Token`, `X-Amz-Content-Sha256` |
+| `digest`, `ntlm`, `akamai-edgegrid` | `Authorization` |
+| `oauth1` | `Authorization`, and only with header placement — `placement: query` or `placement: body` sends the parameters elsewhere and collides with nothing |
+| `wsse` | `X-WSSE` |
+
+**A warning rather than a refusal**, because the per-field override above is legitimate for every
+mode that computes nothing: a step setting `Authorization` beside a `bearer` profile is the
+documented way to hand one call a pre-signed token, and the collision is real only for the modes in
+this table. The check reads the step's own `headers:` and not a binding's defaults — a default is
+not a step's claim — and §7.2's removal token `!...` declares nothing, so it never trips it.
 
 The implicit **`collection`** profile exists only for collection-scoped flows and carries that
 collection's configured auth. This is what keeps the simple case free: a collection flow calling
 one API declares no `authProfiles` at all and authenticates exactly as the collection does.
 Workspace-scoped flows have no such profile and must declare what they use.
+
+**The profile is the host's to supply, and both hosts always supply it.** Only a host knows what a
+collection is and which file holds its auth, so the engine takes it through
+`RunOptions.authProfiles.collection` (§13.2) and never opens `collection.bru` or
+`opencollection.yml` itself. `bru flow run` and the app each read their scope's root file and hand
+over the result of the engine's own `collectionAuthProfile` (§13.1), *including* when the collection
+declares `none`, declares `inherit`, declares nothing, or has a root file that does not parse — all
+four yield `mode: none`. That is what makes the promise above true for every collection rather than
+for the ones somebody had filled in: `auth: collection` resolves, and a step that must not carry the
+collection's credentials says `auth: none`.
+
+**Profiles are looked up in three places, first match wins**: the flow's own `authProfiles:`, then
+one inherited from the flow that invoked it (§12.3), then the host's. A name found in none of the
+three is `unknown-auth-profile` at run time, so a workspace-scoped run — where no host supplies
+anything — is unchanged by the field's existence.
+
+`bru flow validate` accepts `auth: collection` wherever the scope has a `collectionRoot`, because a
+scope with a collection has one to inherit from; whether the host actually passed the profile is a
+run-time fact the run itself reports. A workspace-only scope has no collection at all, and
+`auth: collection` there is `unknown-auth-profile` before anything is sent.
+
+**An OAuth2 token fetch that fails fails the step**, as `transport-error` (§14.6), rather than
+sending the request unauthenticated. This is a deliberate divergence from `bru run`, which logs
+`OAuth2 token fetch error` and carries on: for a single request a user is watching, an unauthorized
+answer is still information; for a flow, it reports a 401 as though it were the API's verdict on the
+step, and every assertion and every downstream step then describes a request that was never properly
+made. A test tool must not attribute its own configuration failure to the API under test.
 
 **Profiles resolve lexically.** A profile whose value references `{{steps.*}}` — as `user-token`
 does above — is evaluated at the moment a step uses it, in the context of the flow that *declared*
@@ -832,9 +887,21 @@ hundreds of flows. Drift is therefore handled by splitting it into two classes a
 differently:
 
 - **Structural drift is an error.** A step overriding `body.customer_id` when the operation's
-  schema has no such property is caught by `bru flow validate` (§14.3), which checks every inline
-  override against the resolved schema. Without that check the request silently carries a field
-  the API ignores, and the test passes while asserting nothing meaningful.
+  schema has no such property is caught by `bru flow validate` (§14.3), which checks a step's inline
+  `body:`, `query:` and `pathParams:` against the resolved schema. Without that check the request
+  silently carries a field the API ignores, and the test passes while asserting nothing meaningful.
+
+  Two limits of that sentence are worth naming rather than leaving to be discovered. **A step's
+  `headers:` are deliberately not checked.** The check covers `body:`, `query:` and `pathParams:`
+  and stops there, because OpenAPI documents declare header parameters rarely and essentially never
+  exhaustively: a correlation id, a tenant selector, a feature flag, an `X-Trace-Id` that CI adds to
+  every call — all are headers a real API accepts and no document lists. Applied to `headers:`, the
+  rule would fire on flows that are right, on documents that are merely incomplete, and the response
+  would be to stop reading the errors. And a check has nothing to measure against where the document
+  declares nothing at all: an operation documenting no query parameters accepts any `query:` key in
+  silence, because a spec that lists none is far more often incomplete than exhaustive.
+  `pathParams:` is the exception, since the URL template names its own placeholders whatever the
+  parameter list says.
 - **Value drift is accepted.** An example changing from `USD` to `EUR` flows through to every step
   that did not override it, by design. Flows are **not** pinned to a spec version: pinning would
   reintroduce the per-copy update burden this feature exists to remove, in another form.
@@ -959,6 +1026,38 @@ settled here either way, because it is the rank `interpolate-vars.js` already gi
 There is deliberately **no `vars.` or `env.` prefix**. A flow variable and an environment variable
 are the same kind of thing to whoever writes `{{tenantId}}`; which scope supplies it is a
 resolution detail, exactly as it is in a collection.
+
+**That rule is about `{{...}}`, and a script is not `{{...}}`.** The context object §8.2 hands a
+script carries every variable flat — `ctx.tenantId` resolves — *and* `ctx.env` and `ctx.vars` as two
+named objects beside them: `env` the host's environment tiers flattened in this section's order
+(`globalEnvironment`, `collectionVars`, `environment`, then `envVarOverrides` winning inside it), and
+`vars` the flow's own `vars:` after §7.3 resolved them. The two forms are additive rather than
+alternatives, so `ctx.env.signingSecret` and `ctx.signingSecret` reach the same value.
+
+They exist because a script is code and interpolation is substitution. A script that needs to know
+*where* a value came from — a signing helper that must read the environment and not a step's echo of
+it — has no way to say so through a flat bag, and every script written against `ctx.env.x` before
+this existed was reading `undefined`. Interpolation has the opposite problem and keeps the opposite
+answer: `{{env.x}}` is not a reference, because a person writing `{{tenantId}}` in a body is not
+choosing a tier.
+
+**The two are disjoint, and that is a decision.** `ctx.env` holds the host's four environment tiers
+and nothing else; `ctx.vars` holds the flow's own `vars:` and nothing else. Neither includes the
+other, and neither includes the run state of the namespaces below. The alternative — `ctx.env`
+meaning "everything a `{{...}}` would find" — would make the two objects two names for almost the
+same bag, and would take away the only question they exist to answer: a signing helper asking for
+`ctx.env.signingSecret` is asking for the *environment's* value, not for whatever last wrote that
+name. The flat spread is still there for the reader who does not care which.
+
+The two names sit *above* the flat spread, so the documented forms always resolve — and a variable
+literally named `env` or `vars` is therefore shadowed inside a script and reachable only through
+`{{...}}`. `bru flow validate` warns on both as `shadowed-reserved-name` (§14.3), with a message
+naming what the script sees instead: they are not namespaces in the table above — `{{env}}` and
+`{{vars}}` resolve to the variable, since interpolation has no tier prefix — so the warning has to
+say which half of the format shadows it. A variable named for one of the *table's* namespaces is
+shadowed everywhere and warned about for that reason; one named `env` or `vars` works in a request
+and is invisible to every script that would read it, which is the case worth catching, because the
+script compiles, runs, and reads the wrong object.
 
 **Engine-produced state is namespaced**, because it is a lookup into run state rather than a
 variable, and because a bare name could be shadowed by a user's:
@@ -1148,6 +1247,20 @@ teammate's branch runs on your machine with your credentials, and `file: ../../.
 would be read and sent. §14.4's redaction cannot help — a file's contents have no secret-variable
 provenance to trace.
 
+**The collection's proxy and client-certificate configuration may be written as `{{variables}}`,
+and they resolve against the step's own scope.** A `proxy.hostname`, a certificate's `domain`,
+`certFilePath`, `keyFilePath` or `pfxFilePath`, and a `passphrase` are all fields Bruno already
+interpolates for a single request; a flow's step gets the same treatment, per request, from the
+variables that step resolved — §7.3's chain, this iteration's `vars:`, and the namespaces. That is
+what `StepContext.variables` (§13.2) exists for: the request the engine hands over is already
+interpolated, and a host that had only the request would have to rebuild the chain from
+`RunOptions.variables` and would get a different answer than the request did. Both hosts pass it into
+the interpolation their own request path already performs — `bru flow run` through
+`interpolateObject` over the same two fields `bru run` uses, the app through `configureRequest`'s
+`runtimeVariables` — so neither writes a second implementation to drift from the first. A proxy or a
+certificate path naming `{{process.env.*}}` is how a CI machine points a flow at its own egress
+without editing the collection.
+
 **The engine does not touch `fs`.** Reads go through an injected port alongside `ExecuteRequest`
 (§13.2), so each host keeps its own path handling and conformance scenarios stub fixtures instead of
 writing them to disk. The same holds for the one thing a run *writes* — capture (§14.5) goes through
@@ -1303,9 +1416,16 @@ request uses, because that is a flow semantic — and if it were left to the hos
 could disagree about whether iteration two is a fresh session, which is exactly the divergence goal 4
 exists to prevent.
 
-Cookies set before a run — a collection's stored cookies — seed the jar as they do for a single
-request today. `Cookie` and `Set-Cookie` remain on §14.4's redaction denylist wherever they are
-reported.
+**Cookies set before a run seed the jar in the app, and under `bru` the jar starts empty.** That is
+the hosts' own difference showing through rather than a flow semantic: the app has a process-wide
+jar that the whole session shares, and a flow's jar is created by copying it — the same thing a
+single request in the app does today — so a session established by clicking through a collection is
+there when a flow runs. `bru flow run` has no such standing jar to copy: `bru run` keeps one only
+for the length of an invocation, and a flow run therefore opens each of its jars empty and fills it
+from the responses of its own steps. A flow that needs a session under both hosts logs in as a step,
+which is what §12's login sub-flow exists for. The engine decides which jar in either case; only
+what a new jar starts with differs. `Cookie` and `Set-Cookie` remain on §14.4's redaction denylist
+wherever they are reported.
 
 ---
 
@@ -1414,6 +1534,40 @@ a path:
 Scripts run in the **existing bruno-js sandbox** — QuickJS in `safe` mode, `node:vm` in `developer`
 mode, honoring the collection's `securityConfig`. Flows introduce no new execution environment and
 no new security posture.
+
+**What each host actually selects.** `bru flow run` takes `--sandbox <safe|developer>`, defaulting
+to `safe` — `bru run`'s own option: the same flag, the same two values, the same default. Two flags
+spelling their modes differently would quietly stop §8.2's promise from being true, since that
+promise is that a flow script gets the sandbox a plain request in the same collection would. **A
+third value is refused** (a usage error, §14.2), which is the one place the flow flag is stricter
+than `bru run`'s: there, anything that is not `safe` is `developer`, so `--sandbox develper` runs a
+request's scripts unsandboxed. The parity promise is about the two sandboxes a request can actually
+be given, not about what a misspelling should do, and a typo that escalates is the failure direction
+this section exists to rule out.
+
+In the app, `bruno-electron` reads the collection's `securityConfig` exactly as the request path
+does: QuickJS unless that collection is in `developer` mode. **A workspace-scoped flow has no
+collection, and therefore defaults to `safe`.** `jsSandboxMode` is a collection's setting and a
+workspace-scoped flow has no collection by construction, so the absent answer has to mean something
+— and the only safe reading is the one `bru run` already makes and the one a collection gets when
+nobody has chosen. Keying the gate on whether a collection root exists made the absence mean
+`developer` instead, which handed `node:vm` to precisely the flow the app can least attribute to a
+collection's own decision. **Only a collection that chose `developer` reaches `node:vm`**, in either
+host.
+
+**A flow script must return a value, and bruno-js's own QuickJS entry point discards one.** It
+disposes the resolved handle without reading it, because a request script's product is the mutations
+it made to `req`/`bru` rather than its result — while every one of §8.2's four positions *is* its
+result. So the fork adds one runner (`@usebruno/js`'s `src/fork/quickjs-value-runner`) that evaluates
+the source as an expression, calls it with the marshalled arguments, and dumps the settled value back
+out. It also drives the sandbox's job queue itself: the shared build never progresses a pending
+promise on its own, and the app's own closure only gets away with that because every wrapped script
+opens on an `await bru.sleep(0)` whose host-bridged resolution drains the queue as a side effect. A
+value-returning script has no such shim to open on.
+
+It is a sibling of the existing runner in a fork-owned directory rather than an edit to it, and it
+loads the same `quickjs-emscripten` context and console shim — so "no new execution environment"
+stays literally true.
 
 **Evaluation is an injected port, not a direct call.** Each host already decides how it selects a
 runtime, and the two decide it differently: `bruno-electron/src/ipc/network/index.js` derives it from
@@ -1544,10 +1698,19 @@ Connector-supplied outputs are declarations like any other: they satisfy §8.4's
 are drawn as graph edges, and their paths are checked against the operation's response schema by
 `bru flow validate`.
 
+**`unused-output` (§14.3) warns on a step's own `outputs:` block only**, never on an output a
+connector file supplied. A connector entry is a menu, offered to every flow that targets the
+operation, and most flows read a few of its entries — reading it partially is the design. Warning
+there would put a warning on every correct flow in the collection and would push authors to redeclare
+inline what the connector file exists to state once. The typo the warning is for is an output the
+author wrote in *this* step and nothing reads, and that is exactly what the check now measures.
+
 **The cost is locality.** A step's available outputs are no longer visible by reading the step,
 which cuts against §8's premise that data paths are explicit. That is why `bru flow validate` and
 `--dry-run` both print each step's *resolved* outputs and where each was declared — the
-information stays discoverable even though it is no longer inline.
+information stays discoverable even though it is no longer inline. [002](./002-api-flows-ui.md) §5.1
+answers it in the app instead, with a `⧉` marker on a node whose outputs did not all come from the
+step.
 
 ### 8.6 A script library
 
@@ -1915,6 +2078,11 @@ visibility rule adapted to slots, and it does the same job: it guarantees every 
 terminal outcome before the read happens, so a read is never a race against a branch still in
 flight. Violations are validation errors, not runtime surprises.
 
+**A library flow's `exports:` may name a slot, and that read asks for nothing.** An export is
+resolved after the schedule has ended (§12.1), so every writer has reached a terminal outcome by
+construction and the rule above has nothing left to check — which is what lets two branches that
+exclude each other publish their value to a caller.
+
 **A slot whose writers are alternatives asks for less, and says so.** The rule above is written for a
 *join*: several branches may run, and the reader sits below all of them. The other shape is branches
 that exclude each other — one produces the value and the steps after it *on that same branch* consume
@@ -2242,6 +2410,31 @@ Without this, a data-driven flow can only assert what is identical across every 
 exactly the assertion worth least. Branching on the row does not substitute: `when:` is step-level,
 so it gates the whole request rather than one expectation, and it cannot express "this field equals
 *this row's* value" for more than two rows without a step per row.
+
+**`req.*` is the request as it went out**, and it carries four fields:
+
+| Field | What it holds |
+|---|---|
+| `req.method` | the operation's method |
+| `req.url` | the resolved URL, with the serialized query string on it |
+| `req.headers` | the headers the transport reports having sent, falling back to the materialized ones where it reports none; **names are lower-cased**, as `steps.<id>.headers` are (§8.3) |
+| `req.body` | the JSON or text body, or a `urlencoded` body's fields as an object; **absent** for multipart and binary bodies (§7.5), which have no single value to compare against |
+
+The lower-casing is the same rule §8.3 applies to a response's headers, and for the same reason:
+HTTP header names are case-insensitive, and nothing tells a flow which case anything chose. A step
+writes `Authorization`, an auth profile writes `authorization`, a proxy adds `X-Forwarded-For` in
+whichever case it likes, and an assertion has to address one of them without knowing which. So
+`req.headers.authorization` reads whatever the host spelled it, and one spelling addresses a header
+whichever side wrote it. Only the keys are touched — a value is reported exactly as it was given.
+
+It is there because §7.1 through §7.3 make a request *derived* — a spec seed, a binding's defaults, a
+step's overrides, then an interpolation pass — so what a step actually sent is not readable off the
+step. An assertion that a signing profile put its header on, or that an interpolated path id came out
+as the earlier step's value, has no other operand; the alternative is opening a capture after the
+fact, which is a person's answer and not a test's.
+
+It is available to assertions and not to `when:`, for the reason `res.*` is not: neither exists before
+the request is built (§9.3, `condition-reads-response`).
 
 §8.4's visibility rule applies, with one addition: **a step's assertions may reference that step's
 own outputs.** Outputs are extracted before assertions are evaluated — which §11.2 already requires,
@@ -2600,6 +2793,13 @@ elapses the run aborts unconditionally, whatever is still pending. A second inte
 sufficient bound on its own: an unattended CI run has nobody to send one, so an unbounded cleanup
 phase would hang exactly where hanging is worst.
 
+**`run:cleanup` (§13.2) is emitted only when there is cleanup to do.** The event announces a state a
+host displays — from here until the deadline, only cleanup steps run — so the engine emits it when a
+flow still in flight holds a step whose `depends` accepts `cancelled`, and otherwise takes a stop
+straight to `run:end`. A run with no such step enters no window worth naming, and announcing one
+would leave the app showing a cleanup phase for up to `cleanupGrace` during which nothing was ever
+going to run. It goes out once, the first time the run acts on a stop, carrying the deadline.
+
 #### A whole-run budget
 
 **`config.maxRunDuration` bounds the entire run**, all dataset iterations included, and is off unless
@@ -2668,6 +2868,38 @@ steps:
       token: data.access_token
       userId: data.user.id
 ```
+
+**An export names a step's output or a whole slot** — `steps.<step>.<output>`, or `shared.<slot>`
+for the value §9.1's slots carry:
+
+```yaml
+shared:
+  chargeId: { writers: any }        # two branches, either of which may produce it
+
+exports:
+  chargeId: shared.chargeId         # whichever one ran
+```
+
+Slots are exportable because **an export is resolved after the flow's schedule has ended**, with
+nothing left in flight. The topology question §9.1 asks of a reader inside the flow — can this read
+race a branch that has not finished — cannot arise at the boundary, and the last write in
+declaration order is the one that crosses it.
+
+Without this root the value two exclusive branches share cannot leave the flow at all. Only one of
+them runs, so no step descends from both and there is no output to name; the alternative is a join
+step that exists solely to republish the slot, which means a request sent for no reason other than
+to give an export something to point at.
+
+**A slot is named whole: `shared.<slot>` takes no sub-path.** A reference that misses *inside* a
+value that is present leaves the placeholder in place (§11.2) — evidence its author can see, within
+the flow that wrote it, and a `{{shared.a.b}}` string arriving at a caller as a value across the
+boundary. An output already selects into a response where the shape is known, which is where a path
+belongs.
+
+An unwritten slot exports `''`, per §11.2's rule for the root, where an export whose step produced
+nothing is absent and skips the reader at the call site. The two rules cross the boundary unchanged
+rather than being reconciled at it: absence means a step did not do what it was for, and empty means
+a value the run knows is empty.
 
 ### 12.2 Invoking
 
@@ -2855,6 +3087,16 @@ No cycle is introduced: `cli` and `electron` are top consumers and already depen
 The engine owns graph scheduling, materialization, connectors, sub-flow resolution, assertions,
 retry, and reporting.
 
+**It also owns the stored-auth → `AuthProfile` mapping**, exported as `collectionAuthProfile`
+(§13.2). Bruno stores a collection's auth nested — `{ mode: 'bearer', bearer: { token } }` — while a
+profile's fields are authored flat, and §6.4's implicit `collection` profile is the second shape read
+off the first. *Finding* the block is host knowledge: which file holds it, in which of the two
+on-disk formats. Turning it into a profile is not, and a mapping each host owned a copy of is a
+mapping `bru flow run` and the app can disagree about — a flow authenticating one way under the CLI
+and another in the app is exactly the divergence goal 4 exists to prevent. So each host reads its own
+`collection.bru` or `opencollection.yml` and hands the block to the engine's function; neither
+translates the shape.
+
 **It reports through its return value and its events, and writes to no console.** §13.2's ports are
 the whole of what it reaches for, and stdout is not among them: the CLI owns its output (§14.7) and
 is the half a reporter is parsed from, and in the app the same stream is an Electron main process
@@ -2934,6 +3176,15 @@ is a flow semantic and hosts that answered it independently would diverge.
 are drivable in tests without global timer patching. It is the only reason a conformance run of a
 30-attempt poll costs no wall-clock time.
 
+**§11.3's cleanup deadline is a real timer, and deliberately not the `Clock`.** Both of the clock's
+readers — a retry delay and the run budget — are read where the scheduler already passes through, so
+reading the injected clock is enough to know the time has come. The cleanup deadline is not like
+that: it has to abort a promise the *host* owns, at a moment when no engine code is running at all,
+so there is nothing to read a clock from. It is therefore a `setTimeout`, cleared when the request
+settles. What still comes from the clock is `stoppedAt` and the grace value — so the deadline
+`run:cleanup` announces and the deadline that fires are computed from one value, and a test driving
+the clock still controls when the window opens and how wide it is.
+
 #### The types the ports name
 
 The signatures above are the contract two hosts implement independently, so every type in them is
@@ -2966,10 +3217,19 @@ type StepContext = FlowContext & {
   iteration: number;                   // 0-based; always present — see below
   attempt: number;                     // 1-based, per §11.1
   cookieJar: CookieJarHandle;
+  variables: Vars;                     // §7.3's chain resolved for this step — see below
   timeoutMs?: number;                  // the step's per-attempt `timeout` (§11.1)
   signal: AbortSignal;                 // the attempt's — aborts on timeout, maxDuration, or the run's
 };
 ```
+
+**`variables` is what a host interpolates *around* the request with.** The request itself arrives
+already interpolated, so this is for §7.4's proxy and client-certificate configuration — fields both
+hosts' request paths interpolate for a single request and must interpolate identically for a step. It
+is one map: §7.3's chain flattened, this iteration's `vars:`, and the namespaces (`steps`, `row`,
+`params`, `shared`, `flow`, `pre`, `process`) as keys of their own. Handing over the tiers instead
+would make each host rebuild the chain and reach a different answer than the request did, which is
+§13.1's divergence arriving one field lower down.
 
 **`redactHeaders` crosses so that a host can obey §14.4 rather than approximate it.** The engine
 applies the policy to everything *it* emits, but a host may report a request on a surface of its own
@@ -3125,13 +3385,23 @@ not the two functions that run a flow.
 **The count is of what needs ports, because that is what the boundary is about.** Everything else
 the package exports is a pure function over text or paths and carries none of §13.2's risk: the
 reads that take a flow's source (`readFlowMeta`, `readFlowProperties`, `flowIdentity`, §14.1's
-`flowSearchTerms` / `flowMatches`, and §14.3b's `readFlowSummary`), the format's one writer (`writeFlowProperties`, which returns
-text rather than writing it, for §5.1's reason), and the path and policy helpers §14.5 and §14.8.5
-export so a host never spells a capture path itself (`resolveCaptureRoot`,
-`resolveSuiteDirectory`, `createRedactor`). Two port-taking exports write rather than read and are
-named where the files they write are specified — `ensureCaptureIgnored` and `writeSuiteManifest`
-(§14.5) — which is the whole of the surface, and the reason to list it here is that a boundary
-nobody can enumerate is one nothing can be re-checked against.
+`flowSearchTerms` / `flowMatches`, and §14.3b's `readFlowSummary`); the format's two writers,
+`writeFlowProperties(text, properties)`, which edits an existing document, and
+`writeNewFlowDocument({ properties, apis })`, which returns a whole one — both returning text
+rather than writing it, for §5.1's reason; §6.4's `collectionAuthProfile`; the schema
+`bru flow schema` emits (`flowSchema(version)`, `FLOW_VERSIONS`, `CURRENT_FLOW_VERSION`, §5.4); and
+the path and policy helpers §14.5 and §14.8.5 export so a host never spells a capture path itself
+(`resolveCaptureRoot`, `resolveSuiteDirectory`, `createRedactor`). Two port-taking exports write
+rather than read and are named where the files they write are specified — `ensureCaptureIgnored` and
+`writeSuiteManifest` (§14.5) — which is the whole of the surface, and the reason to list it here is
+that a boundary nobody can enumerate is one nothing can be re-checked against.
+
+**The format has one author.** `writeNewFlowDocument` is the third of those entries for the same
+reason the second exists: [002](./002-api-flows-ui.md) §4.1c's create dialog needs a whole document,
+and a host that assembled one out of strings would be a second implementation of §5.2's structure,
+diverging from this one the first time either changed. The schema is exported for the matching
+reason — `bru flow schema` emits what this build actually validates against, so an editor and
+`bru flow validate` cannot disagree about a version.
 
 ```ts
 declare function runFlow(options: RunOptions): Promise<RunResult>;
@@ -3160,6 +3430,8 @@ type RunOptions = {
   };
 
   params?: Vars;                       // --param, for a library flow (§12.5)
+  authProfiles?: Record<string, AuthProfile>;   // §6.4's implicit `collection` profile — see below
+  secrets?: string[];                  // the host's `secret: true` values, by value (§14.4)
   origin?: RunOrigin;                  // who started this run and against what — recorded, never consulted
   overrides?: {
     concurrency?: number;
@@ -3174,6 +3446,40 @@ type RunOptions = {
   onEvent?: (event: FlowEvent) => void;
 };
 ```
+
+**`authProfiles` is the profiles only a host can declare** — in practice the one §6.4 calls
+`collection`:
+
+```ts
+type AuthProfile = {
+  fields: Record<string, unknown>;     // authored flat: `mode:` beside that mode's own fields
+  scope?: () => Scope;                 // engine-internal; absent on a host-supplied profile
+};
+
+declare function collectionAuthProfile(auth: unknown): AuthProfile;
+```
+
+`fields` is the flat authored shape a flow's own `authProfiles:` block uses, not Bruno's nested
+`Auth` — the engine nests it when it materializes the request (§6.4), so a host hands over what it
+read and writes no adapter. `collectionAuthProfile` is the reader for that: it takes a collection's
+stored auth block in either on-disk format and returns the profile, answering `{ mode: 'none' }` for
+a collection whose auth is absent, `none`, `inherit`, or not an auth block at all. It never throws,
+because a flow that never says `auth: collection` must not start caring whether `collection.bru`
+parses.
+
+`scope` is why the type is not simply a map of fields. A profile declared by a flow carries the
+scope of *that* flow, so §6.4's lexical resolution holds through a sub-flow: an inherited
+`{{steps.auth.token}}` reads the declaring flow's step state and cannot be used to reach the
+parent's data indirectly (§12.3). A host-supplied profile has no declaring flow and therefore no
+scope, and resolves in the using step's — which is what makes `{{authToken}}` inside a collection's
+bearer token read the run's variables. Hosts never construct the field; it is listed because the
+type is the contract and a field a host can see is a field it will otherwise guess at.
+
+**`secrets` is by value, not by name.** §14.4 masks a value wherever it subsequently appears, so what
+crosses is the set of values a host knows to be secret — its `secret: true` environment entries. The
+engine adds the credentials it resolves itself (§6.4) and §12.5's `secret:` params; this is the tier
+only a host can see. Names would not do: a secret extracted into an output, published into a slot
+(§9.1) or echoed back in an error body is caught by value without anyone predicting where it travels.
 
 **Capture is an override rather than a port decision.** §14.5 gives the CLI `--no-capture` and
 `--capture-dir` and [002](./002-api-flows-ui.md) §7.2 puts the same switch in the app's run panel, so
@@ -3210,6 +3516,7 @@ type RunResult = {
   iterations: IterationResult[];
   decidedBy?: string[];                // §14.6 — the steps the verdict fell on, deduped
   summary: { total: number; passed: number; failed: number; skipped: number; cancelled: number };
+  duration: number;                    // whole-run ms, `run:start` to `run:end`, on the injected clock
   diagnostics: Diagnostic[];           // validation warnings that did not stop the run
   captureDir?: string;
 };
@@ -3316,11 +3623,23 @@ iteration order, and a cancelled run names nothing — the interrupt decided it,
 short did nothing to be named for. §14.7's console output and [002](./002-api-flows-ui.md) §8.4's run
 summary both read it.
 
+**`duration` is reported rather than left to a consumer to compute**, because no consumer can compute
+it correctly. `StepResult.durationMs` is per step and does not sum into a run's elapsed time under
+`concurrency > 1`, and a host that timed `runFlow` itself would be timing its own IPC and rendering
+along with the run. It is measured on the injected `Clock` — `run:start` to `run:end`, the cleanup
+window included — so a run under fake timers and a real one report on the same basis. §14.5 writes the
+whole `RunResult` into `summary.json`, which is what lets a *stored* run show an elapsed time
+([002](./002-api-flows-ui.md) §10) rather than leaving the reader with two timestamps to subtract.
+
 **Sub-flow steps are ordinary members of a flat `steps[]`.** A `uses:` step produces its own
 `StepResult` with `kind: 'subflow'`, and each internal step produces one alongside it with a
 namespaced id, in the same array — not nested inside the container. `step:start` and `step:end` fire
 for internal steps exactly as for top-level ones, so a host can render a sub-flow expanding while it
-runs rather than only after the fact ([002](./002-api-flows-ui.md) §5.4, 002-C U1.8). `kind` exists
+runs rather than only after the fact ([002](./002-api-flows-ui.md) §5.4, 002-C U1.8). A container's
+`step:start` also carries **`steps`**, the number of steps in the flow it invokes: the sub-flow is
+read before the step is announced, so a collapsed line can say how much of the run stands behind it
+(§14.7). It is absent on a `step:start` for an ordinary step, and on one from an engine older than
+the field. `kind` exists
 so no consumer has to parse `/` out of an id to tell a container from a leaf, and so the CLI can
 collapse a sub-flow to one line without `--verbose` (§14.7) while the app expands it. A container's
 `status` is derived from its internals by the normal §11.2 rules; its `attempts` is always 1, since
@@ -3434,10 +3753,12 @@ type FlowEvent =
                                params: Record<string, unknown> }
   | { type: 'iteration:start'; index: number; row?: Vars }
   | { type: 'iteration:vars';  index: number; vars: Vars }
-  | { type: 'step:start';      id: string; index: number; operation?: string }
+  | { type: 'step:start';      id: string; index: number; operation?: string; steps?: number }
   | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
-  | { type: 'step:end';        id: string; index: number; result: StepResult }
+  | { type: 'step:end';        id: string; index: number; result: StepResult;
+                               preview?: { request?: string; response?: string } }
   | { type: 'iteration:end';   index: number; status: IterationResult['status'] }
+  | { type: 'run:cleanup';     runId: string; deadline: number }
   | { type: 'run:end';         result: RunResult };
 ```
 
@@ -3499,11 +3820,31 @@ evaluation, so a consumer that re-resolved would display an id no step ever sent
 `vars:` only — a sub-flow's are its internals (§12.3), and a stream that carried them would let a
 caller read what §12.3 says it cannot.
 
-**Events are small and structured-clone-safe.** They carry ids, statuses and durations; bodies and
-uploaded files are not included, only the `capturePath` that holds them (§14.5). In the app the
-engine runs in the Electron main process and the UI in the renderer, so every event crosses IPC —
-attaching response bodies would put each payload through serialization twice for data the UI can
-fetch when a step is opened.
+**Events are small and structured-clone-safe.** They carry ids, statuses and durations; a full body or
+an uploaded file is never one of them, and the `capturePath` a step reports is what holds those
+(§14.5). In the app the engine runs in the Electron main process and the UI in the renderer, so every
+event crosses IPC — attaching response bodies would put each payload through serialization twice for
+data the UI can fetch when a step is opened.
+
+**`step:end.preview` is the one exception, and it is bounded rather than unbounded.** It carries the
+step's request and response as two already-rendered strings, masked by §14.4 and then cut to
+`config.capturePreviewBytes` (§5.2, 8192 by default) measured in **UTF-8 bytes**, so a multi-byte
+character at the boundary cannot be split into mojibake. It exists because §14.7's `--verbose` prints
+a preview beside each step *as the step completes*, and the only other source is the attempt file —
+which a `--no-capture` run does not write, and which a consumer would have to read back off disk
+mid-run to print a line it already had the data for. Masking happens before the cut, not after, so a
+secret can never be preserved by being sliced in half. The attempt file itself stays **untruncated**
+(§14.5): the preview is the reporter's copy, and the artifact is the record.
+
+**`run:cleanup` says the run has stopped and is finishing its cleanup steps**, carrying the `deadline`
+— an absolute time on the engine's `Clock` — that `config.cleanupGrace` sets (§11.3). It is the event
+[002](./002-api-flows-ui.md) §7.1's run control reads to show that state instead of appearing hung,
+and the deadline rather than a remaining duration because an event that crossed IPC carrying "24
+seconds left" would be stale by however long the crossing took. It is emitted at most once, the first
+time the scheduler acts on the stop rather than from the abort listener — that listener can fire after
+`run:end`, and `run:end` is last. **And only when a flow still in flight holds a step whose `depends`
+accepts `cancelled`** (§11.3): with nothing to run in the window, a stop goes straight to `run:end`
+rather than announcing a phase in which nothing happens.
 
 Ordering is guaranteed: `step:start` precedes its `step:end`, both sit inside their
 `iteration:start`/`iteration:end`, and `run:end` is last. Under `concurrency > 1` events from
@@ -3570,10 +3911,12 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `eslint.config.js` | add the package to `mainLintFiles` | 1 |
 | `.gitignore` | ignore `.bruno-runs/` (§14.5) | 1 |
 | `packages/bruno-cli/package.json` | add engine dependency | 1 |
+| `packages/bruno-cli/package.json` | add the `tough-cookie` dependency the per-run jars need (§7.6) | 1 |
 | `packages/bruno-electron/package.json` | add engine dependency | 1 |
 | `packages/bruno-app/package.json` | add the graph-layout dependency ([002](./002-api-flows-ui.md) §5.2) | 1 |
 | `bruno-electron/src/index.js` | `require` + call `registerFlowIpc` | 2 |
 | `bruno-electron/src/index.js` | `await ipc/flow.shutdown()` in the `before-quit` chain (002 §4.2) | 1 |
+| `bruno-electron/src/ipc/openapi-sync.js` | one name in the existing `NODE_ENV=test` `_test` export block — `normalizeUrlPath`, for §6.1's shared corpus | 1 |
 | `bruno-app/jsconfig.json` | add the `fork/*` path alias | 1 |
 | `bruno-app/jest.config.js` | add `src/fork/jest.setup.js` to `setupFilesAfterEnv` | 1 |
 | `bruno-app/…/RequestTabPanel/index.js` | import + delegate to the fork pane registry | 2 |
@@ -3587,6 +3930,14 @@ re-check after every upstream merge, and a change that adds to it needs justifyi
 | `bruno-app/…/Devtools/Console/NetworkTab/index.js` | the same two lines, for the same selector | 2 |
 | `packages/bruno-cli/readme.md` | an `API Flows` section — the commands, the flag table and the exit codes (§14.1, §14.2) | 47 |
 | `readme.md` (root) | one clause pointing at the authoring guide | 1 |
+
+**The `tough-cookie` row is the second dependency line, and it is the rule from
+`.claude/rules/architecture.md` rather than a preference:** §7.6's per-run and per-iteration jars are
+the CLI's to build, `bru run` already resolves the package through `@usebruno/requests`, and reaching
+it through that sibling's export instead would be an import the CLI's own manifest does not declare —
+which resolves today only because workspace hoisting puts it there. One line in a dependency list is
+the cheapest row this table has, and the alternative is a latent break that surfaces as a broken
+install rather than as a conflict.
 
 **The counts include the `import` line**, which the first version of this table did not — every
 delegation needs one, and a manifest that undercounts by a third is not the thing to re-check a merge
@@ -3683,16 +4034,25 @@ paid once, the saving recurs at every merge.
 bru flow run <path...>        Run one or more flows (file, glob, or directory)
 bru flow validate <path...>   Static validation; sends no requests
 bru flow list [path...]       List the flows a run of the same paths would execute
-
-                              — not built —
 bru flow schema [--out <p>]   Emit the JSON Schema for the flow document (§5.4)
-                              --version <n> selects a format version; --editor adds editor settings
+                              --format-version <n> selects a format version
 ```
 
-`run`, `validate` and `list` are the three the command accepts; anything else is a usage error
-(§14.2). `schema` is marked for the reason §14.1's flags are: it is specified, it is argued for
-below (§5.4), and a reader who typed it and got a usage error should find that out here rather than
-from the shell.
+`run`, `validate`, `list` and `schema` are the four the command accepts; anything else is a usage
+error (§14.2).
+
+`schema` writes to stdout unless `--out` names a file, because the schema is only useful where the
+editor is told to look — usually `.bruno/flow.schema.json` beside the flows — and a redirection into
+a path an editor already watches is one shell idiom nobody should have to remember. A
+`--format-version` this build carries no schema for is a usage error naming the versions it does
+carry, rather than an empty file: the output is normally consumed by a tool that will not read
+stderr, so a truncated file is the failure this refuses to produce.
+
+**`--editor` was specified here and has been dropped.** It would have emitted a `.vscode` settings
+fragment alongside the schema — the `yaml.customTags` and `yaml.schemas` entries §5.4 shows. What it
+actually is is four lines of JSON for one editor, written once per workspace and then never again,
+against a flag the CLI would carry forever and would owe an answer for every other editor that asked.
+§5.4 keeps the snippet as a hand-written example, which is where a one-time setup step belongs.
 
 ### 14.1 `bru flow run`
 
@@ -3715,6 +4075,7 @@ from the shell.
 | `--reporter-json [<path>]` | Sugar for `--reporter json[=<path>]` |
 | `--reporter-html [<path>]` | Sugar for `--reporter html[=<path>]` |
 | `--reporter-option k=v` | Repeatable; passed to every reporter's `ReporterContext.options` (§14.8) |
+| `--sandbox <safe\|developer>` | Which sandbox flow scripts run in (§8.2). `bru run`'s own option; default `safe`; any other value is a usage error, where `bru run` would read it as `developer` |
 | `--strict` | Promote §14.3's warnings to errors (exit 2) |
 | `--verbose` / `--quiet` / `--silent` | Console detail level (§14.7) |
 | `--no-color` / `--no-unicode` | Disable ANSI colour or box-drawing glyphs (§14.7) |
@@ -3820,10 +4181,18 @@ reproducible across machines and filesystems.
 reflects the worst of the flows' final outcomes (§14.2). `--retries` re-runs only the flows that
 ran, so `--bail`'s short-circuit narrows that pass as well as this one.
 
-**Discovery** covers both scopes: `bru flow run` walks up for `bruno.json` and `workspace.yml` to
-locate the collection and workspace roots, then resolves paths against whichever contains them. A
-bare `bru flow run` with no path runs every non-library flow in the current collection, or in the
-workspace when invoked outside one.
+**Discovery** covers both scopes: `bru flow run` walks up for a collection root and for
+`workspace.yml`, then resolves paths against whichever contains them. **A collection root is a
+directory holding either `bruno.json` or `opencollection.yml`** — the same predicate `bru run` reads
+off `getCollectionFormat` to find a collection in either on-disk format, so a flow scopes to the same
+root a request in the same tree would. A bare `bru flow run` with no path runs every non-library flow
+in the current collection, or in the workspace when invoked outside one.
+
+**`bru flow run` supplies §6.4's implicit `collection` profile, exactly as the app does.** A
+collection-scoped run reads that collection's own auth out of its root file and hands it over as
+`RunOptions.authProfiles.collection`; a workspace-scoped run supplies nothing, and `auth: collection`
+there is `unknown-auth-profile`. The two hosts read the same files and use the same engine mapping
+(§13.1), so a flow authenticates identically under either.
 
 **`--global-env` resolves** against the workspace's environments, and nothing else: it is the only
 environment file the CLI selects, so a collection-scoped flow run under `bru` has an empty
@@ -3839,17 +4208,25 @@ is reported offline rather than as a 400 from the API. It also prints each
 step's **resolved outputs and where each was declared** — inline, collection connector file, or
 workspace connector file — which is what keeps §8.5's shared declarations discoverable.
 
+**Until it lands, `bru flow validate` is the surface that prints that listing** (§14.3). The two
+halves of `--dry-run` are not equally blocked: printing an effective *request* needs a run mode that
+stops before `ExecuteRequest` and an answer to §18's `{{steps.*}}` question, while the outputs listing
+needs neither — `resolveOutputs` is a static resolution over the connector files and the step's own
+block, which is exactly what a command that sends nothing already does. So the discoverability §8.5
+trades locality for does not wait for v2; only the request preview does.
+
 ### 14.2 Exit codes
 
-Shared by `run`, `validate` and `list`, each reaching the subset it can produce — `validate` never
-returns `1`, since it sends nothing, and `list` returns only `0` or `3` (§14.3b):
+Shared by all four actions, each reaching the subset it can produce — `validate` never returns `1`,
+since it sends nothing; `list` returns only `0` or `3` (§14.3b); and `schema` returns `0` or `3`, the
+`3` being a `--format-version` this build has no schema for or an `--out` path it could not write:
 
 | Code | Meaning |
 |---|---|
 | `0` | All flows passed (or validated clean) |
 | `1` | A step, assertion, or schema validation failed |
 | `2` | The flow did not run — parse error, cycle, unresolved operation, visibility violation, or a run refused before it started; also warnings under `--strict` |
-| `3` | Usage error — bad flags, no flows matched |
+| `3` | Usage error — bad flags, a value outside a flag's choices, an action the command does not have, no flows matched |
 | `4` | Run cancelled — Ctrl-C, `SIGTERM`, CI timeout (§11.3) |
 
 Separating `1` from `2` matters in CI: a broken flow file is an authoring problem, not a failing
@@ -3973,19 +4350,26 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
 - Warning: an unknown property — flagged for the author, not fatal, so a file from a newer Bruno
   still runs (§5.4)
 - Every `apis` alias resolves; every `operation` resolves unambiguously
-- Every inline `body` / `query` / `headers` / `pathParams` override names a field that exists in
-  the operation's schema, with a did-you-mean suggestion on a near miss (§7.1)
-- Every `uses:` target resolves; the cross-file graph is acyclic
+- Every inline `body` / `query` / `pathParams` override names a field that exists in the operation's
+  schema, with a did-you-mean suggestion on a near miss (§7.1). **`headers:` is deliberately not
+  checked**: OpenAPI documents declare header parameters rarely and never exhaustively, so the rule
+  would fire on correct flows (§7.1)
+- Every `uses:` target resolves and stays **within the scope root** — `unresolved-subflow` for a
+  target that did not read, `path-outside-scope` for one that escaped; the cross-file graph is acyclic
 - Every `required` param is satisfied at each call site, and **every key in `with:` names a declared
   param** — `unknown-param`, with a did-you-mean suggestion. An argument the sub-flow does not
   declare is otherwise dropped in silence and the sub-flow runs on its default, so the failure
   surfaces far from the typo that caused it
 - A `uses:` step carries only the fields §12.4 permits; `dataset:` never appears in a sub-flow
-- Every `exports` entry references a real internal step output
+- Every `exports` entry references a real internal step output, or a declared slot named whole —
+  `shared.<slot>` with a sub-path is `unknown-export`, since a miss inside a slot's value
+  crosses the boundary as a placeholder string rather than as an absence (§12.1)
 - Every connector-file entry resolves to a real operation, and its paths check against that
   operation's response schema (§8.5)
-- Every `auth:` reference names a declared profile; a workspace-scoped flow never relies on the
-  implicit `collection` profile
+- Every `auth:` reference names a declared profile, **or is `collection` in a scope that has a
+  collection root** — a scope with a collection has one to inherit from, and whether the host passed
+  the profile is a run-time fact the run reports. A workspace-only scope has no collection at all, so
+  `auth: collection` there is `unknown-auth-profile` before anything is sent (§6.4)
 - Warning: an `apis` binding whose `color` is not `#rgb` or `#rrggbb` (§6.2) — a viewer falls back
   to its unpainted default there, which is what a binding with no colour looks like, so nothing else
   would tell the author their typo from a colour they never declared
@@ -4022,12 +4406,19 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   required `format: binary` part is supplied (§7.5)
 - No `vars:` entry references `{{steps.*}}` or `{{shared.*}}`, neither of which exists when `vars:`
   are evaluated (§7.3)
-- No step explicitly sets a field its resolved signing-mode profile (`awsv4`, `digest`, `ntlm`,
-  `wsse`) would compute — a partial override invalidates the signature (§6.4)
+- Warning: a step's own `headers:` sets a header its resolved signing-mode profile computes —
+  `awsv4`, `digest`, `ntlm`, `oauth1`, `akamai-edgegrid` or `wsse` (§6.4). A warning rather than an
+  error, because §6.4's per-field override is the legitimate case for every mode that computes
+  nothing
 - `!...` appears only where a value can be dropped — inside `body` / `query` / `headers` /
   `pathParams` — and never as a step or top-level key (§7.2)
-- Warnings: undeclared `.body` dependencies (§8.3), shadowed reserved namespaces (§7.3),
-  unreachable steps, outputs or exports declared but never consumed
+- Warnings: undeclared `.body` dependencies (§8.3), shadowed reserved namespaces and the two script
+  names `env` and `vars` (§7.3), unreachable steps, and declarations nothing consumes — an output a
+  step declares **in its own `outputs:` block** and nothing reads (never a connector-supplied one,
+  §8.5, and never a sub-flow's `exports:` entry, §12.2). Both exceptions are the one rule: a
+  declaration written once for every consumer is not evidence against the consumer that reads part
+  of it, and a check that fires on almost every call site spends the attention the rest of this list
+  is asking for
 - Warning: a flow declaring a `required` param with no `default` that is not marked
   `meta.library: true` (§12.5) — the flag was probably forgotten, and a glob run will report a
   missing-param failure that says nothing about the cause. A warning, because taking a required
@@ -4037,6 +4428,13 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
 - Warning: a slot read on a path carrying no writer, or a declared slot never written or never
   read. Warnings rather than errors, because an empty slot is a legal outcome (§11.2) — the check
   catches the typo case without outlawing a slot only some runs populate
+
+**`bru flow validate` also prints the resolved-outputs listing** — per step, the outputs the engine
+resolved and the file each was declared in (§8.5). It belongs on the command that sends nothing,
+because that is what the listing is: a static resolution over the connector files and the step's own
+block, with no response involved. `--dry-run` prints it too when it lands (§14.1, §19.1); until then
+this is where §8.5's locality trade is paid back, and putting it behind a command that does not exist
+yet would have left it unpaid.
 
 #### The codes a check emits
 
@@ -4054,6 +4452,8 @@ ever tell the author.
 | Code | Meaning |
 |---|---|
 | `parse-error` | The document did not parse. Nothing below is checked: a file that did not parse has no model to check (§5.4) |
+| `schema-violation` | The document does not satisfy §5.4's schema for its `version:` — a field of the wrong type, a value outside an enum, or a `version:` this build ships no schema for. Reported rather than fatal: a document that parsed still has a graph and a set of references worth checking |
+| `unknown-property` *(warning)* | A key the format does not have, with a did-you-mean on a near miss. A warning so an older Bruno still runs a file a newer one wrote (§5.4) |
 | `invalid-step-id` | A step id is not an identifier (§5.3); the message gives the underscored form |
 | `unknown-dependency` | `depends:` names a step the flow does not have (§9.1) |
 | `cyclic-dependency` | Steps depend on one another in a cycle, or a `uses:` target is already on the call path (§9.1, §12.4) |
@@ -4061,7 +4461,8 @@ ever tell the author.
 | `operation-and-uses` | A step declares both `operation:` and `uses:` (§12.4) |
 | `unresolved-alias` | An `apis:` document did not load, or a step names an alias nothing binds (§6.2) |
 | `unknown-operation` | The operation id is not in the bound document (§6.1) |
-| `unknown-auth-profile` | `auth:` names a profile no `authProfiles:` block declares (§6.4) |
+| `unknown-auth-profile` | `auth:` names a profile no `authProfiles:` block declares — and, for `collection`, a scope with no collection root to inherit one from (§6.4) |
+| `signed-header-override` *(warning)* | A step's own `headers:` sets a header its resolved signing-mode profile computes — `awsv4`, `digest`, `ntlm`, `oauth1`, `akamai-edgegrid` or `wsse` (§6.4) |
 | `unknown-step-reference` | A `{{steps.*}}` reference names a step the flow does not have (§8.4) |
 | `non-ancestor-reference` | A `{{steps.*}}` reference names a step that is not a transitive ancestor of the one reading it (§8.4) |
 | `invalid-var-reference` | A `vars:` entry references a step or a slot, neither of which exists when `vars:` are evaluated (§7.3) |
@@ -4082,6 +4483,38 @@ ever tell the author.
 | `unknown-stage-step` *(warning)* | A `stages:` boundary begins at a step the flow does not have (§5.5) |
 | `stage-boundary-order` *(warning)* | A boundary does not come after the one before it, so it covers no run of steps (§5.5) |
 | `stage-out-of-order` *(warning)* | A boundary cannot be drawn, because a step listed above it does not run before it (§5.5) |
+| `duplicate-step-id` | Two steps share an id (§5.3); the second overwrites the first's state and captures |
+| `invalid-depends` | A `depends:` mapping does not carry exactly one non-empty `all:` or `any:` — an empty one is an unconditional root (§9.1) |
+| `invalid-dependency-status` | A `depends.status` names something other than `success` / `failed` / `skipped` / `cancelled` (§9.1) |
+| `unreachable-step` *(warning)* | Nothing can make the step eligible: what it depends on is in a cycle or is not there (§9.1) |
+| `unknown-output-reference` | A `{{steps.*}}` reference names an output the ancestor does not produce (§8.1, §8.3) |
+| `invalid-shared-entry` | A step's `shared:` publishes into an undeclared slot, or publishes an output it does not produce (§9.1) |
+| `slot-without-writer` *(warning)* | A declared slot no step publishes into, so every read of it resolves empty (§11.2) |
+| `unused-slot` *(warning)* | A declared slot nothing reads (§9.1) |
+| `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Never a connector-supplied one — reading a connector file partially is the design (§8.1, §8.5) |
+| `unknown-export` | An `exports:` entry does not name an internal step's output or a declared slot, or reaches into a slot with a sub-path (§12.1) |
+| `unknown-operator` | An assertion or condition names an operator the dialect does not have, so the line is asserted for truthiness (§10.2) |
+| `condition-reads-response` | A `when:` reads `res.*` or `req.*`, which do not exist before the request is built (§9.3) |
+| `unknown-field` | An inline `body` / `query` / `pathParams` override names a field the operation's schema does not have (§7.1) |
+| `unexpected-content-type` | `contentType:` on an operation declaring a single request media type, which decides it already (§7.5) |
+| `unknown-media-type` | `contentType:` names a media type the operation does not declare (§7.5) |
+| `ambiguous-media-type` | The operation declares more than one request media type and the step names none (§7.5) |
+| `file-not-allowed` | `!file` where the operation's media type does not accept one (§7.5) |
+| `missing-binary-body` | A single-payload media type with no `body: !file` and no `bodyFile:` (§7.5) |
+| `missing-binary-part` | A `format: binary` part supplied as text, or a required one not supplied at all (§7.5) |
+| `binary-file-options` | `filename:` or `contentType:` on a raw binary body — both are multipart-only (§7.5) |
+| `misplaced-drop` | `!...` outside a step's `body` / `query` / `headers` / `pathParams`, where it drops nothing and reads as `null` (§7.2) |
+| `path-outside-scope` | A `!file`, `bodyFile:` or `dataset:` path resolves outside the scope root (§7.4), or a `uses:` target does (§12.2) — one rule, because a sub-flow document is a file the flow reads |
+| `missing-file` | A statically-known file path names nothing that exists (§7.4) |
+| `ambiguous-operation` | The bound document declares the `operationId` more than once (§6.5) |
+| `unresolved-subflow` | A `uses:` target did not resolve (§12.2) |
+| `invalid-subflow-field` | A `uses:` step carries a field §12.4 refuses — one that addresses a single response |
+| `subflow-dataset` | A sub-flow declares `dataset:`; only a top-level flow iterates (§12.4) |
+| `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry is named for one of §7.3's namespaces, which shadows it everywhere — or is named `env` or `vars`, which shadow it inside every script while `{{...}}` still reads it (§7.3, §8.2) |
+| `required-param-without-library` *(warning)* | A flow declares a `required` param with no `default` and is not marked `meta.library: true` (§12.5) |
+| `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
+| `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
+| `unknown-output-path` | A connector-file output's path names a field the operation's response schema does not have (§8.5) |
 
 The last three are decided while resolving the graph rather than while reading the document, since
 §5.5's rule is whether a boundary can be *drawn* — one implementation, shared with the drawing, so
@@ -4618,6 +5051,18 @@ counting:
 A sub-flow reports as a single line by default — it is one step to the caller (§12). `--verbose`
 expands it to its internal steps, namespaced `auth/login` as in captures and reporters.
 
+**The collapsed line says how much is behind it**, in the column an operation would occupy:
+
+```
+    ✓ checkout             sub-flow (4 steps)      1.2s
+```
+
+The count is `step:start.steps` (§13.2), read off the sub-flow before the step is announced. Putting
+the step's id there instead would print the same word twice in adjacent columns; what a reader wants
+from a line standing for a whole flow is how much of the run it stands for. A `step:start` that
+carries no count — an engine older than the field — still names the kind, and the line reads
+`sub-flow`.
+
 #### TTY versus CI
 
 | | TTY | Not a TTY |
@@ -4625,6 +5070,15 @@ expands it to its internal steps, namespaced `auth/login` as in captures and rep
 | Colour | yes, honouring `NO_COLOR` / `FORCE_COLOR` / `--no-color` | never |
 | In-flight steps | shown and updated in place | not shown; a line is printed on completion |
 | Cursor control | used | never — no ANSI in a log file |
+
+**`FORCE_COLOR` forces colour on a TTY only, and this deviates from the convention deliberately.**
+Elsewhere the variable means "emit colour even when you think nobody is watching", which is how a CI
+system asks for a coloured web log. Here the right-hand column wins: an escape sequence in an
+archived log is corruption, and no environment variable is allowed to put one there. So the order is
+`--no-color` first — the strongest signal, because it is the user asking about this run, right now —
+then `FORCE_COLOR` over `NO_COLOR` as the convention has it, and the whole question is moot when
+stdout is not a terminal. Written down because a reader who exports `FORCE_COLOR=1`, pipes the
+output and finds it plain should find the decision here rather than file a bug.
 
 **Under `concurrency > 1` the order of completion lines is not stable between runs**, because that
 is genuinely the order things finished. The end-of-run summary and every reporter file list steps in
@@ -5621,10 +6075,19 @@ run for a feature whose whole purpose is showing what *would* be sent. The premi
 defer the app's half on — that the engine already supports it — was never true and has been
 corrected there.
 
-**What is in `ctx` for a `script:` form?** Assembled piecemeal: `ctx.env` (§8.2), `ctx.steps`
-(§9.3), `ctx.env` / `ctx.steps` / `ctx.failures` (§11.1). Whether `row`, `params`, `shared` and
-`flow` are present, and whether a script may call `bru.setVar` given §7.3's runtime-vars tier, is
-undefined.
+**What is in `ctx` for a `script:` form?** The shape half is settled; the `bru.setVar` half is not.
+
+Every script position is handed the same base: every variable flat, `env` and `vars` as §7.3's two
+named objects, and all seven namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`,
+`process` — as keys of their own. `row` is empty outside a dataset, `pre` is empty outside the step's
+own materialization, and neither is absent, so a script never has to test for the namespace before
+reading it. Two positions add to it: an **output** script also gets `req` and `res` (§10.2's views of
+what went out and what came back), and **`shouldRetry`** also gets `failures`, this attempt's failed
+assertions — and gets neither `req` nor `res`, because the response it is judging is its own first
+argument. `when:` and `pre:` add nothing, for §9.3's reason: they run before the request.
+
+What is still open is whether a flow `script:` may call `bru.setVar` at all, given §7.3's
+runtime-variables tier. That is a question about writing, and everything above is about reading.
 
 **What is the capture layout for iterations, exactly?** §14.5 is a declared contract that says
 "dataset iterations nest under a per-iteration subdirectory" without naming the format, and gives

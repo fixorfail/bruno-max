@@ -1,0 +1,101 @@
+{
+  "id": "flows/linear.flow.yml",
+  "name": "Linear checkout",
+  "isLibrary": false,
+  "params": [],
+  "vars": [],
+  "exports": [],
+  "apis": [
+    {
+      "alias": "orders"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "create_order",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "POST",
+        "path": "/api/echo/json",
+        "operationId": "createOrder"
+      },
+      "rank": 0,
+      "outputs": [
+        "orderId"
+      ],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 16,
+        "column": 5
+      }
+    },
+    {
+      "id": "read_order",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/echo/headers",
+        "operationId": "getOrder"
+      },
+      "rank": 1,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 26,
+        "column": 5
+      }
+    },
+    {
+      "id": "audit_order",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/echo/headers",
+        "operationId": "getOrder"
+      },
+      "rank": 2,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 32,
+        "column": 5
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "create_order",
+      "to": "read_order",
+      "kind": "sequence"
+    },
+    {
+      "from": "read_order",
+      "to": "audit_order",
+      "kind": "sequence"
+    }
+  ],
+  "slots": [],
+  "stages": [],
+  "diagnostics": []
+}

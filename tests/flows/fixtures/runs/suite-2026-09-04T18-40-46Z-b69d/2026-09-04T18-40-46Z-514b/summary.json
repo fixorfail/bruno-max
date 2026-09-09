@@ -1,0 +1,101 @@
+{
+  "runId": "514b0e11-3add-4834-b327-65da5d719e3f",
+  "origin": {
+    "host": "cli"
+  },
+  "status": "passed",
+  "iterations": [
+    {
+      "index": 0,
+      "status": "passed",
+      "steps": [
+        {
+          "id": "create_order",
+          "kind": "operation",
+          "status": "success",
+          "attempts": 1,
+          "durationMs": 19,
+          "assertions": [
+            {
+              "expr": "res.status eq 200",
+              "passed": true,
+              "expected": 200,
+              "actual": 200
+            }
+          ],
+          "validation": {
+            "request": {
+              "valid": true,
+              "errors": []
+            },
+            "response": {
+              "valid": true,
+              "errors": []
+            }
+          },
+          "outputs": {
+            "orderId": "ord_1"
+          },
+          "capturePath": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-46Z-b69d/2026-09-04T18-40-46Z-514b/create_order"
+        },
+        {
+          "id": "read_order",
+          "kind": "operation",
+          "status": "success",
+          "attempts": 1,
+          "durationMs": 1,
+          "assertions": [
+            {
+              "expr": "res.status eq 200",
+              "passed": true,
+              "expected": 200,
+              "actual": 200
+            }
+          ],
+          "validation": {
+            "response": {
+              "valid": true,
+              "errors": []
+            }
+          },
+          "outputs": {},
+          "capturePath": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-46Z-b69d/2026-09-04T18-40-46Z-514b/read_order"
+        },
+        {
+          "id": "audit_order",
+          "kind": "operation",
+          "status": "success",
+          "attempts": 1,
+          "durationMs": 2,
+          "assertions": [
+            {
+              "expr": "res.status eq 200",
+              "passed": true,
+              "expected": 200,
+              "actual": 200
+            }
+          ],
+          "validation": {
+            "response": {
+              "valid": true,
+              "errors": []
+            }
+          },
+          "outputs": {},
+          "capturePath": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-46Z-b69d/2026-09-04T18-40-46Z-514b/audit_order"
+        }
+      ],
+      "decidedBy": []
+    }
+  ],
+  "decidedBy": [],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "diagnostics": [],
+  "captureDir": "{{workspaceRoot}}/.bruno-runs/suite-2026-09-04T18-40-46Z-b69d/2026-09-04T18-40-46Z-514b"
+}

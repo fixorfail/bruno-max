@@ -24,11 +24,23 @@ import type { AssertionResult } from './types/result';
 
 export type EvaluationContext = Record<string, unknown>;
 
-/** What an assertion or condition addresses: every variable scope, with the namespaces over it. */
-export const evaluationContext = (scope: Scope, response?: Record<string, unknown>): EvaluationContext => ({
+/**
+ * What an assertion, a condition or a script addresses: every variable scope flat, `env` and `vars`
+ * as the two halves a script names (§8.2, §8.7), the namespaces over both, and — once a request has
+ * gone out — `req` as it was sent and `res` as it came back (§10.2).
+ *
+ * `env` and `vars` sit above the flat spread so the documented forms always resolve; a variable
+ * that happens to be *named* `env` or `vars` is reachable only through `{{...}}`.
+ */
+export const evaluationContext = (
+  scope: Scope,
+  exchange: { req?: Record<string, unknown>; res?: Record<string, unknown> } = {}
+): EvaluationContext => ({
   ...scope.vars,
+  ...(scope.tiers ? { env: scope.tiers.env, vars: scope.tiers.vars } : {}),
   ...scope.namespaces,
-  ...(response ? { res: response } : {})
+  ...(exchange.req ? { req: exchange.req } : {}),
+  ...(exchange.res ? { res: exchange.res } : {})
 });
 
 const isReference = (operand: string): boolean => RESERVED_ROOTS.includes(operand.trim().split('.')[0]);

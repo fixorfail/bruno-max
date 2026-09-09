@@ -27,16 +27,40 @@ export class FileRef {
   }
 }
 
+/** §7.4's three options, and the whole of them — a fourth key is a typo (§5.4). */
+const FILE_OPTIONS = ['path', 'filename', 'contentType'];
+
 /**
  * §5.4's local tags. Both `!file` forms build the same class, so the projected model is identical
  * whichever spelling an author used, and neither can be forged by an ordinary mapping of the same
  * shape.
+ *
+ * The tag list is built per parse rather than shared, because the mapping form reports: §5.4 makes
+ * a `!file` carrying a key other than its three options a **parse error** rather than an ignored
+ * one, and the constructor reading three fields and dropping the rest is how `filenmae:` uploads
+ * under the wrong name in silence. The collector is where those land, since a tag's `resolve` has
+ * the node — and so the offset — that a later pass over the resolved value no longer does.
  */
-const TAGS: YAML.CollectionTag[] | YAML.ScalarTag[] = [
-  { tag: '!file', collection: 'map', resolve: (map: YAML.YAMLMap) => new FileRef(map.toJSON()) },
-  { tag: '!file', resolve: (value: string) => new FileRef(value) },
-  { tag: '!...', resolve: () => DROP }
-] as YAML.CollectionTag[];
+const tagsFor = (found: { message: string; offset: number }[]): YAML.CollectionTag[] =>
+  [
+    {
+      tag: '!file',
+      collection: 'map',
+      resolve: (map: YAML.YAMLMap) => {
+        const fields = map.toJSON();
+        for (const key of Object.keys(fields)) {
+          if (FILE_OPTIONS.includes(key)) continue;
+          found.push({
+            message: `!file has no ${key} option — it takes ${FILE_OPTIONS.join(', ')}`,
+            offset: map.range ? map.range[0] : 0
+          });
+        }
+        return new FileRef(fields);
+      }
+    },
+    { tag: '!file', resolve: (value: string) => new FileRef(value) },
+    { tag: '!...', resolve: () => DROP }
+  ] as YAML.CollectionTag[];
 
 /**
  * `merge: true` is load-bearing rather than incidental. `js-yaml` resolved a `<<:` merge key by
@@ -45,7 +69,6 @@ const TAGS: YAML.CollectionTag[] | YAML.ScalarTag[] = [
  */
 const OPTIONS: YAML.ParseOptions & YAML.DocumentOptions & YAML.SchemaOptions = {
   merge: true,
-  customTags: TAGS as YAML.Tags,
   /**
    * **The parser never writes to the host's console.** Its default is to route advisories through
    * `process.emitWarning`, which lands in whatever stream the host happens to own: the CLI's, whose
@@ -197,6 +220,12 @@ export type NormalizedStep = {
   pathParams: Record<string, unknown>;
   contentType?: string;
   outputs: OutputSpec[];
+  /**
+   * The inherited connector entries this step drops with `!...` (§8.5). Names rather than outputs,
+   * because a suppression declares nothing: it exists only against what a connector file supplies,
+   * and resolving the two together is `connectors.ts`'s.
+   */
+  suppressedOutputs: string[];
   shared: { slot: string; output: string }[];
   assert: AssertionSpec[];
   retry: RetryPolicy;
@@ -242,6 +271,8 @@ export type FlowConfig = StepFlags & {
   retry?: Partial<RetryPolicy>;
   /** §14.4's denylist additions. */
   redactHeaders: string[];
+  /** §14.5's inline preview cap, in bytes; 8 KB unless the flow says otherwise (§5.2). */
+  capturePreviewBytes: number;
 };
 
 /**
@@ -276,6 +307,17 @@ export type NormalizedFlow = {
    * `validateFlow` is the only thing that needs that fact back (§14.6's `invalid-step-meta`).
    */
   malformedMeta: string[];
+  /**
+   * The projected document (§5.4) as written, retained for the checks that are about what the file
+   * *says* rather than about what it means.
+   *
+   * `malformedMeta` is the same fact one field at a time: normalization applies every default so no
+   * later stage has to ask whether a field was written, and §14.3 is the one caller that has to ask.
+   * A `retry:` on a `uses:` step (§12.4) and a `depends: { all: [] }` (§9.1) are indistinguishable
+   * from their defaults once normalized, and both are errors — so the alternative to keeping the
+   * document is a normalized field per rule, invented for a reader that already had the document.
+   */
+  raw: Record<string, unknown>;
   steps: NormalizedStep[];
   /**
    * §5.5's stages, in the order the file declares them. Presentation only: nothing below reads
@@ -322,8 +364,15 @@ const normalizeDepends = (raw: unknown, previous?: string): Depends => {
   return { mode: 'all', entries: asArray(mapping.all).map(entry), implicit: false };
 };
 
-const normalizeOutputs = (raw: unknown): OutputSpec[] =>
-  Object.entries(asRecord(raw)).map(([name, value]) => {
+/**
+ * §8.1's block, which §8.5's connector files share: the same shapes declare an output wherever it is
+ * written. `!...` is not an output but the removal of an inherited one (§8.5), so it is reported
+ * beside the declarations rather than among them — a suppression carried as an output with no path
+ * would be "declared and never produced", which is the opposite of what the author wrote.
+ */
+export const normalizeOutputs = (raw: unknown): { outputs: OutputSpec[]; suppressed: string[] } => {
+  const entries = Object.entries(asRecord(raw));
+  const outputs = entries.filter(([, value]) => value !== DROP).map(([name, value]): OutputSpec => {
     if (typeof value === 'string') return { name, from: 'body' as const, path: value.replace(/^\$\./, '') };
     const mapping = asRecord(value);
     if (typeof mapping.script === 'string') return { name, from: 'body' as const, script: mapping.script };
@@ -339,6 +388,8 @@ const normalizeOutputs = (raw: unknown): OutputSpec[] =>
           : String(mapping.path).replace(/^\$\./, '')
     };
   });
+  return { outputs, suppressed: entries.filter(([, value]) => value === DROP).map(([name]) => name) };
+};
 
 /** §8.7. A value is the script, as `functions:` entries are — the block has no other shape. */
 const normalizePre = (raw: unknown): PreSpec[] =>
@@ -374,7 +425,7 @@ const normalizeShared = (raw: unknown): { slot: string; output: string }[] => {
  * known operator name, so an expression may contain spaces and a value may be a quoted string
  * carrying one.
  */
-const OPERATORS = new Set([
+export const OPERATORS = new Set([
   'eq', 'neq', '==', '!=', 'gt', 'gte', 'lt', 'lte', 'in', 'notIn', 'contains', 'notContains',
   'length', 'matches', 'notMatches', 'startsWith', 'endsWith', 'between', 'isEmpty', 'isNotEmpty',
   'isNull', 'isUndefined', 'isDefined', 'isTruthy', 'isFalsy', 'isJson', 'isNumber', 'isString',
@@ -428,7 +479,8 @@ const flag = (step: Record<string, unknown>, config: StepFlags, key: keyof StepF
 const normalizeStages = (raw: unknown): StageBoundary[] =>
   Object.entries(asRecord(raw)).map(([name, from]) => ({ name, from: String(from) }));
 
-const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
+/** §6.2's bindings — a flow's, and a connector file's own (§8.5), read by the one rule. */
+export const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
   Object.fromEntries(
     Object.entries(asRecord(raw)).map(([alias, value]) => {
       const mapping = typeof value === 'string' ? { source: value } : asRecord(value);
@@ -494,7 +546,8 @@ const normalizeConfig = (raw: unknown): FlowConfig => {
     maxRunDuration: mapping.maxRunDuration === undefined ? undefined : Number(mapping.maxRunDuration),
     cleanupGrace: mapping.cleanupGrace === undefined ? 30000 : Number(mapping.cleanupGrace),
     retry: mapping.retry === undefined ? undefined : (asRecord(mapping.retry) as Partial<RetryPolicy>),
-    redactHeaders: asArray<string>(mapping.redactHeaders).map(String)
+    redactHeaders: asArray<string>(mapping.redactHeaders).map(String),
+    capturePreviewBytes: mapping.capturePreviewBytes === undefined ? 8192 : Number(mapping.capturePreviewBytes)
   };
 };
 
@@ -558,7 +611,12 @@ export const readFlowMeta = (text: string): { name?: string; library?: boolean }
  */
 export const parseDocument = (text: string): ParsedDocument => {
   const lineCounter = new YAML.LineCounter();
-  const document = YAML.parseDocument(text, { ...OPTIONS, lineCounter });
+  const tagErrors: { message: string; offset: number }[] = [];
+  const document = YAML.parseDocument(text, {
+    ...OPTIONS,
+    customTags: tagsFor(tagErrors) as YAML.Tags,
+    lineCounter
+  });
 
   const errors = document.errors.map((error) => {
     const { line, col } = lineCounter.linePos(error.pos[0]);
@@ -567,7 +625,13 @@ export const parseDocument = (text: string): ParsedDocument => {
 
   // Only where the document parsed: a recovered tree's shape is not evidence of what was written.
   if (!errors.length) {
-    errors.push(...unquotedInterpolations(document, lineCounter));
+    errors.push(
+      ...tagErrors.map(({ message, offset }) => {
+        const { line, col } = lineCounter.linePos(offset);
+        return { message, line, column: col };
+      }),
+      ...unquotedInterpolations(document, lineCounter)
+    );
   }
 
   return {
@@ -606,6 +670,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
     // anything else non-mapping is a mistake nobody would otherwise hear about.
     const meta = asRecord(raw.meta);
     if (raw.meta !== undefined && raw.meta !== null && meta !== raw.meta) malformedMeta.push(id);
+    const { outputs, suppressed } = normalizeOutputs(raw.outputs);
 
     return {
       id,
@@ -625,7 +690,8 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
       pathParams: asRecord(raw.pathParams),
       contentType: raw.contentType === undefined ? undefined : String(raw.contentType),
       pre: normalizePre(raw.pre),
-      outputs: normalizeOutputs(raw.outputs),
+      outputs,
+      suppressedOutputs: suppressed,
       shared: normalizeShared(raw.shared),
       assert: asArray(raw.assert).map(parseAssertion),
       retry: normalizeRetry(raw.retry, config.retry),
@@ -672,6 +738,7 @@ export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedF
     stages: normalizeStages(document.stages),
     positions,
     errors,
-    malformedMeta
+    malformedMeta,
+    raw: document
   };
 };

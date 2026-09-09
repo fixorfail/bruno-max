@@ -89,6 +89,34 @@ describe('colour', () => {
     runThrough(reporter);
     expect(text()).toMatch(ANSI);
   });
+
+  // §14.7's TTY/CI table: FORCE_COLOR is a TTY-column convention, not a way to put escapes into a
+  // log that was never going to a terminal.
+  it('honours FORCE_COLOR over NO_COLOR on a TTY', () => {
+    expect(wantsColour({ tty: true, noColor: false, env: { FORCE_COLOR: '1', NO_COLOR: '1' } })).toBe(true);
+
+    const { reporter, text } = capture({ tty: true, env: { FORCE_COLOR: '1', NO_COLOR: '1' } });
+    runThrough(reporter);
+    expect(text()).toMatch(ANSI);
+  });
+
+  it('treats FORCE_COLOR=0 as an explicit opt-out on a TTY', () => {
+    expect(wantsColour({ tty: true, noColor: false, env: { FORCE_COLOR: '0' } })).toBe(false);
+  });
+
+  // An archived CI log must never contain escape sequences (R4l) — FORCE_COLOR does not get to
+  // override that, however it is conventionally used elsewhere.
+  it('never colours off a TTY, even under FORCE_COLOR', () => {
+    expect(wantsColour({ tty: false, noColor: false, env: { FORCE_COLOR: '1' } })).toBe(false);
+
+    const { reporter, text } = capture({ tty: false, env: { FORCE_COLOR: '1' } });
+    runThrough(reporter);
+    expect(text()).not.toMatch(ANSI);
+  });
+
+  it('lets --no-color win over FORCE_COLOR — the flag is the stronger, more immediate signal', () => {
+    expect(wantsColour({ tty: true, noColor: true, env: { FORCE_COLOR: '1' } })).toBe(false);
+  });
 });
 
 describe('the failure block', () => {
@@ -279,6 +307,175 @@ describe('markers', () => {
   });
 });
 
+describe('the operation column', () => {
+  // §14.7's sample identifies a step by its operation, not the id alone: `POST /payments`, read
+  // from `step:start`, is what the flow file names rather than a resolved URL.
+  it('shows the operation named at step:start', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'create_payment', index: 0, operation: 'POST /payments' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: step() });
+
+    expect(text()).toContain('POST /payments');
+  });
+
+  // A step:end the reporter never saw start — nothing in a run emits one, but the column falls back
+  // to the id rather than going blank.
+  it('falls back to the id when no step:start was seen', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: step() });
+
+    expect(text()).toContain('create_payment');
+  });
+
+  /**
+   * §14.7's sample column for a `uses:` step. A step names `operation:` or `uses:` and never
+   * neither (§5.3), so a `step:start` with no operation is a sub-flow — and the id is already in
+   * the column beside it, which is why printing it twice says nothing.
+   */
+  it('names a sub-flow and its internal step count, rather than repeating the id', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'auth', index: 0, steps: 2 });
+    reporter.onEvent({ type: 'step:end', id: 'auth', index: 0, result: step({ id: 'auth' }) });
+
+    expect(text()).toContain('sub-flow (2 steps)');
+    expect(text()).not.toMatch(/auth\s+auth/);
+  });
+
+  it('counts a one-step sub-flow in the singular', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'auth', index: 0, steps: 1 });
+    reporter.onEvent({ type: 'step:end', id: 'auth', index: 0, result: step({ id: 'auth' }) });
+
+    expect(text()).toContain('sub-flow (1 step)');
+  });
+
+  // An engine older than `step:start.steps` still says which steps are sub-flows by naming no
+  // operation, and the kind is worth printing without the count.
+  it('names a sub-flow without a count when step:start carried none', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'auth', index: 0 });
+    reporter.onEvent({ type: 'step:end', id: 'auth', index: 0, result: step({ id: 'auth' }) });
+
+    expect(text()).toContain('sub-flow');
+    expect(text()).not.toContain('steps)');
+  });
+
+  // The in-flight row is rewritten in place by the step:end above it, so the two must carry the
+  // same column or the rewrite reads as the label changing mid-step.
+  it('names the sub-flow on the in-flight row too', () => {
+    const { reporter, text } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'auth', index: 0, steps: 2 });
+
+    expect(text()).toContain('sub-flow (2 steps)');
+  });
+});
+
+describe('verbose previews and passing assertions', () => {
+  const preview = { request: 'POST /payments HTTP/1.1\nAuthorization: ••••', response: '{"status":"created"}' };
+  const passing = step({ assertions: [{ expr: 'res.status eq 201', passed: true, expected: 201, actual: 201 }] });
+
+  it('adds nothing beyond the step line by default', () => {
+    const { reporter, lines } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: passing, preview });
+
+    expect(lines.some((line) => line.includes('res.status eq 201'))).toBe(false);
+    expect(lines.some((line) => line.includes('"status":"created"'))).toBe(false);
+  });
+
+  it('inlines the request and response preview under --verbose', () => {
+    const { reporter, text } = capture({ tty: false, env: {}, verbosity: 'verbose' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: passing, preview });
+
+    expect(text()).toContain('POST /payments HTTP/1.1');
+    expect(text()).toContain('Authorization: ••••');
+    expect(text()).toContain('"status":"created"');
+  });
+
+  it('prints passing assertions under --verbose', () => {
+    const { reporter, text } = capture({ tty: false, env: {}, verbosity: 'verbose' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: passing, preview });
+
+    expect(text()).toContain('res.status eq 201');
+  });
+
+  // The preview arrives already cut to `capturePreviewBytes` and already masked (§9.4) — the
+  // reporter must never re-truncate to something larger or otherwise reshape it.
+  it('prints exactly the preview text it was given, never more', () => {
+    const alreadyTruncated = { request: 'POST /payments HTTP/1.1\n{"amount":100' };
+    const { reporter, text } = capture({ tty: false, env: {}, verbosity: 'verbose' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: passing, preview: alreadyTruncated });
+
+    expect(text()).toContain('{"amount":100');
+    expect(text()).not.toContain('{"amount":100}');
+  });
+
+  it('says nothing about a preview when the event carried none', () => {
+    const { reporter, lines } = capture({ tty: false, env: {}, verbosity: 'verbose' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: passing });
+
+    expect(lines.some((line) => line.includes('→') || line.includes('←'))).toBe(false);
+  });
+});
+
+describe('TTY in-place updates', () => {
+  const CURSOR_UP = new RegExp(`${String.fromCharCode(27)}\\[\\d+A`);
+  const ANY_ESCAPE = new RegExp(String.fromCharCode(27));
+
+  // §14.7's TTY column: an in-flight step is shown before it completes.
+  it('shows an in-flight line when a step starts on a TTY', () => {
+    const { reporter, lines } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'create_payment', index: 0, operation: 'POST /payments' });
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('create_payment');
+  });
+
+  // Updated in place rather than appended a second time — the row a viewer is already reading
+  // does not scroll away underneath them, and cursor control is how that row is found again.
+  it('rewrites the in-flight line in place with cursor control, rather than appending a second one', () => {
+    const { reporter, lines } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'create_payment', index: 0, operation: 'POST /payments' });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: step() });
+
+    expect(lines.filter((line) => line.includes('create_payment'))).toHaveLength(2);
+    expect(lines[1]).toMatch(CURSOR_UP);
+  });
+
+  // §14.7's CI column: no in-flight line, and no cursor control ever — an archived log is
+  // append-only.
+  it('shows no in-flight line and uses no cursor control off a TTY', () => {
+    const { reporter, lines } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'create_payment', index: 0, operation: 'POST /payments' });
+    expect(lines).toEqual([]);
+
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: step() });
+    expect(lines.some((line) => ANY_ESCAPE.test(line))).toBe(false);
+  });
+
+  // Under `concurrency > 1` steps finish out of the order they started (§14.7) — each rewrite
+  // must still land on its own row rather than clobbering whichever row is now on top.
+  it('rewrites each of several concurrent in-flight steps at its own row', () => {
+    const { reporter, lines } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'create_payment', index: 0, operation: 'POST /payments' });
+    reporter.onEvent({ type: 'step:start', id: 'create_refund', index: 0, operation: 'POST /refunds' });
+    reporter.onEvent({ type: 'step:end', id: 'create_refund', index: 0, result: step({ id: 'create_refund' }) });
+    reporter.onEvent({ type: 'step:end', id: 'create_payment', index: 0, result: step() });
+
+    expect(lines).toHaveLength(4);
+    expect(lines[2]).toContain('create_refund');
+    expect(lines[3]).toContain('create_payment');
+  });
+
+  // A collapsed sub-flow internal never gets a placeholder either — the same rule step:end
+  // already applies would otherwise flash it on screen before hiding it again.
+  it('shows no in-flight line for a collapsed sub-flow internal', () => {
+    const { reporter, lines } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'auth/login', index: 0, operation: 'POST /auth/login' });
+
+    expect(lines).toEqual([]);
+  });
+});
+
 describe('diagnostics', () => {
   const entry = (over = {}) => ({
     severity: 'error',
@@ -374,6 +571,88 @@ describe('the resolved script library', () => {
     const { reporter, lines } = capture({ verbosity: 'quiet' });
 
     reporter.functions('flows/checkout.flow.yml', library);
+
+    expect(lines).toEqual([]);
+  });
+});
+
+/**
+ * 001 §8.5's resolved outputs, listed under `bru flow validate` beside the library above.
+ *
+ * The cost §8.5 names is locality: a connector file declares an operation's outputs for every flow
+ * that targets it, so a step publishes names it does not mention. What is contractual here is that
+ * every resolved name appears with the layer that had the last say and the file that layer is —
+ * never the wording it is printed in, for the reason at the top of this file.
+ */
+describe('the resolved outputs of each step', () => {
+  const steps = [
+    {
+      id: 'get_thing',
+      outputs: [
+        { name: 'thingId', from: 'body', path: 'data.id', origin: 'workspace', file: 'flows/connectors.yml' },
+        { name: 'title', from: 'body', path: 'data.name', origin: 'collection', file: 'payments/flows/connectors.yml' },
+        { name: 'own', from: 'body', path: 'data.slug', origin: 'inline', file: 'flows/checkout.flow.yml' }
+      ]
+    },
+    { id: 'hand_off', outputs: [] }
+  ];
+
+  it('names each output, the layer it was declared in and the file that layer is', () => {
+    const { reporter, text } = capture({});
+
+    reporter.outputs('flows/checkout.flow.yml', steps);
+
+    expect(text()).toContain('get_thing');
+    expect(text()).toContain('thingId');
+    expect(text()).toContain('workspace');
+    expect(text()).toContain('flows/connectors.yml');
+    expect(text()).toContain('title');
+    expect(text()).toContain('collection');
+    expect(text()).toContain('payments/flows/connectors.yml');
+    expect(text()).toContain('own');
+    expect(text()).toContain('inline');
+  });
+
+  /** A `uses:` step publishes its sub-flow's exports and declares none of its own (§12). */
+  it('leaves out a step that resolved nothing rather than printing it empty', () => {
+    const { reporter, text } = capture({});
+
+    reporter.outputs('flows/checkout.flow.yml', steps);
+
+    expect(text()).not.toContain('hand_off');
+  });
+
+  it('prints nothing for a flow whose steps resolve none', () => {
+    const { reporter, lines } = capture({});
+
+    reporter.outputs('flows/checkout.flow.yml', [{ id: 'hand_off', outputs: [] }]);
+
+    expect(lines).toEqual([]);
+  });
+
+  // A colour code in an archived CI log is corruption (§14.7's CI column).
+  it('emits no escape sequences when stdout is not a TTY', () => {
+    const { reporter, text } = capture({ tty: false, env: { FORCE_COLOR: '1' } });
+
+    reporter.outputs('flows/checkout.flow.yml', steps);
+
+    expect(text()).not.toMatch(ANSI);
+  });
+
+  /** --quiet is failures and the summary; a listing is neither. */
+  it('says nothing under --quiet', () => {
+    const { reporter, lines } = capture({ verbosity: 'quiet' });
+
+    reporter.outputs('flows/checkout.flow.yml', steps);
+
+    expect(lines).toEqual([]);
+  });
+
+  /** §14.7's `--silent`: the exit code is the whole result. */
+  it('writes nothing under --silent', () => {
+    const { reporter, lines } = capture({ verbosity: 'silent' });
+
+    reporter.outputs('flows/checkout.flow.yml', steps);
 
     expect(lines).toEqual([]);
   });

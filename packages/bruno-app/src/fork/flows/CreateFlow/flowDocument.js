@@ -1,18 +1,11 @@
-import yaml from 'js-yaml';
-import { getRelativePath } from 'utils/common/path';
-
 /**
- * The text of a flow the Create Flow form just made — 001 §5.1's `version` and `meta`, plus the
- * `apis:` bindings the form selected, and nothing else.
+ * The `apis:` bindings a flow the Create Flow form just made is created with — 001 §6.2's aliases,
+ * paired with the spec each one points at.
  *
- * It lives with the form rather than in `flows/actions.js` because `getRelativePath` is upstream:
- * `actions.js` is reached eagerly from `fork/registry.js`, whose import graph has to stay clear of
- * upstream modules — `registry.spec.js` asserts it. The form is lazily loaded and has no such rule.
- *
- * **No steps are written.** The app cannot guess one, and a placeholder step would be a step the
- * author has to delete before the flow runs — worse than the empty document, which 002 §6 already
- * reports as needing steps. What this file is for is getting the four things a hand-edit is tedious
- * to start from right: the version, the name, the description and the relative path to every spec.
+ * **The document itself is written by the host, not here** (002-C R4). A renderer that serialized
+ * `.flow.yml` would be a second writer of the format beside 001 §5.1's one, and it would have to
+ * know §5.4's local tags to leave a fixture alone. What is left here is the naming — which is string
+ * work over an OpenAPI document the renderer is the only side holding.
  */
 
 /**
@@ -45,40 +38,17 @@ const uniqueAlias = (alias, taken) => {
 };
 
 /**
- * §6.2: a binding's source is resolved against the flow's own directory, so it is written relative
- * to where the file is about to be created rather than to the workspace.
+ * The bindings, in the order the specs were selected, each naming the spec by its **absolute** path.
  *
- * The `./` prefix is cosmetic — `path.resolve` treats a bare `foo.yml` identically — but a source
- * that reads as a bare word next to ones that read as paths invites being mistaken for a URL.
+ * §6.2 resolves a binding against the flow's own directory, so what the file gets is a relative path
+ * — computed by the host, which is the side that owns paths. The renderer's own `path` is a POSIX
+ * shim, and a Windows flow written with a POSIX relative path is one the engine cannot resolve.
  */
-const relativeSource = (directory, pathname) => {
-  const relative = getRelativePath(directory, pathname);
-  return relative.startsWith('.') ? relative : `./${relative}`;
-};
-
-export const buildFlowDocument = ({ name, description, tags = [], library, directory, apiSpecs = [] }) => {
+export const apiBindingsFor = (apiSpecs = []) => {
   const taken = new Set();
-  const apis = Object.fromEntries(
-    apiSpecs.map((apiSpec) => [uniqueAlias(aliasFor(apiSpec), taken), relativeSource(directory, apiSpec.pathname)])
-  );
 
-  const trimmedDescription = String(description || '').trim();
-  const meta = {
-    name,
-    ...(trimmedDescription ? { description: trimmedDescription } : {}),
-    // Written only when there are any, for the same reason `library` is: an empty `tags: []` selects
-    // exactly as an absent key does under §14.1's `--grep`, so writing it says nothing.
-    ...(tags.length ? { tags } : {}),
-    // 001 §12.5's flag is written only when it is set: `library: false` and an absent key mean the
-    // same thing to the engine (`Boolean(meta.library)`), and a flow that spells out the default
-    // invites being read as having opted into something.
-    ...(library ? { library: true } : {})
-  };
-
-  // Dumped a block at a time and joined by a blank line: `js-yaml` emits one document as one run of
-  // lines, and the format's own examples separate the top-level blocks — which is the difference
-  // between a file that reads like the ones beside it and one that reads like output.
-  return [{ version: 1 }, { meta }, ...(Object.keys(apis).length ? [{ apis }] : [])]
-    .map((block) => yaml.dump(block, { lineWidth: 100, noRefs: true }))
-    .join('\n');
+  return apiSpecs.map((apiSpec) => ({
+    alias: uniqueAlias(aliasFor(apiSpec), taken),
+    source: apiSpec.pathname
+  }));
 };

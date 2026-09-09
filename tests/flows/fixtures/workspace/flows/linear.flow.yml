@@ -1,0 +1,35 @@
+version: 1
+
+meta:
+  name: Linear checkout
+  tags: [checkout, smoke]
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+authProfiles:
+  service:
+    mode: bearer
+    token: your_secret_token
+
+steps:
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: ord_1
+      sku: WIDGET-1
+    outputs:
+      orderId: id
+    assert:
+      - res.status eq 200
+
+  - id: read_order
+    operation: orders#getOrder
+    auth: service
+    assert:
+      - res.status eq 200
+
+  - id: audit_order
+    operation: orders#getOrder
+    assert:
+      - res.status eq 200

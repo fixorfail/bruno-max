@@ -1,0 +1,38 @@
+# R9.9 — §10.1's request check on the two body kinds it names as checkable and the engine only
+# validated for JSON: a urlencoded form and a multipart body's non-binary parts.
+version: 1
+
+meta:
+  name: R9.9 — form bodies are validated too
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: state
+    operation: regress-api#getState
+    outputs:
+      count: data.count
+
+  - id: subscribe
+    operation: regress-api#createSubscription
+    body:
+      plan: pro
+      # §7.3's whole-value reference: an integer stays an integer, which is what the schema wants
+      # and what the form encoding then flattens to a string.
+      seats: "{{steps.state.count}}"
+
+  # Declared against `state` rather than left to follow `subscribe`, so a case that fails one form
+  # body still exercises the other.
+  - id: bundle
+    operation: regress-api#createBundle
+    depends:
+      - on: state
+        status: [success]
+    contentType: multipart/form-data
+    body:
+      name: bundle-1
+      manifest: !file ../validation/fixtures/manifest.csv

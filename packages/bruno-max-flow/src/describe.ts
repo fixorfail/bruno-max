@@ -13,11 +13,13 @@
  */
 import * as path from 'path';
 
+import { Connectors, type OutputOrigin } from './connectors';
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
+import { resolveSubflowTarget } from './files';
 import { ranksOf, resolveStages } from './graph';
 import { SpecLoader, type SpecIndex } from './openapi';
 import { referenceKind, referencesOf } from './references';
-import type { DescribeOptions } from './types/options';
+import type { DescribeOptions, Scope } from './types/options';
 import type { FlowDescription, FlowEdge, FlowNode } from './types/describe';
 import type { FlowContext } from './types/ports';
 import { validateFlow } from './validate';
@@ -105,17 +107,41 @@ const slotsOf = (flow: NormalizedFlow): FlowDescription['slots'] =>
   Object.keys(flow.shared).map((name) => ({
     name,
     writers: flow.steps.filter((step) => step.shared.some((entry) => entry.slot === name)).map((step) => step.id),
+    /**
+     * The same writers paired with the output each publishes, **in declaration order** — which is
+     * the order §9.1 resolves the slot by, so a reader of this list resolves it the way the engine
+     * does by walking the list backwards.
+     *
+     * `writers` is this list's step projection and stays as it is: 002 §5.4's slot lane names
+     * participants and has no use for an output, and a run recorded before this field carries only
+     * that one.
+     */
+    writes: flow.steps.flatMap((step) =>
+      step.shared
+        .filter((entry) => entry.slot === name)
+        .map((entry) => ({ step: step.id, output: entry.output }))
+    ),
     readers: flow.steps
       .filter((step) => referencesOf(step, flow).some((reference) => reference.root === 'shared' && reference.name === name))
       .map((step) => step.id)
   }));
 
-const nodesOf = (flow: NormalizedFlow, specs: Map<string, SpecIndex>, prefix: string, parent?: string): FlowNode[] => {
+/** Each step's output names to where each was declared — `Connectors.resolve` over the flow as written. */
+type OutputOrigins = Map<string, Record<string, OutputOrigin>>;
+
+const nodesOf = (
+  flow: NormalizedFlow,
+  origins: OutputOrigins,
+  specs: Map<string, SpecIndex>,
+  prefix: string,
+  parent?: string
+): FlowNode[] => {
   const ranks = ranksOf(flow.steps);
 
   return flow.steps.map((step): FlowNode => {
     const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
     const resolved = binding ? specs.get(binding.alias)?.operations.get(step.operation?.operationId || '') : undefined;
+    const outputOrigins = origins.get(step.id) || {};
 
     return {
       id: `${prefix}${step.id}`,
@@ -136,6 +162,9 @@ const nodesOf = (flow: NormalizedFlow, specs: Map<string, SpecIndex>, prefix: st
       parent,
       rank: ranks.get(step.id) as number,
       outputs: step.outputs.map((output) => output.name),
+      // Only where §8.5 put something the step's own text does not show: an all-inline node is the
+      // common one, and a map saying `inline` for every name would be read for nothing.
+      ...(Object.values(outputOrigins).some((origin) => origin !== 'inline') ? { outputOrigins } : {}),
       pre: step.pre.map((entry) => entry.name),
       markers: {
         conditional: step.when.length > 0,
@@ -153,7 +182,11 @@ const nodesOf = (flow: NormalizedFlow, specs: Map<string, SpecIndex>, prefix: st
 
 type Loader = {
   specs: SpecLoader;
-  readFlow: (file: string) => Promise<NormalizedFlow>;
+  /**
+   * The flow with its connector outputs applied, and — read off the flow as written, since an
+   * applied flow's outputs are all inline by then — where each of them came from.
+   */
+  readFlow: (file: string) => Promise<{ flow: NormalizedFlow; origins: OutputOrigins }>;
 };
 
 /**
@@ -163,8 +196,9 @@ type Loader = {
  * it appears in, not rank 4 of its caller's.
  */
 const collect = async (
-  flow: NormalizedFlow,
+  { flow, origins }: { flow: NormalizedFlow; origins: OutputOrigins },
   loader: Loader,
+  scope: Scope,
   prefix: string,
   parent: string | undefined,
   seen: Set<string>
@@ -179,19 +213,27 @@ const collect = async (
     }
   }
 
-  const nodes = nodesOf(flow, specs, prefix, parent);
+  const nodes = nodesOf(flow, origins, specs, prefix, parent);
   const edges = [...controlEdges(flow.steps, prefix), ...dataEdges(flow, prefix), ...slotEdges(flow, prefix)];
 
   for (const step of flow.steps) {
     if (!step.uses) continue;
-    const target = path.resolve(path.dirname(flow.file), step.uses);
+
+    // §12.2's `workspace:` prefix and its containment (§7.4) are `validateFlow`'s to report; here
+    // an unresolvable target just leaves its container node in place, marked and empty — 002 §6.
+    let target: string;
+    try {
+      target = resolveSubflowTarget(step.uses, flow.file, scope);
+    } catch {
+      continue;
+    }
     if (seen.has(target)) continue;
 
     try {
-      const child = await loader.readFlow(target);
       const inner = await collect(
-        child,
+        await loader.readFlow(target),
         loader,
+        scope,
         `${prefix}${step.id}/`,
         `${prefix}${step.id}`,
         new Set([...seen, target])
@@ -214,10 +256,24 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     signal: new AbortController().signal
   };
 
+  const specs = new SpecLoader(options.ports.readSpec, context);
+  const readText = async (file: string) => (await options.ports.readFile(file, context)).toString('utf8');
+  // §8.5: a connector-supplied output is a declared one, so the node lists it and a reference to it
+  // draws a `declared` data edge — the file with no `outputs:` block still shows its data paths.
+  const connectors = await Connectors.load(options.scope, readText, specs);
+
   const loader: Loader = {
-    specs: new SpecLoader(options.ports.readSpec, context),
-    readFlow: async (file) =>
-      normalizeFlow(parseDocument((await options.ports.readFile(file, context)).toString('utf8')), file)
+    specs,
+    readFlow: async (file) => {
+      const written = normalizeFlow(parseDocument(await readText(file)), file);
+      const resolved = await connectors.resolve(written);
+      return {
+        flow: await connectors.apply(written),
+        origins: new Map(
+          resolved.map(({ id, outputs }) => [id, Object.fromEntries(outputs.map((output) => [output.name, output.origin]))])
+        )
+      };
+    }
   };
 
   // The same set `validateFlow` returns, by calling it rather than by re-deriving it — the app and
@@ -240,18 +296,19 @@ export const describeFlow = async (options: DescribeOptions): Promise<FlowDescri
     diagnostics
   };
 
-  let flow: NormalizedFlow;
+  let entry: { flow: NormalizedFlow; origins: OutputOrigins };
   try {
-    flow = await loader.readFlow(options.entry);
+    entry = await loader.readFlow(options.entry);
   } catch {
     return identity;
   }
+  const { flow } = entry;
 
   // A file that did not parse has no graph to draw, and `diagnostics` already carries the anchored
   // syntax error. Returning the shell rather than throwing is what lets the tab open (002 §6).
   if (flow.errors.length) return identity;
 
-  const { nodes, edges } = await collect(flow, loader, '', undefined, new Set([options.entry]));
+  const { nodes, edges } = await collect(entry, loader, options.scope, '', undefined, new Set([options.entry]));
 
   return {
     ...identity,

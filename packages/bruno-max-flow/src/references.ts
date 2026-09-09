@@ -36,11 +36,20 @@ const RAW_ACCESS = new Set(['body', 'headers']);
  */
 export const referenceKind = (
   reference: Reference,
-  producer: NormalizedStep | undefined
+  producer: NormalizedStep | undefined,
+  /**
+   * What a `uses:` producer publishes — its sub-flow's `exports:` (§12.2). They are the invoking
+   * step's outputs with no re-declaration in the parent, so a reference to one is as declared as a
+   * reference to an `outputs:` entry, and a caller that cannot see the child would have to call it
+   * unknown.
+   */
+  exports: string[] = []
 ): 'declared' | 'built-in' | 'raw' | 'unknown' => {
-  const root = reference.field?.split('.')[0];
-  if (root === undefined) return 'unknown';
-  if (producer?.outputs.some((output) => output.name === root)) return 'declared';
+  // `items[0].id` selects into the output `items` — bruno-query's own syntax (§8.1), and the name
+  // being read is the part in front of the index.
+  const root = reference.field?.split('.')[0].split('[')[0];
+  if (root === undefined || root === '') return 'unknown';
+  if (producer?.outputs.some((output) => output.name === root) || exports.includes(root)) return 'declared';
   if (BUILT_IN.has(root)) return 'built-in';
   return RAW_ACCESS.has(root) ? 'raw' : 'unknown';
 };
@@ -110,3 +119,53 @@ export const referencesOf = (step: NormalizedStep, flow: NormalizedFlow): Refere
 
   return [...inline, ...expressionReferences(step, step.id), ...profile, ...bindingRefs];
 };
+
+/**
+ * What one flow reads out of its own run state, indexed by what is read.
+ *
+ * §14.3's "declared and never used" asks this of a flow's own outputs and slots, and asks it of
+ * every position at once — so the index is built in one pass rather than per check: a new position
+ * that can carry a reference is then picked up by all of them, or by none.
+ */
+export type FlowReads = {
+  /** The output names read off each step, by step id. */
+  outputs: Map<string, Set<string>>;
+  /** Steps read whole — `{{steps.login}}` takes everything the step publishes. */
+  wholeSteps: Set<string>;
+  /** The slots read, whoever wrote them. */
+  slots: Set<string>;
+};
+
+export const readsOf = (flow: NormalizedFlow): FlowReads => {
+  const outputs = new Map<string, Set<string>>();
+  const wholeSteps = new Set<string>();
+  const slots = new Set<string>();
+
+  const read = (stepId: string, field: string | undefined) => {
+    const name = field?.split('.')[0].split('[')[0];
+    if (!name) wholeSteps.add(stepId);
+    else outputs.set(stepId, new Set([...(outputs.get(stepId) || []), name]));
+  };
+
+  for (const step of flow.steps) {
+    for (const reference of referencesOf(step, flow)) {
+      if (reference.root === 'shared') slots.add(reference.name);
+      else read(reference.name, reference.field);
+    }
+    // Publishing an output into a slot is a use of it, whoever reads the slot afterwards.
+    for (const { output } of step.shared) read(step.id, output);
+  }
+  // §12.1: an export is a read. A library whose slot leaves only through the boundary reads it
+  // nowhere else, and without this line that correct flow is warned `unused-slot`.
+  for (const exported of Object.values(flow.exports)) {
+    const [root, target, ...rest] = exported.split('.');
+    if (root === 'steps' && target) read(target, rest.join('.'));
+    else if (root === 'shared' && target) slots.add(target);
+  }
+
+  return { outputs, wholeSteps, slots };
+};
+
+/** Whether anything in the flow read `<stepId>.<name>`. A whole-value read of the step takes every name. */
+export const readsOutput = (reads: FlowReads, stepId: string, name: string): boolean =>
+  reads.wholeSteps.has(stepId) || Boolean(reads.outputs.get(stepId)?.has(name));

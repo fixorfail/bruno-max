@@ -8,7 +8,7 @@ import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions
 import { matchLoadedApiSpecs } from 'components/Sidebar/ApiSpecs/matchLoadedApiSpecs';
 import { createFlow, duplicateFlow } from '../actions';
 import { kebabCase, fileNameStem, flowFileNameError } from '../flowFileName';
-import { aliasFor, buildFlowDocument } from './flowDocument';
+import { aliasFor, apiBindingsFor } from './flowDocument';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -114,11 +114,8 @@ const CreateFlow = ({ defaultDirectory, source, onClose }) => {
             : createFlow({
                 fileName: effectiveFileName(values),
                 directory: values.flowLocation,
-                content: buildFlowDocument({
-                  ...properties,
-                  directory: values.flowLocation,
-                  apiSpecs: selected
-                })
+                properties,
+                apis: apiBindingsFor(selected)
               })
         );
         toast.success(source ? 'Flow duplicated' : 'Flow created');

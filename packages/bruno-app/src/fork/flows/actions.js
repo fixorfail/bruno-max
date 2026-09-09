@@ -56,9 +56,38 @@ export const tiersFor = ({ collection, globalEnvironments, envVarOverrides }) =>
   return tiers;
 };
 
+/**
+ * §7.2's run configuration and §4.2's workspace-scoped flow tabs, as the last session left them.
+ *
+ * Hung off watching a scope because that is the moment the fork learns a workspace or a collection is
+ * open — which is the whole of it for a configuration, keyed by a path and needing nothing resolved.
+ *
+ * **A tab has a known point of its own and this is its fallback.** `restoreFlowTabs` needs the scratch
+ * collection §4.2's workspace-scoped tabs borrow, which the workspace-switch path mounts; it calls
+ * `restoreForkWorkspaceTabs` once it has (`fork/registry.js`), so the ordinary launch restores on that
+ * pass. A workspace whose scratch collection was not mounted then is left unmarked, and this is where
+ * it is tried again.
+ *
+ * **The module is imported dynamically**, because it reaches upstream's `addTab` and this one is in
+ * `fork/registry.js`'s eager graph, which `registry.spec.js` pins clear of upstream modules.
+ *
+ * The snapshot is unreadable on a first launch and after a reset; there is simply nothing to restore.
+ */
+const restoreSession = () => async (dispatch) => {
+  const snapshot = await ipc().invoke('renderer:snapshot:get').catch(() => null);
+  if (!snapshot) {
+    return;
+  }
+
+  const { restoreFlowConfiguration, restoreFlowTabs } = await import('./restoreSession');
+  dispatch(restoreFlowConfiguration(snapshot));
+  dispatch(restoreFlowTabs(snapshot));
+};
+
 export const watchScope = (scope) => async (dispatch) => {
   const flows = await ipc().invoke('renderer:flow-watch-scope', scope);
   dispatch(flowsLoaded({ ...scope, flows }));
+  await dispatch(restoreSession());
 };
 
 export const unwatchScope = (scope) => async () => {
@@ -93,7 +122,7 @@ export const describeFlowDraft = (flow, content) => async (dispatch) => {
 
   try {
     const description = await ipc().invoke('renderer:flow-describe', { entry: flow.pathname, scope, content });
-    dispatch(sourceDescribed({ pathname: flow.pathname, description }));
+    dispatch(sourceDescribed({ pathname: flow.pathname, description, content }));
   } catch (error) {
     dispatch(sourceDescribeFailed({ pathname: flow.pathname, error: error.message }));
   }
@@ -197,12 +226,12 @@ export const flowsFolderFor = (scopeRoot) => async () => ipc().invoke('renderer:
  * directory, so the sidebar row arrives through `flowTreeUpdated` the same way it would for a flow
  * somebody created outside the app.
  *
- * The text comes from the form (`CreateFlow/flowDocument.js`) rather than being built here: this
- * module is reached eagerly from `fork/registry.js`, and the relative-path helper the document needs
- * is upstream.
+ * **The form sends what the flow declares, not the text of it** (002-C R4). The host composes the
+ * document through the engine's own writer, so the app is not a second writer of a format 001 §5.1
+ * bought one of — and the `apis:` sources are relativized by the side that owns paths.
  */
-export const createFlow = ({ fileName, directory, content }) => async () =>
-  ipc().invoke('renderer:flow-create', { directory, filename: `${fileName}.flow.yml`, content });
+export const createFlow = ({ fileName, directory, properties, apis }) => async () =>
+  ipc().invoke('renderer:flow-create', { directory, filename: `${fileName}.flow.yml`, properties, apis });
 
 /**
  * 002 §4.7 — the same form, over a flow that already exists.
@@ -275,6 +304,23 @@ export const renameFlowScript = ({ script, filename }) => async () =>
 const suppliedParams = (params) =>
   Object.fromEntries(Object.entries(params || {}).filter(([, value]) => String(value ?? '').trim() !== ''));
 
+/**
+ * §7.2's `envVarOverrides`, from the rows the panel edits.
+ *
+ * The panel holds rows because a mapping cannot hold a half-typed key (§7.2's panel says why); the
+ * tier is a mapping because that is what 001 §13.2's `RunOptions.variables` takes. A row with no name
+ * is one somebody is still typing, not an override of the empty string, so it is dropped — the same
+ * rule `suppliedParams` applies to a box that was cleared.
+ */
+const overridesFrom = (rows) => {
+  const named = (rows || []).filter((row) => String(row?.name ?? '').trim() !== '');
+  // Absent rather than empty when nothing was typed, so a run configured with no overrides sends the
+  // same tier a suite run does — one shape for "this host resolved no overrides", not two.
+  return named.length
+    ? Object.fromEntries(named.map((row) => [row.name.trim(), String(row.value ?? '')]))
+    : undefined;
+};
+
 export const runFlow = ({ flow, configuration }) => async (dispatch, getState) => {
   const state = getState();
   const collection = flow.collectionRoot
@@ -287,7 +333,7 @@ export const runFlow = ({ flow, configuration }) => async (dispatch, getState) =
     tiers: tiersFor({
       collection,
       globalEnvironments: state.globalEnvironments,
-      envVarOverrides: configuration.envVarOverrides
+      envVarOverrides: overridesFrom(configuration.variableOverrides)
     }),
     params: suppliedParams(configuration.params),
     overrides: {
@@ -300,13 +346,21 @@ export const runFlow = ({ flow, configuration }) => async (dispatch, getState) =
 
 export const cancelFlowRun = (runId) => async () => ipc().invoke('renderer:flow-cancel', { runId });
 
-export const readStepCapture = ({ dir, stepId, iteration, attempt }) => async () =>
-  ipc().invoke('renderer:flow-read-capture', { dir, stepId, iteration, attempt });
+/**
+ * The scope that owns a flow's `.bruno-runs/` — 001 §14.5. One place, because every history read
+ * sends it: `listRuns` to find the runs, and `readRun`/`readCapture` so the engine can refuse a
+ * `dir` outside it (002 §11.2). A reader that computed it differently from the lister would be
+ * refused its own listing.
+ */
+export const scopeRootOf = (flow) => flow.collectionRoot || flow.workspaceRoot;
+
+export const readStepCapture = ({ scopeRoot, dir, stepId, iteration, attempt }) => async () =>
+  ipc().invoke('renderer:flow-read-capture', { scopeRoot, dir, stepId, iteration, attempt });
 
 /** §10: the runs under `.bruno-runs/` for the scope that owns this flow, newest first. */
 export const listFlowRuns = (flow) => async () =>
   ipc().invoke('renderer:flow-list-runs', {
-    scopeRoot: flow.collectionRoot || flow.workspaceRoot,
+    scopeRoot: scopeRootOf(flow),
     flow: flow.pathname
   });
 
@@ -320,7 +374,7 @@ export const listFlowRuns = (flow) => async () =>
  * is not among them and its captures would be unreachable.
  */
 export const openPastRun = ({ flow, entry, stepIds }) => async (dispatch) => {
-  const stored = await ipc().invoke('renderer:flow-read-run', { dir: entry.dir, stepIds });
+  const stored = await ipc().invoke('renderer:flow-read-run', { scopeRoot: scopeRootOf(flow), dir: entry.dir, stepIds });
   dispatch(pastRunLoaded({ pathname: flow.pathname, stored }));
 };
 

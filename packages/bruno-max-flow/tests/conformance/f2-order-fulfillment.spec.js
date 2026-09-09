@@ -105,7 +105,7 @@ describe('F2.2 — both writers write, declaration order decides', () => {
 
   // A completion-order implementation passes at `concurrency: 1` and fails under delay injection.
   // The fallback's `depends` already orders the two writes against each other here, so this is a
-  // guard on the rule rather than a way to provoke the race.
+  // guard on the rule rather than a way to provoke the race — R9.1 is the race.
   it('gives the slot to the same writer under every schedule', async () => {
     expect((await bookedQuote({ overrides: { concurrency: 1 } })).quoteId).toBe('r_b7');
     expect((await bookedQuote({ overrides: { concurrency: 5 } })).quoteId).toBe('r_b7');

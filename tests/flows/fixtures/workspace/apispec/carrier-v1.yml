@@ -1,0 +1,27 @@
+openapi: 3.0.3
+info:
+  title: Carrier API
+  version: 1.0.0
+servers:
+  - url: http://localhost:8081
+
+paths:
+  /api/echo/json:
+    post:
+      operationId: createQuote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                id: { type: string }
+                reference: { type: string }
+      responses:
+        '200':
+          description: The quote, echoed back
+          content:
+            application/json:
+              schema:
+                type: object

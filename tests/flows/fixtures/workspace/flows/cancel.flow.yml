@@ -1,0 +1,32 @@
+version: 1
+
+meta:
+  name: Cancel mid poll
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+config:
+  concurrency: 1
+
+vars:
+  # A key of its own, so concurrent specs poll independent counters.
+  settleKey: "{{$randomUUID}}"
+
+steps:
+  # Never settles, so the poll is where a cancel lands — 001 §11.3's retry delay is where a run
+  # spends nearly all of its time, and it is the one place a step is stopped rather than aborted.
+  - id: poll_settlement
+    operation: orders#settleOrder
+    pathParams:
+      key: "{{settleKey}}"
+    query:
+      after: 99
+    retry:
+      maxAttempts: 20
+      delay: 3000
+      shouldRetry: |
+        (res) => res.body.state === 'pending'
+
+  - id: after_poll
+    operation: orders#getOrder

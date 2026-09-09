@@ -1,0 +1,16 @@
+version: 1
+
+meta:
+  name: Unknown operation
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+steps:
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: ord_1
+
+  - id: refund_order
+    operation: orders#refundOrder

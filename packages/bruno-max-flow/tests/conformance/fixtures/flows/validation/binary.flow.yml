@@ -1,0 +1,16 @@
+# R8.5 — §7.5's raw payload: the body *is* the file, and the tag's options have nothing to name.
+version: 1
+
+meta:
+  name: R8 — a raw binary body
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: scan
+    operation: regress-api#uploadScan
+    bodyFile: ./fixtures/scan.pdf

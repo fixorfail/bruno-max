@@ -370,8 +370,8 @@ const report = (result, log, files, ports, readRuns) => {
     listSuites: (options = {}) => engine.listSuites({ scopeRoot: FIXTURES, ports, ...options }),
     readSuite: (options = {}) =>
       engine.readSuite({ dir: path.dirname(result.captureDir), scopeRoot: FIXTURES, ports, ...options }),
-    readRun: (options = {}) => engine.readRun({ dir: result.captureDir, ports, ...options }),
-    readCapture: (options) => engine.readCapture({ dir: result.captureDir, ports, ...options }),
+    readRun: (options = {}) => engine.readRun({ dir: result.captureDir, scopeRoot: FIXTURES, ports, ...options }),
+    readCapture: (options) => engine.readCapture({ dir: result.captureDir, scopeRoot: FIXTURES, ports, ...options }),
     captureDir: result.captureDir,
     /** Every written path relative to the run's own directory — the layout without its timestamp. */
     layout: () =>
@@ -399,13 +399,17 @@ const runFlow = async (file, options = {}) => {
   const events = [];
   const result = await engine.runFlow({
     entry: flowPath(file),
-    scope: { workspaceRoot: FIXTURES },
+    // §12.2's `workspace:` prefix needs a scope root narrower than the fixtures tree's own, so a
+    // scenario reaching for it overrides the default with a `collectionRoot` of its own.
+    scope: options.scope || { workspaceRoot: FIXTURES },
     ports,
     // `vars` adds to the corpus-wide set rather than replacing it, so a scenario needing one
     // variable of its own does not have to restate every base URL the fixtures read.
     variables: { environment: { ...DEFAULT_VARS, ...options.vars } },
     // §12.5's params, as a host running a library flow directly supplies them.
     params: options.params,
+    // §6.4's implicit `collection` profile, which only a collection-scoped host can supply.
+    authProfiles: options.authProfiles,
     // §14.4's provenance input: the values a host knows are secret, which is the one of the three
     // sources the engine cannot resolve for itself.
     secrets: options.secrets,
@@ -427,7 +431,7 @@ const validate = async (file, options = {}) => {
   const { ports } = createPorts(options);
   return engine.validateFlow({
     entry: flowPath(file),
-    scope: { workspaceRoot: FIXTURES },
+    scope: options.scope || { workspaceRoot: FIXTURES },
     ports: { readFile: ports.readFile, readSpec: ports.readSpec }
   });
 };
@@ -437,7 +441,7 @@ const describe_ = async (file, options = {}) => {
   const { ports } = createPorts(options);
   return engine.describeFlow({
     entry: flowPath(file),
-    scope: { workspaceRoot: FIXTURES },
+    scope: options.scope || { workspaceRoot: FIXTURES },
     ports: { readFile: ports.readFile, readSpec: ports.readSpec }
   });
 };

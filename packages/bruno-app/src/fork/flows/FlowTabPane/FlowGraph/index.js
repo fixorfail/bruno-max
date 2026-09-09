@@ -22,8 +22,47 @@ import StyledWrapper from './StyledWrapper';
  * declining a graph library trades away.
  */
 
+/**
+ * §5.3: the steps whose `depends` join is `any`, from 001 §9.1's `FlowEdge.join`.
+ *
+ * **Marked at the receiving node rather than on the edges**, because `all` and `any` differ in
+ * whether the step runs at all and the incoming edges look identical either way — a distinction
+ * drawn on the lines would be four identical lines saying nothing four times.
+ */
+const anyJoinSteps = (edges) =>
+  new Set(edges.filter((edge) => edge.kind === 'depends' && edge.join === 'any').map((edge) => edge.to));
+
+/**
+ * §5.1's connector marker — an output this step declares nowhere, from 001 §8.5's `outputOrigins`.
+ *
+ * 001 §8.5 names the cost of a connector file as **locality**: the step's available outputs are no
+ * longer visible by reading the step, and a reader of the graph is one step further away again —
+ * `paymentId` is drawn leaving a box whose own `outputs:` block does not mention it. `bru flow
+ * validate` and `--dry-run` answer this by printing each output's origin; this is the same answer in
+ * the surface an author is actually looking at.
+ *
+ * **Which file, in the tooltip rather than in the glyph.** A step can inherit from both layers at
+ * once (001 §8.5 resolves workspace, then collection, then the step's own block), so a mark per
+ * origin would be two marks on the busiest line of the box saying one thing. Named in resolution
+ * order, so the two read the way the file that produced them is layered.
+ */
+const CONNECTOR_ORIGINS = [
+  ['workspace', 'the workspace connector file'],
+  ['collection', 'the collection connector file']
+];
+
+const connectorMarker = (node) => {
+  const origins = node.outputOrigins || {};
+  const named = CONNECTOR_ORIGINS.map(([origin, file]) => {
+    const outputs = Object.keys(origins).filter((name) => origins[name] === origin);
+    return outputs.length ? `${outputs.join(', ')} from ${file}` : undefined;
+  }).filter(Boolean);
+
+  return named.length ? { key: 'connector', glyph: '⧉', title: named.join('; ') } : undefined;
+};
+
 /** §5.1's markers, each shown only when the step carries the thing it marks. */
-const markersFor = (node) => {
+const markersFor = (node, joinsAny) => {
   const markers = [];
   if (node.markers.conditional) markers.push({ key: 'when', glyph: 'when', title: 'Conditional (when:)' });
   if (node.markers.retryMaxAttempts) {
@@ -38,6 +77,11 @@ const markersFor = (node) => {
   // mistaking the first for the second is how a broken authorization check reads as green (§5.1).
   if (node.markers.allowsErrorStatus) markers.push({ key: 'negative', glyph: '!', title: 'Negative test' });
   if (node.markers.usesSharedSlot) markers.push({ key: 'slot', glyph: '⌸', title: 'Uses a shared slot' });
+  const connector = connectorMarker(node);
+  if (connector) markers.push(connector);
+  // The word the file wrote, for `when`'s reason: `any` is what the author typed and what they would
+  // search the file for, and there is no glyph anyone reads as "one of these is enough".
+  if (joinsAny) markers.push({ key: 'join', glyph: 'any', title: 'Runs when any dependency is satisfied (join: any)' });
   return markers;
 };
 
@@ -324,26 +368,63 @@ const dataEdgeTitle = (edge, nodeStates, unproduced) => {
 };
 
 /**
- * §5.6: an `exports:` entry references `steps.<id>.<output>` (001 §12.1, and validation requires the
- * output to exist), so the value it carries is the producing step's declared output — the same fact
- * `dataEdgeTitle` reads off the same run, asked of the flow's boundary rather than of an edge.
+ * §5.6: an `exports:` entry referencing `steps.<id>.<output>` (001 §12.1, and validation requires the
+ * output to exist) carries the producing step's declared output — the same fact `dataEdgeTitle` reads
+ * off the same run, asked of the flow's boundary rather than of an edge.
  *
  * Nothing is claimed before that step ends: a value read mid-run would be the previous attempt's on
  * a step that is retrying, and `undefined` is not "no value" until there is no attempt left to make.
  */
 const EXPORT_REFERENCE = /^steps\.([^.]+)\.([^.]+)$/;
 
-const exportValue = (source, nodeStates) => {
+/** 001 §12.1's other root: the whole slot, whose value is resolved from the run rather than read. */
+const SLOT_REFERENCE = /^shared\.([^.]+)$/;
+
+const producedValue = (producer, output) => {
+  if (!producer || !TERMINAL_STATES.has(producer.state) || !producer.outputs) {
+    return undefined;
+  }
+  return producer.outputs[output];
+};
+
+/**
+ * A slot's value, by 001 §9.1's rule: the **last write in declaration order** whose step produced
+ * anything. `writes` is in that order, so the walk is backwards and the first value found is the
+ * one the engine resolved.
+ *
+ * **A writer that has not settled stops the walk.** A later-declared write takes the slot whenever
+ * it lands, so while one is outstanding the value is not yet decided and the row must claim
+ * nothing — the same rule the `steps.*` root follows for a step that is still running.
+ */
+const slotValue = (slot, slots, nodeStates) => {
+  const writes = slots.find((entry) => entry.name === slot)?.writes || [];
+
+  for (let index = writes.length - 1; index >= 0; index -= 1) {
+    const producer = nodeStates[writes[index].step];
+    if (!producer || !TERMINAL_STATES.has(producer.state)) {
+      return undefined;
+    }
+    const value = producedValue(producer, writes[index].output);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
+};
+
+const exportValue = (source, nodeStates, slots) => {
+  const slot = SLOT_REFERENCE.exec(source);
+  if (slot) {
+    const value = slotValue(slot[1], slots, nodeStates);
+    return value === undefined ? undefined : preview(value);
+  }
+
   const reference = EXPORT_REFERENCE.exec(source);
   if (!reference) {
     return undefined;
   }
 
-  const producer = nodeStates[reference[1]];
-  if (!producer || !TERMINAL_STATES.has(producer.state) || !producer.outputs) {
-    return undefined;
-  }
-  const value = producer.outputs[reference[2]];
+  const value = producedValue(nodeStates[reference[1]], reference[2]);
   return value === undefined ? undefined : preview(value);
 };
 
@@ -468,6 +549,13 @@ const FlowGraph = ({
     }
     return byStep;
   }, [diagnostics]);
+
+  /**
+   * §5.3's join, read off the description's own edges rather than off `edges` below: the toolbar
+   * hides data edges and the slot layer, and whether a step waits on all of its dependencies or on
+   * one of them is a fact about the flow that no view toggle changes.
+   */
+  const joinsAny = useMemo(() => anyJoinSteps(description.edges), [description.edges]);
 
   const edges = [...(showDataEdges ? graph.edges : graph.edges.filter((edge) => edge.kind !== 'data')), ...lane.edges];
   const rows = labelRows(edges);
@@ -668,7 +756,7 @@ const FlowGraph = ({
                   <div className="panel-title">Exports</div>
 
                   {exportEntries.map((entry) => {
-                    const value = exportValue(entry.source, nodeStates);
+                    const value = exportValue(entry.source, nodeStates, description.slots);
                     return (
                       <div className="panel-row" key={entry.name}>
                         <span className="panel-name">{entry.name}</span>
@@ -970,8 +1058,13 @@ const FlowGraph = ({
                   height={NODE_FOOTER_HEIGHT}
                 >
                   <div xmlns="http://www.w3.org/1999/xhtml" className="node-markers">
-                    {markersFor(node).map((marker) => (
-                      <span key={marker.key} className="node-marker" title={marker.title}>
+                    {markersFor(node, joinsAny.has(node.id)).map((marker) => (
+                      <span
+                        key={marker.key}
+                        className="node-marker"
+                        title={marker.title}
+                        data-testid={`flow-node-marker-${marker.key}-${node.id}`}
+                      >
                         {marker.glyph}
                       </span>
                     ))}

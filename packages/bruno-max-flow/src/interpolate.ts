@@ -35,6 +35,12 @@ export type Scope = {
   vars: Record<string, unknown>;
   /** The namespaces, which shadow it. */
   namespaces: Record<string, unknown>;
+  /**
+   * The two halves of `vars` a script addresses by name — §8.2's `ctx.env` is the host's
+   * environment tiers, §8.7's `ctx.vars` is the flow's own `vars:`. Interpolation never reads them
+   * (§7.3 has no `env.` or `vars.` prefix); a scope built where no script can run leaves them out.
+   */
+  tiers?: { env: Record<string, unknown>; vars: Record<string, unknown> };
 };
 
 export type Interpolated<T> = {
@@ -42,6 +48,13 @@ export type Interpolated<T> = {
   /** `steps.*` references naming an output the run never produced (§11.2). */
   unresolved: string[];
 };
+
+/**
+ * The scope as one map — what `lookup` below reads, flattened: a reserved root is a key holding its
+ * namespace, and every other key is the variable chain. `StepContext.variables` hands this to the
+ * host so what it interpolates around a request resolves exactly as the request did.
+ */
+export const scopeVariables = (scope: Scope): Record<string, unknown> => ({ ...scope.vars, ...scope.namespaces });
 
 const WHOLE_VALUE = /^\{\{([^{}]+)\}\}$/;
 const MOCK = /^\$(\w+)$/;

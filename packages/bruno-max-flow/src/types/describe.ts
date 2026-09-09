@@ -4,6 +4,7 @@
  * `rank` is the engine's and pixels are the renderer's: longest-path ranking is a fact about the
  * resolved DAG, so computing it in a renderer would be a second implementation of scheduling order.
  */
+import type { OutputOrigin } from '../connectors';
 import type { Diagnostic, StepStatus } from './result';
 
 export type FlowNode = {
@@ -22,6 +23,13 @@ export type FlowNode = {
   rank: number;
   /** Declared output names (§8.1, §8.5). */
   outputs: string[];
+  /**
+   * Where each of `outputs` was declared, by name — the step's own `outputs:` block, or §8.5's
+   * collection or workspace connector file. Present only when at least one came from a connector
+   * file, so a renderer can mark the outputs a reader will not find by opening the step (002 §5)
+   * and the common all-inline node carries nothing extra.
+   */
+  outputOrigins?: Record<string, OutputOrigin>;
   /**
    * §8.7's computed names. Their own list rather than part of `outputs`: those are what other steps
    * can read, and these are readable by nobody. A value promoted with `from: pre` is in both.
@@ -96,7 +104,19 @@ export type FlowDescription = {
   dataset?: { source: string; parallel: number };
   nodes: FlowNode[];
   edges: FlowEdge[];
-  slots: { name: string; writers: string[]; readers: string[] }[];
+  /**
+   * §9.1's slots. `writes` pairs each writer with the output it publishes, in declaration order —
+   * §12.1's `shared.<slot>` export has no producing step of its own, so a reader wanting its value
+   * resolves it here, taking the last write whose step ran. `writers` is that list's step
+   * projection, kept because 002 §5.4's lane names participants and because a run recorded before
+   * `writes` existed carries only that one.
+   */
+  slots: {
+    name: string;
+    writers: string[];
+    writes: { step: string; output: string }[];
+    readers: string[];
+  }[];
   /**
    * §5.5's stage boundaries in file order, each resolved to the rank whose column its rule is drawn
    * in front of. Only the ones the schedule allows: a boundary the run contradicts is dropped here

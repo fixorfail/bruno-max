@@ -1,0 +1,40 @@
+# R9.2's key-set row — what a script's `ctx` carries besides the flat variables, in each position.
+# The `pre:` and output scripts report the keys that are neither an environment nor a flow
+# variable, so the set is read off the context itself rather than off the harness's idea of which
+# variables exist; `when:` and `shouldRetry` return nothing of the kind, and their contexts are read
+# from the arguments the harness logged.
+version: 1
+
+meta:
+  name: R9.2 — the keys of ctx
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  nonce: n-1
+
+steps:
+  - id: probe
+    operation: regress-api#createThing
+    when:
+      script: |
+        (ctx) => ctx.vars.nonce === 'n-1'
+    pre:
+      keys: |
+        (ctx) => Object.keys(ctx).filter((k) => !(k in ctx.env) && !(k in ctx.vars))
+    body:
+      name: widget
+    outputs:
+      keys: { from: pre }
+      keysAfter:
+        script: |
+          (res, ctx) => Object.keys(ctx).filter((k) => !(k in ctx.env) && !(k in ctx.vars))
+    retry:
+      maxAttempts: 2
+      delay: 0
+      shouldRetry: |
+        (res, attempt, ctx) => false

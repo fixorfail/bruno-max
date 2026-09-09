@@ -1,0 +1,21 @@
+# R8.6 — `!...` outside a merge layer, where there is no seeded key to remove: it resolves as an
+# ordinary null and the flow runs as something nobody wrote.
+version: 1
+
+meta:
+  name: R8 — a misplaced drop
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  legacy: !...
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget

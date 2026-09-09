@@ -1,0 +1,36 @@
+# R8.4 — every inline override position at once, each naming something the operation's schema
+# declares: a top-level field, a nested `$ref`, an array of them, a free-form object, a query
+# parameter and a path parameter (§7.1).
+version: 1
+
+meta:
+  name: R8 — inline overrides
+
+apis:
+  orders-api: ../../specs/validation-v1.yml
+
+config:
+  baseUrl: "{{ordersBaseUrl}}"
+
+steps:
+  - id: create_order
+    operation: orders-api#createOrder
+    query:
+      dryRun: true
+    body:
+      reference: "ref-{{flow.runId}}"
+      customer:
+        id: cus-1
+        email: qa@example.com
+      lines:
+        - sku: widget-1
+          quantity: 2
+      metadata:
+        anything: goes
+    outputs:
+      orderId: data.id
+
+  - id: read_order
+    operation: orders-api#getOrder
+    pathParams:
+      orderId: "{{steps.create_order.orderId}}"

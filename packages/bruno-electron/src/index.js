@@ -34,6 +34,7 @@ if (os.platform() === 'linux') {
 }
 
 const menuTemplate = require('./app/menu-template');
+const { revealMainWindow } = require('./fork/window');
 const { openCollection } = require('./app/collections');
 const registerNetworkIpc = require('./ipc/network');
 const registerCollectionsIpc = require('./ipc/collection');
@@ -352,7 +353,7 @@ app.on('ready', async () => {
       const zoomLevel = percentageToZoomLevel(zoomPercentage);
       mainWindow.webContents.setZoomLevel(zoomLevel);
     }
-    mainWindow.show();
+    revealMainWindow(mainWindow, { app });
   });
   const devPort = process.env.BRUNO_DEV_PORT || 3000;
   const url = isDev

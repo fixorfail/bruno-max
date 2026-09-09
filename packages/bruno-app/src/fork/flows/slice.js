@@ -38,11 +38,19 @@ const initialState = {
    * flow's params are typed by hand before each run (§12.5), and losing them silently on the way to
    * another tab is indistinguishable from never having typed them.
    *
-   * **Deliberately not persisted to disk.** The snapshot middleware writes a curated subset of the
-   * store, and a flow's params routinely hold a password — this one is in memory for the life of the
-   * session and no longer.
+   * **Only `concurrency` and `dataset` are persisted** (`fork/snapshot.js`, 002 §7.2). The snapshot is
+   * plaintext under `userData`, and a flow's params and variable overrides routinely hold a password —
+   * those two live in memory for the life of the session and no longer.
    */
   configurations: {},
+  /**
+   * 002 §4.2: the workspace roots whose flow tabs have already been reopened from the snapshot.
+   *
+   * A workspace-scoped flow tab is the one tab upstream's snapshot cannot restore — it belongs to the
+   * workspace's scratch collection, which the serializer skips and the hydration excludes by uid — so
+   * the fork reopens those itself, once per scope.
+   */
+  restoredTabScopes: [],
   /** Every request the dispatch port sent, oldest first, for the DevTools network tab (002 §8.5). */
   requestLogs: [],
   /**
@@ -66,6 +74,18 @@ const initialState = {
    * shut, which is the one gesture most likely to precede reopening it.
    */
   folderExpansion: {},
+  /**
+   * 002 §6 and §11.1: pathname -> the place in the flow's document a surface has asked to be shown,
+   * as `{ line, column, nonce }`.
+   *
+   * **Held here rather than passed**, because the asking and the scrolling routinely happen in two
+   * different tabs: §6 makes the document the primary diagnostic surface, and a diagnostic listed on
+   * §4.2's run view has to reach §4.3's editor — which may not even be open yet when it is clicked.
+   *
+   * `nonce` is what makes asking twice for the same line two requests. Without it, clicking the same
+   * diagnostic after scrolling away is a no-op, which is exactly when somebody clicks it.
+   */
+  documentAnchors: {},
   /**
    * 002 §10's suite run — the flows of a past suite being re-run, folded from `main:flow-suite-event`.
    *
@@ -115,8 +135,32 @@ const emptyRun = ({ runId, iterationCount, captureDir, description, params, orig
   state: 'running',
   status: undefined,
   summary: undefined,
+  /**
+   * §7.1: the moment 001 §11.3's cleanup grace expires, set when the run enters that phase.
+   *
+   * Its presence is what the run control reads, rather than a state of its own: cleanup is still the
+   * run executing — `status: [cancelled]` steps report through the same stream — so a fourth value in
+   * `state` would have every reader that asks "is this run in flight" answer no while it still is.
+   */
+  cleanupDeadline: undefined,
+  /** §14.5's whole-run milliseconds, reported at `run:end`. */
+  duration: undefined,
+  /**
+   * §4.1: the pass/fail mark this run leaves on the flow's sidebar row and tab label, and whether
+   * the reader has been back to the flow since. Opening the flow clears it; the next run's end
+   * raises it again.
+   */
+  outcomeSeen: false,
   iterationCount,
   selectedIteration: 0,
+  /**
+   * §8.3's strip: iteration index -> the outcome that iteration reported at `iteration:end`.
+   *
+   * The engine's own word rather than one folded out of the steps — R4 keeps status derivation out
+   * of the renderer, and under `dataset.parallel > 1` the strip's whole job is to say which rows are
+   * still going, which an aggregate computed here would have to guess at.
+   */
+  iterationStatus: {},
   // { [iteration]: { [stepId]: node } } — 001 §13.2 keys a step event by id *and* iteration, and
   // under `dataset.parallel > 1` two iterations of the same step are genuinely in flight at once.
   steps: {}
@@ -204,16 +248,37 @@ const applyEvent = (state, event) => {
       nodesFor(run, event.index);
       break;
 
+    // §8.3: this row is done, and 001 §14.6's word for how. An iteration with a bucket and no entry
+    // here is one still in flight, which is the whole of what the strip has to distinguish.
+    case 'iteration:end':
+      run.iterationStatus[event.index] = event.status;
+      break;
+
     case 'iteration:vars':
       // §7.3 resolves `vars:` per iteration, so this arrives once per row and never replaces
       // another iteration's values.
       run.vars[event.index] = event.vars;
       break;
 
+    /**
+     * §7.1: cancellation has entered 001 §11.3's cleanup grace. The run control shows that state
+     * explicitly — a flow whose `status: [cancelled]` steps keep working for up to 30 seconds after
+     * a cancel is exactly when a UI that showed nothing would read as hung.
+     */
+    case 'run:cleanup':
+      run.cleanupDeadline = event.deadline;
+      break;
+
     case 'run:end':
       run.state = 'complete';
       run.status = event.result.status;
       run.summary = event.result.summary;
+      // §8.4's elapsed time. The engine's own, rather than a renderer clock: a run watched from a
+      // tab opened halfway through would otherwise be timed from when somebody started looking.
+      run.duration = event.result.duration;
+      run.cleanupDeadline = undefined;
+      // §4.1: an outcome nobody has been back to the flow for is what the sidebar mark is about.
+      run.outcomeSeen = false;
       run.decidedBy = decidedByIteration(event.result);
       /**
        * §13.2's run diagnostics — what happened during the run that did not stop it, and the reason
@@ -282,6 +347,32 @@ const applySuiteEvent = (state, suiteId, event) => {
   }
 };
 
+/**
+ * §6: every stored description is dropped, whatever changed.
+ *
+ * **Invalidating the file that changed is not enough, because a flow's diagnostics are not derived
+ * from that file alone.** A sub-flow decides its callers' `unknown-param` and their reads of its
+ * exports; an OpenAPI document decides every `unknown-operation` and `unknown-field` in every flow
+ * that binds it; `flows/scripts/` and `flows/fixtures/` decide whether a `functions.use:` or a
+ * `!file` resolves. Keyed invalidation left each of those reporting the *old* file until the flow
+ * that read them happened to be touched, which is a validator that lies about work already done.
+ *
+ * Dropping all of them costs one describe per *open tab* — the reducer only clears state, and
+ * `FlowTabPane` re-describes what it is mounted on. Precision here would mean tracking which files
+ * each description was built from, which is a `describeFlow` contract change; this is the whole of
+ * what correctness needs, and the accounting can follow if a describe ever becomes expensive.
+ *
+ * A draft is invalidated with them. §4.3's raw editor holds its own answer keyed on the text it
+ * asked about, so a document that changed underneath it — its text untouched — would keep the
+ * diagnostics of a question nobody would ask again; clearing the key is what re-arms that describe.
+ */
+const invalidateDescriptions = (state) => {
+  state.descriptions = {};
+  for (const source of Object.values(state.sources)) {
+    source.describedContent = undefined;
+  }
+};
+
 const slice = createSlice({
   name: 'flows',
   initialState,
@@ -298,17 +389,17 @@ const slice = createSlice({
       const { event, entry } = action.payload;
       const others = state.flows.filter((flow) => flow.pathname !== entry.pathname);
 
-      if (event === 'unlinkFile') {
-        state.flows = others;
-        delete state.descriptions[entry.pathname];
-        return;
-      }
+      state.flows = event === 'unlinkFile' ? others : [...others, entry];
+      invalidateDescriptions(state);
+    },
 
-      state.flows = [...others, entry];
-      // §6: diagnostics refresh on a watcher change, so a stale description must not survive one.
-      if (event === 'changeFile') {
-        delete state.descriptions[entry.pathname];
-      }
+    /**
+     * `main:flow-dependency-changed` (002 §11.3): a file no row of the sidebar stands for, which
+     * some open flow's diagnostics may nonetheless be derived from — an OpenAPI document the watcher
+     * follows by path, or a `flows/connectors.yml`.
+     */
+    flowDependencyChanged: (state) => {
+      invalidateDescriptions(state);
     },
 
     /**
@@ -389,8 +480,10 @@ const slice = createSlice({
     pastRunLoaded: (state, action) => {
       const { pathname, stored } = action.payload;
       const steps = {};
+      const iterationStatus = {};
 
       for (const iteration of stored.result?.iterations || []) {
+        iterationStatus[iteration.index] = iteration.status;
         steps[iteration.index] = Object.fromEntries(
           iteration.steps.map((step) => [
             step.id,
@@ -424,12 +517,21 @@ const slice = createSlice({
         state: stored.state,
         status: stored.status,
         summary: stored.summary,
+        /** §8.4's elapsed, from the same field a live run reports. Absent for an interrupted run. */
+        duration: stored.result?.duration,
+        /**
+         * §4.1's mark is about a run that ended while nobody was looking. Opening one from the
+         * selector *is* looking, so a restored run never raises it.
+         */
+        outcomeSeen: true,
         diagnostics: stored.result?.diagnostics || [],
         // A run stored before `decidedBy` existed reports none, and an interrupted one has no
         // `summary.json` to report it in; neither is a run that nothing decided.
         decidedBy: stored.result ? decidedByIteration(stored.result) : {},
         iterationCount: stored.result?.iterations.length || 1,
         selectedIteration: 0,
+        /** §8.3's strip, from the same field a live run reports at `iteration:end`. */
+        iterationStatus,
         steps,
         /**
          * The graph this run executed (001 §14.5), which the tab draws instead of the flow's current
@@ -476,6 +578,20 @@ const slice = createSlice({
       delete state.runs[pathname];
     },
 
+    /**
+     * §4.1: the flow was opened, so its finished run's pass/fail mark has been seen.
+     *
+     * The run itself is untouched — §10 keeps it on the tab, and the selector still lists it. What
+     * is cleared is the *ambient* statement about it, which exists for the run you walked away from
+     * and has nothing left to say once you are back.
+     */
+    runOutcomeSeen: (state, action) => {
+      const run = state.runs[action.payload.pathname];
+      if (run) {
+        run.outcomeSeen = true;
+      }
+    },
+
     iterationSelected: (state, action) => {
       const { pathname, iteration } = action.payload;
       state.runs[pathname].selectedIteration = iteration;
@@ -485,6 +601,33 @@ const slice = createSlice({
     configurationChanged: (state, action) => {
       const { pathname, configuration } = action.payload;
       state.configurations[pathname] = configuration;
+    },
+
+    /**
+     * §7.2: the run configuration as the last session left it, read back from the snapshot.
+     *
+     * **A configuration already in the store wins.** This arrives asynchronously, and a flow the
+     * reader has already configured this session must not have their typing replaced by what was on
+     * disk when the app started.
+     */
+    configurationsRestored: (state, action) => {
+      for (const [pathname, configuration] of Object.entries(action.payload.configurations)) {
+        if (!state.configurations[pathname]) {
+          state.configurations[pathname] = configuration;
+        }
+      }
+    },
+
+    /**
+     * §4.2: the workspace-scoped flow tabs of one scope have been reopened, so nothing reopens them
+     * again.
+     *
+     * Recorded per scope rather than once, because scopes are watched as they open and a second
+     * workspace's tabs are restored when *it* opens. Without the mark, every later watch of a scope
+     * would reopen tabs the reader had since closed.
+     */
+    flowTabsRestored: (state, action) => {
+      state.restoredTabScopes.push(action.payload.workspaceRoot);
     },
 
     /** `stepId` is null when the selection is cleared — clicking the selected node again (002 §9). */
@@ -511,6 +654,23 @@ const slice = createSlice({
       for (const key of action.payload.keys) {
         delete state.folderExpansion[key];
       }
+    },
+
+    /**
+     * §6 and §11.1: show this place in the flow's document.
+     *
+     * Asked for by a diagnostic that names a line (§6 anchors them there) and by a node click, which
+     * §11.1 says scrolls the document to the step — which is what `FlowNode.position` is returned
+     * for. A request with no position is not one: nothing here guesses a line.
+     */
+    documentAnchored: (state, action) => {
+      const { pathname, line, column } = action.payload;
+      if (typeof line !== 'number') {
+        return;
+      }
+
+      const previous = state.documentAnchors[pathname];
+      state.documentAnchors[pathname] = { line, column, nonce: (previous?.nonce || 0) + 1 };
     },
 
     stepSelected: (state, action) => {
@@ -555,11 +715,41 @@ const slice = createSlice({
      * while the editor is ahead of the file, and saving is what makes them agree.
      */
     sourceDescribed: (state, action) => {
-      const { pathname, description } = action.payload;
+      const { pathname, description, content } = action.payload;
       const source = state.sources[pathname];
-      if (source) {
+      if (!source) {
+        return;
+      }
+
+      /**
+       * The text this description was taken from, so the pane can tell a verdict on what is in the
+       * editor from a verdict on what was in it three keystrokes ago. §4.3 asks the *engine* whether
+       * a draft parses (002-C R4 leaves the renderer no parser of its own), and an engine answers
+       * over IPC — so unlike a synchronous check the answer arrives late and has to say what it is
+       * about.
+       */
+      source.describedContent = content;
+      source.describeError = undefined;
+      // 001 §14.6's own code for text that is not a document. The engine reports it as an anchored
+      // diagnostic rather than by failing, which is what lets a broken flow open at all (§6).
+      source.parses = !description.diagnostics.some((entry) => entry.code === 'parse-error');
+
+      /**
+       * §6's set, kept beside the description rather than inside it, because the two answer about
+       * different text once a draft stops parsing: the drawing holds the last graph that could be
+       * built, and the diagnostics are about what is in the editor now — which is where the anchored
+       * `parse-error` is, and the whole of what §6 requires a broken flow to open into.
+       */
+      source.diagnostics = description.diagnostics;
+
+      /**
+       * **The last draft that parsed is what stays on the graph.** A document that did not parse
+       * describes as an empty shell, and drawing it would blank the graph on every half-typed line —
+       * §4.3 holds the drawing still instead and says that it is holding still. A flow that has never
+       * parsed has no description at all, which is §6's empty graph for a broken file.
+       */
+      if (source.parses) {
         source.description = description;
-        source.describeError = undefined;
       }
     },
 
@@ -622,7 +812,14 @@ const slice = createSlice({
         return;
       }
 
-      for (const keyed of [state.descriptions, state.runs, state.selectedStep, state.configurations, state.sources]) {
+      for (const keyed of [
+        state.descriptions,
+        state.runs,
+        state.selectedStep,
+        state.configurations,
+        state.sources,
+        state.documentAnchors
+      ]) {
         if (keyed[from] !== undefined) {
           keyed[to] = keyed[from];
           delete keyed[from];
@@ -651,6 +848,7 @@ const slice = createSlice({
 export const {
   flowsLoaded,
   flowTreeUpdated,
+  flowDependencyChanged,
   flowPathRenamed,
   describeStarted,
   describeSucceeded,
@@ -660,11 +858,15 @@ export const {
   suiteRunCancelled,
   pastRunLoaded,
   runClosed,
+  runOutcomeSeen,
   iterationSelected,
   configurationChanged,
+  configurationsRestored,
+  flowTabsRestored,
   folderToggled,
   foldersExpanded,
   foldersCollapsed,
+  documentAnchored,
   stepSelected,
   requestLogsReceived,
   sourceLoaded,

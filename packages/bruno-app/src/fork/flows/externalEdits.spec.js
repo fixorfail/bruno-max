@@ -140,6 +140,15 @@ describe('the watcher listener', () => {
     expect(listenerFor('main:flow-tree-updated')).toBeInstanceOf(Function);
   });
 
+  /**
+   * §6: an OpenAPI document or a `flows/connectors.yml` is not a row in the sidebar, so it arrives on
+   * its own channel — and a listener nobody registered would leave every diagnostic derived from one
+   * frozen at whatever the file said when the flow was opened.
+   */
+  it('is registered for a dependency that is not in the tree', () => {
+    expect(listenerFor('main:flow-dependency-changed')).toBeInstanceOf(Function);
+  });
+
   it('refreshes on a change', () => {
     expect(refreshesOn('changeFile')).toBe(true);
   });

@@ -1,0 +1,34 @@
+# R8.14 — §6.4's implicit `collection` profile. Nothing here declares an `authProfiles:` block;
+# `collection` is the host's to supply through `RunOptions.authProfiles` at run time, and whether it
+# actually did is what the run itself reports (materialize.ts), not something `bru flow validate`
+# can know. What validate *can* know is whether this scope has a collection to inherit one from.
+version: 1
+
+meta:
+  name: R8.14 — the implicit collection profile
+
+apis:
+  regress-api:
+    source: ../../specs/regressions-v1.yml
+    auth: collection
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  # Through the binding's `auth:` — the case a collection flow calling one API never spells out.
+  - id: through_binding
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  # Named on the step, over a binding that already resolves to it.
+  - id: on_step
+    operation: regress-api#getThing
+    auth: collection
+    pathParams:
+      id: thing-1
+
+  - id: opted_out
+    operation: regress-api#getState
+    auth: none

@@ -1,0 +1,21 @@
+# R9.12 — a `uses:` step's `step:start` says how many steps the sub-flow runs, which is what §14.7's
+# `sub-flow (2 steps)` prints while the container is still in flight.
+version: 1
+
+meta:
+  name: R9.12 — a sub-flow announces its step count
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: inner
+    uses: ./r9-two-steps-library.flow.yml
+
+  - id: follow_up
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.inner.thingId}}"

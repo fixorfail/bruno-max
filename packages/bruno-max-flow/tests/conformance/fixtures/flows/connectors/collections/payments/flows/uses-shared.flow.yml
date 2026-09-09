@@ -1,0 +1,15 @@
+# R10.3's §12.3 row — the workspace's shared flow resolves its connectors from its own scope, the
+# workspace file alone, so `role`, which this collection's file suppresses, is still exported to here.
+version: 1
+
+meta:
+  name: R10 — uses shared
+
+steps:
+  - id: auth
+    uses: workspace:flows/shared/login.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+    assert:
+      - steps.auth.role eq admin
+      - steps.auth.token eq tok-1

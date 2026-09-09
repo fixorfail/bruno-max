@@ -1,0 +1,18 @@
+# R8.5 — a `!file` in a JSON body, which §7.5 assembles from the merged structure: the reference is
+# serialized as an object and the file is never read.
+version: 1
+
+meta:
+  name: R8 — a file where the media type takes none
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: !file ./fixtures/catalog.json

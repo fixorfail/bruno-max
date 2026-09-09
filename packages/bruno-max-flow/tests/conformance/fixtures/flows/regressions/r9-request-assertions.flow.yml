@@ -1,0 +1,31 @@
+# R9.3 — §10.2's `req.*`: an assertion addresses the request as it went out. Before the root was
+# addressable, `req.headers.x` resolved to `undefined` and the assertion failed without naming why.
+# Header names are lower-cased as `steps.<id>.headers` are (§8.3): the step writes `X-Trace`, and
+# the assertion reads `x-trace`.
+version: 1
+
+meta:
+  name: R9.3 — an assertion addresses the request as sent
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  trace: t-1
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    headers:
+      X-Trace: "{{trace}}"
+    body:
+      name: widget
+    assert:
+      - req.method eq POST
+      - req.url eq https://regress.example.com/things
+      - req.headers['x-trace'] eq t-1
+      - req.headers['X-Trace'] isUndefined
+      - req.body.name eq widget

@@ -1,0 +1,103 @@
+openapi: 3.0.3
+# The document R8's static checks are asserted against. Where `regressions-v1.yml` is deliberately
+# flat, this one is deliberately *specific*: §7.1's structural-drift check can only be tested against
+# a document that says what its fields are, and each shape below is one thing the check has to get
+# right — a nested `$ref`, an array of them, a free-form object it must leave alone, a declared query
+# parameter, and an operation with no `operationId` at all (§6.1's fallback).
+info: { title: Validation API, version: 1.0.0 }
+servers:
+  - url: https://validate.example.com
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      parameters:
+        - { name: dryRun, in: query, schema: { type: boolean } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reference]
+              properties:
+                reference: { type: string }
+                customer:
+                  $ref: '#/components/schemas/Customer'
+                lines:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Line'
+                # Free-form by declaration, so a key under it is the API's business and not a typo
+                # this check can claim to have caught.
+                metadata:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+  /orders/{orderId}:
+    parameters:
+      - { name: orderId, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: getOrder
+      responses:
+        '200':
+          description: One order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+  /orders/{orderId}/attachments:
+    parameters:
+      - { name: orderId, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: attachDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              # §7.1 never seeds a `format: binary` property, so a required one is supplied by the
+              # step or not at all — which is the case §7.5 asks a check to name.
+              required: [document]
+              properties:
+                document: { type: string, format: binary }
+                note: { type: string }
+      responses:
+        '201': { description: Attached }
+  # R8.10 addresses this one by method and path. It carries an `operationId` here because the corpus
+  # guard (`fixtures.spec.js`) requires every committed operation to have one, and the scenario
+  # supplies a copy with the id stripped — which is the document §6.1's fallback exists for.
+  /orders/{orderId}/refund:
+    post:
+      operationId: refundOrder
+      responses:
+        '202': { description: Accepted }
+components:
+  schemas:
+    Customer:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+    Line:
+      type: object
+      properties:
+        sku: { type: string }
+        quantity: { type: integer }

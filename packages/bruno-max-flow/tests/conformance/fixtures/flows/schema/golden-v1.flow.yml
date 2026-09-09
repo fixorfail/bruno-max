@@ -1,0 +1,108 @@
+# §15's golden fixture for format version 1, read as committed and never edited.
+#
+# §5.4 gives a version's schema only optional additions, so this file must keep validating against
+# `flowSchema(1)` for as long as v1 is a version anyone may write — including after a version 2
+# exists. It is deliberately broad rather than minimal: a golden fixture only catches what it
+# exercises, so it carries one of every top-level block and both local tags (§5.4), which are the
+# part of the format a schema is most likely to get wrong.
+version: 1
+
+meta:
+  name: R4m — the version 1 surface
+  description: One of every block the format has, so a v2 that broke v1 fails here.
+  testId: C1000
+  tags: [schema, golden]
+
+apis:
+  regress-api:
+    source: ../../specs/regressions-v1.yml
+    auth: user-token
+    color: '#4c8'
+    defaultHeaders:
+      X-Client: bruno-flows
+
+authProfiles:
+  user-token:
+    mode: bearer
+    token: "{{steps.auth.token}}"
+
+functions:
+  upper: |
+    (value) => String(value).toUpperCase()
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  concurrency: 2
+  failOnStatusCode: true
+  retry:
+    maxAttempts: 2
+    delay: 100
+    backoff: exponential
+    jitter: full
+
+vars:
+  label: widget
+  catalog: !file ./fixtures/manifest.csv
+
+dataset:
+  source: ./data/rows.csv
+  parallel: 1
+
+shared:
+  thingId:
+    writers: any
+
+stages:
+  setup: auth
+  test: create
+
+steps:
+  - id: auth
+    uses: ./library.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+
+  - id: create
+    operation: regress-api#createThing
+    depends: [auth]
+    meta:
+      owner: payments
+    pre:
+      shout: |
+        (ctx) => upper(ctx.vars.label)
+    body:
+      name: "{{pre.shout}}"
+      ref: !...
+    outputs:
+      thingId: data.id
+      code:
+        from: status
+    shared:
+      thingId: thingId
+    assert:
+      - res.status eq 201
+    retry:
+      maxAttempts: 3
+    timeout: 5000
+
+  - id: read_back
+    operation: regress-api#getThing
+    depends:
+      all:
+        - on: create
+          status: [success]
+    when: steps.create.code eq 201
+    pathParams:
+      id: "{{shared.thingId}}"
+
+  - id: upload_manifest
+    operation: regress-api#createBundle
+    contentType: multipart/form-data
+    depends:
+      any: [read_back]
+    body:
+      name: "{{row.tier}}"
+      manifest: !file
+        path: ./fixtures/manifest.csv
+        filename: manifest.csv
+        contentType: text/csv

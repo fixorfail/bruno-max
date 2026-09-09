@@ -1,0 +1,38 @@
+version: 1
+
+meta:
+  name: Cancel with cleanup
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+config:
+  concurrency: 1
+
+vars:
+  settleKey: "{{$randomUUID}}"
+
+steps:
+  # Cancelled inside a retry delay, which is what makes it report `cancelled` rather than a failed
+  # request — and so what makes the cleanup step below eligible at all.
+  - id: poll_settlement
+    operation: orders#settleOrder
+    pathParams:
+      key: "{{settleKey}}"
+    query:
+      after: 99
+    retry:
+      maxAttempts: 20
+      delay: 3000
+      shouldRetry: |
+        (res) => res.body.state === 'pending'
+
+  # 001 §11.3's cleanup: it runs only once the step above it has been cancelled, and it takes long
+  # enough that 002 §7.1's cleanup state is on screen rather than passed through.
+  - id: release_hold
+    operation: orders#awaitOrder
+    depends:
+      - on: poll_settlement
+        status: [cancelled]
+    query:
+      time: 2000

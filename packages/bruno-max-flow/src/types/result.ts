@@ -119,6 +119,12 @@ export type RunResult = {
    */
   decidedBy?: string[];
   summary: RunSummary;
+  /**
+   * Whole-run milliseconds, `run:start` to `run:end`, on the injected clock — every iteration and
+   * the cleanup window included. 002 §8.4's summary line reads it; `StepResult.durationMs` is per
+   * step and cannot be summed into this under `concurrency > 1`.
+   */
+  duration: number;
   /** Validation warnings that did not stop the run. */
   diagnostics: Diagnostic[];
   captureDir?: string;
@@ -183,8 +189,32 @@ export type FlowEvent
    * row. The entry flow's only; a sub-flow's vars are its internals (§12.3).
    */
   | { type: 'iteration:vars'; index: number; vars: Vars }
-  | { type: 'step:start'; id: string; index: number; operation?: string }
+  /**
+   * `steps` is the number of internal steps a `uses:` step is about to run — what §14.7's
+   * `sub-flow (2 steps)` prints while the container's own line is still in flight, and a count no
+   * consumer can take from `step:end`, which arrives only once every internal has. Absent for an
+   * operation step.
+   */
+  | { type: 'step:start'; id: string; index: number; operation?: string; steps?: number }
   | { type: 'step:attempt'; id: string; index: number; attempt: number; status: string; durationMs: number }
-  | { type: 'step:end'; id: string; index: number; result: StepResult }
+  | {
+    type: 'step:end';
+    id: string;
+    index: number;
+    result: StepResult;
+    /**
+     * §14.5's inline copy of the step's last attempt — the request as sent and the response body,
+     * each cut at `config.capturePreviewBytes` and masked exactly as the capture is (§14.4). The
+     * console's `--verbose` line (§14.7) reads it; the untruncated payload stays in the capture.
+     * Absent where the step sent nothing, and never a binary body (§14.5).
+     */
+    preview?: { request?: string; response?: string };
+  }
   | { type: 'iteration:end'; index: number; status: RunStatus }
+  /**
+   * §11.3's cleanup window has opened: the run is stopped, and only steps whose `depends` accepts
+   * `cancelled` run from here until `deadline` (epoch ms on the run's clock). Emitted once, before
+   * any such step starts, so 002 §7.1's control can show the state rather than appear hung.
+   */
+  | { type: 'run:cleanup'; runId: string; deadline: number }
   | { type: 'run:end'; result: RunResult };

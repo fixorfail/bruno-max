@@ -1,0 +1,6 @@
+name: Staging
+variables:
+  - name: ordersBaseUrl
+    value: http://localhost:8081
+  - name: region
+    value: staging

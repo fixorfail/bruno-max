@@ -1,0 +1,25 @@
+# R8.7 — a `uses:` step carrying only what §12.4 permits, reading the sub-flow's export as its own
+# output with no re-declaration in this file (§12.2).
+version: 1
+
+meta:
+  name: R8 — a caller
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: auth
+    uses: ./login.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+
+  - id: create
+    operation: regress-api#createThing
+    headers:
+      Authorization: "Bearer {{steps.auth.token}}"
+    body:
+      name: widget

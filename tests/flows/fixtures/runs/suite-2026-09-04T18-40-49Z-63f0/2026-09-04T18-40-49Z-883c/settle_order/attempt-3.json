@@ -1,0 +1,46 @@
+{
+  "stepId": "settle_order",
+  "iteration": 0,
+  "attempt": 3,
+  "startedAt": "2026-09-04T18:40:49.838Z",
+  "durationMs": 4,
+  "request": {
+    "method": "GET",
+    "url": "http://localhost:8081/api/settle/caa8fe43-ccfa-4881-8bee-aa8c4452f6a4?after=2",
+    "headers": {}
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "headers": {
+      "x-powered-by": "Express",
+      "access-control-allow-origin": "*",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "76",
+      "etag": "W/\"4c-MtdUqDNOiGJUeht5luFhkjEZ13M\"",
+      "date": "Fri, 04 Sep 2026 18:40:49 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "body": {
+      "kind": "text",
+      "contentType": "application/json; charset=utf-8",
+      "text": "{\"key\":\"caa8fe43-ccfa-4881-8bee-aa8c4452f6a4\",\"attempt\":3,\"state\":\"settled\"}"
+    },
+    "responseTimeMs": 3
+  },
+  "assertions": [
+    {
+      "expr": "res.body.state eq settled",
+      "passed": true,
+      "expected": "settled",
+      "actual": "settled"
+    }
+  ],
+  "validation": {
+    "response": {
+      "valid": true,
+      "errors": []
+    }
+  }
+}

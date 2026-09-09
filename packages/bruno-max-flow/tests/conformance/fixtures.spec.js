@@ -114,6 +114,10 @@ describe('fixture corpus', () => {
     it('passes only declared params at each uses: call site', () => {
       for (const step of flow.steps || []) {
         if (!step.uses) continue;
+        // A `workspace:` target (001 §12.2) resolves from the workspace root, which this checker
+        // has no notion of — it treats the whole corpus as one flat tree. R12.1 in
+        // subflow-resolution.spec.js asserts the real resolution and the params that follow from it.
+        if (step.uses.startsWith('workspace:')) continue;
         const target = path.resolve(dir, step.uses);
         expect(fs.existsSync(target)).toBe(true);
         const sub = load(target);

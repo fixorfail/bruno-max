@@ -47,9 +47,25 @@ export type StepContext = FlowContext & {
   /** 1-based, per §11.1. */
   attempt: number;
   cookieJar: CookieJarHandle;
+  /**
+   * Everything `{{...}}` resolves against for this step, as one map: §7.3's chain flattened, the
+   * flow's `vars:` as this iteration resolved them, and the namespaces (`steps`, `row`, `params`,
+   * `shared`, `flow`, `pre`, `process`) as keys of their own.
+   *
+   * The request itself is already interpolated; this is for what the host adds *around* it. `bru
+   * run` interpolates a collection's proxy and certificate configuration against the request's
+   * variables, and a host that had only the request could not do the same for a flow (§7.4) — or
+   * would rebuild the chain from `RunOptions.variables` and get a different answer than the request
+   * did.
+   */
+  variables: Vars;
   /** The step's per-attempt `timeout` (§11.1). */
   timeoutMs?: number;
-  /** The attempt's signal — aborts on timeout, on maxDuration, or with the run. */
+  /**
+   * The attempt's signal. It aborts with the run, except for a step running inside §11.3's cleanup
+   * window — the run's signal is already aborted by then, so that one is bounded by the window's
+   * deadline instead and is live when the request goes out.
+   */
   signal: AbortSignal;
 };
 

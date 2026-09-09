@@ -452,7 +452,7 @@ const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
  * past one alike. Reading the run control's checkbox instead makes unchecking it erase the captures
  * of a run that already happened, which no setting for the *next* run should be able to do.
  */
-const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpandSubflow }) => {
+const StepDetail = ({ stepId, node, running, scopeRoot, runDir, iteration, height, onExpandSubflow }) => {
   const dispatch = useDispatch();
   const [tab, setTab] = useState(DEFAULT_TAB);
   /**
@@ -491,7 +491,7 @@ const StepDetail = ({ stepId, node, running, runDir, iteration, height, onExpand
 
     let current = true;
     setRead({ status: 'loading' });
-    dispatch(readStepCapture({ dir: runDir, stepId, iteration, attempt }))
+    dispatch(readStepCapture({ scopeRoot, dir: runDir, stepId, iteration, attempt }))
       .then((capture) => current && setRead({ status: 'loaded', capture }))
       .catch((error) => current && setRead({ status: 'failed', error: error.message }));
 

@@ -1,7 +1,10 @@
 import reducer, {
   flowsLoaded,
   flowTreeUpdated,
+  flowDependencyChanged,
   describeSucceeded,
+  sourceLoaded,
+  sourceDescribed,
   folderToggled,
   foldersCollapsed,
   foldersExpanded,
@@ -9,7 +12,9 @@ import reducer, {
   suiteEventReceived,
   suiteRunCancelled,
   pastRunLoaded,
-  requestLogsReceived
+  requestLogsReceived,
+  runOutcomeSeen,
+  documentAnchored
 } from './slice';
 
 /**
@@ -116,13 +121,56 @@ describe('the flows slice', () => {
     expect(state.descriptions[pathname]).toBeUndefined();
   });
 
-  it('invalidates the description when the file changes, so diagnostics refresh', () => {
-    let state = reducer(undefined, flowsLoaded({ workspaceRoot, flows: [entry] }));
-    state = reducer(state, describeSucceeded({ pathname, description: { nodes: [] } }));
-    state = reducer(state, flowTreeUpdated({ event: 'changeFile', entry }));
+  /**
+   * §6: a flow's diagnostics are not derived from its own file alone — a sub-flow decides its
+   * callers', an OpenAPI document decides every flow that binds it — so a change invalidates every
+   * description rather than the one keyed on the path that changed.
+   */
+  describe('invalidating what has been described', () => {
+    const other = { pathname: '/workspace/flows/other.flow.yml', filename: 'other.flow.yml', workspaceRoot };
 
-    expect(state.descriptions[pathname]).toBeUndefined();
-    expect(state.flows).toHaveLength(1);
+    const described = () => {
+      let state = reducer(undefined, flowsLoaded({ workspaceRoot, flows: [entry, other] }));
+      state = reducer(state, describeSucceeded({ pathname, description: { nodes: [] } }));
+      return reducer(state, describeSucceeded({ pathname: other.pathname, description: { nodes: [] } }));
+    };
+
+    it('drops every description when one flow changes, not only that flow\'s', () => {
+      const state = reducer(described(), flowTreeUpdated({ event: 'changeFile', entry }));
+
+      expect(state.descriptions).toEqual({});
+      expect(state.flows).toHaveLength(2);
+    });
+
+    /** An editor that saves by rename reports an add, and the bytes changed just the same. */
+    it('drops them on an add as well as a change', () => {
+      expect(reducer(described(), flowTreeUpdated({ event: 'addFile', entry })).descriptions).toEqual({});
+    });
+
+    it('drops them when a file no row stands for changes', () => {
+      expect(reducer(described(), flowDependencyChanged()).descriptions).toEqual({});
+    });
+
+    /**
+     * §4.3's editor answers about the text it asked about, so a document that changed underneath it
+     * leaves the question unchanged and the answer stale. Clearing the key is what re-asks it.
+     */
+    it('re-arms a raw editor whose text did not change', () => {
+      let state = described();
+      state = reducer(state, sourceLoaded({ pathname, content: 'version: 1\n' }));
+      state = reducer(state, sourceDescribed({
+        pathname,
+        content: 'version: 1\n',
+        description: { nodes: [], diagnostics: [] }
+      }));
+      expect(state.sources[pathname].describedContent).toBe('version: 1\n');
+
+      state = reducer(state, flowDependencyChanged());
+
+      expect(state.sources[pathname].describedContent).toBeUndefined();
+      // The text itself is untouched: nothing on disk said otherwise.
+      expect(state.sources[pathname].content).toBe('version: 1\n');
+    });
   });
 
   it('keeps the capture directory the run reported at start', () => {
@@ -572,6 +620,159 @@ describe('the flows slice', () => {
       expect(reducer(state, foldersCollapsed({ keys: [company, billing] })).folderExpansion).toEqual({
         [other]: true
       });
+    });
+  });
+
+  /**
+   * 002 §7.1: cancellation enters 001 §11.3's cleanup grace, and the run control has to be able to
+   * say so — a flow whose `status: [cancelled]` steps keep working for thirty seconds after the
+   * click looks hung otherwise.
+   */
+  describe('the cleanup window (§7.1)', () => {
+    it('records the deadline the run reported, without ending the run', () => {
+      const state = withEvents(started(), 'run-1', [{ type: 'run:cleanup', runId: 'run-1', deadline: 1737000030000 }]);
+
+      expect(state.runs[pathname].cleanupDeadline).toBe(1737000030000);
+      expect(state.runs[pathname].state).toBe('running');
+    });
+
+    it('clears it when the run ends', () => {
+      const cleaning = withEvents(started(), 'run-1', [{ type: 'run:cleanup', runId: 'run-1', deadline: 1 }]);
+      const ended = withEvents(cleaning, 'run-1', [
+        { type: 'run:end', runId: 'run-1', result: { status: 'cancelled', summary: {}, iterations: [], duration: 8 } }
+      ]);
+
+      expect(ended.runs[pathname].cleanupDeadline).toBeUndefined();
+    });
+  });
+
+  /** §8.4's elapsed is the engine's whole-run measurement, not a clock the view started itself. */
+  describe('a run\'s duration (§8.4)', () => {
+    it('is taken from run:end', () => {
+      const state = withEvents(started(), 'run-1', [
+        {
+          type: 'run:end',
+          runId: 'run-1',
+          result: { status: 'passed', summary: { total: 3 }, iterations: [], duration: 4212 }
+        }
+      ]);
+
+      expect(state.runs[pathname].duration).toBe(4212);
+    });
+
+    it('comes back with a stored run', () => {
+      const state = reducer(
+        undefined,
+        pastRunLoaded({
+          pathname,
+          stored: {
+            runId: 'run-9',
+            dir: '/runs/run-9',
+            state: 'complete',
+            status: 'passed',
+            capturedSteps: [],
+            result: { iterations: [{ index: 0, status: 'passed', steps: [] }], duration: 900 }
+          }
+        })
+      );
+
+      expect(state.runs[pathname].duration).toBe(900);
+    });
+  });
+
+  /**
+   * §8.3's strip. The word is the engine's, reported at `iteration:end`; a row with a bucket and no
+   * word is one still in flight, which is what the strip exists to show under a parallel dataset.
+   */
+  describe('per-iteration status (§8.3)', () => {
+    it('records each row\'s outcome as the engine reports it', () => {
+      const state = withEvents(started(undefined, { iterationCount: 3 }), 'run-1', [
+        { type: 'iteration:start', index: 0 },
+        { type: 'iteration:start', index: 1 },
+        { type: 'iteration:end', index: 0, status: 'passed' }
+      ]);
+
+      expect(state.runs[pathname].iterationStatus).toEqual({ 0: 'passed' });
+      expect(state.runs[pathname].steps[1]).toEqual({});
+    });
+
+    it('comes back with a stored run', () => {
+      const state = reducer(
+        undefined,
+        pastRunLoaded({
+          pathname,
+          stored: {
+            runId: 'run-9',
+            dir: '/runs/run-9',
+            state: 'complete',
+            capturedSteps: [],
+            result: {
+              iterations: [
+                { index: 0, status: 'passed', steps: [] },
+                { index: 1, status: 'failed', steps: [] }
+              ]
+            }
+          }
+        })
+      );
+
+      expect(state.runs[pathname].iterationStatus).toEqual({ 0: 'passed', 1: 'failed' });
+    });
+  });
+
+  /**
+   * §4.1: the mark a finished run leaves on the sidebar row and the tab label is *cleared the next
+   * time the flow is opened*, and raised again by the next run that ends.
+   */
+  describe('the run mark (§4.1)', () => {
+    const ended = (state) =>
+      withEvents(state, 'run-1', [
+        { type: 'run:end', runId: 'run-1', result: { status: 'failed', summary: {}, iterations: [], duration: 1 } }
+      ]);
+
+    it('stands until the flow is opened', () => {
+      const state = ended(started());
+      expect(state.runs[pathname].outcomeSeen).toBe(false);
+
+      expect(reducer(state, runOutcomeSeen({ pathname })).runs[pathname].outcomeSeen).toBe(true);
+    });
+
+    it('is raised again by the next run that ends', () => {
+      const seen = reducer(ended(started()), runOutcomeSeen({ pathname }));
+
+      expect(ended(started(seen)).runs[pathname].outcomeSeen).toBe(false);
+    });
+
+    /** Opening a stored run from §10's selector is looking at it, so it raises nothing. */
+    it('is not raised by a run read back from disk', () => {
+      const state = reducer(
+        undefined,
+        pastRunLoaded({
+          pathname,
+          stored: { runId: 'r', dir: '/d', state: 'complete', status: 'failed', capturedSteps: [] }
+        })
+      );
+
+      expect(state.runs[pathname].outcomeSeen).toBe(true);
+    });
+  });
+
+  /**
+   * §6 and §11.1: a place in the flow's document that a surface has asked to be shown. Held in the
+   * slice because the asking and the scrolling are routinely in two different tabs.
+   */
+  describe('the document anchor (§6)', () => {
+    it('carries the position, and counts each request', () => {
+      const first = reducer(undefined, documentAnchored({ pathname, line: 12, column: 3 }));
+      expect(first.documentAnchors[pathname]).toEqual({ line: 12, column: 3, nonce: 1 });
+
+      const again = reducer(first, documentAnchored({ pathname, line: 12, column: 3 }));
+      expect(again.documentAnchors[pathname].nonce).toBe(2);
+    });
+
+    /** A diagnostic with no position has nowhere to send anyone, and nothing here guesses a line. */
+    it('ignores a request with no line', () => {
+      expect(reducer(undefined, documentAnchored({ pathname })).documentAnchors).toEqual({});
     });
   });
 });

@@ -8,8 +8,18 @@ one shows up as a parse failure at a path instead of a diff inside a template li
 specs/              minimal OpenAPI documents — one per service the flows bind
 flows/              the .flow.yml fixtures, verbatim from 001-C where it gives them
 flows/regressions/  the minimal flows §7's regressions are asserted against
+flows/validation/   correct documents R4h and R8's cases each edit one line of
+flows/schema/       R4m's documents, plus §15's golden v1 file
+flows/connectors/   a two-scope tree — §8.5's layering only exists across scopes
+flows/subflow/      the same shape for §12.2's `uses:` resolution
 datasets/           CSV, JSON and YAML rows for F1, R4c, R4c2 and R4d2
 ```
+
+**Four of those are directories rather than flat files, and the nesting is the fixture.** §8.5's
+resolution order is workspace file → collection file → step, and §12.2's `workspace:` prefix means
+nothing without a workspace to be prefixed from — so `connectors/` and `subflow/` each hold a
+miniature `flows/` beside a `collections/payments/flows/`, and a scenario points the engine's scope
+at the outer directory. A flat fixture could not express either rule at all.
 
 ## Flows
 
@@ -51,11 +61,90 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r4g-run-budget.flow.yml` | R4g — a poll that spends §11.3's budget, so the steps after it meet a stopped run |
 | `r4n-redaction.flow.yml` | R4n — credentials written straight into a flow file, which is the only case §14.4's denylist exists for |
 | `r4q-graph.flow.yml` | R4q — every edge kind at once, because the distinctions between them are what 002 §5.3 calls load-bearing and a fixture per kind would never catch two being conflated |
+| `r4f-cookies.flow.yml` · `r4f-cookies-login.flow.yml` · `r4f-cookies-dataset.flow.yml` · `r4f-cookies-subflow.flow.yml` | R4f — §7.6's jar scoped to a run, to an iteration, and shared into a sub-flow |
+| `r9-slot-declaration-order.flow.yml` | R9.1 — §9.1's tiebreak is declaration order; the fixture holds the first-declared writer's response back so a completion-order implementation resolves the other value |
+| `r9-script-context.flow.yml` | R9.2 — `ctx.env` and `ctx.vars` across all four script positions, pinned as disjoint and as additive to the flat form |
+| `r9-request-assertions.flow.yml` | R9.3 — §10.2's `req.*`, which resolved to `undefined` before the root was addressable |
+| `r9-preview.flow.yml` | R9.4 — `step:end`'s preview, with the cap set deliberately small so the cut is observable while the attempt file beside it keeps the whole body |
+| `r9-host-auth-profiles.flow.yml` | R9.10 — a host-supplied `collection` profile: nothing declares it here, and a flow's own profile of the same name wins over it |
+| `r9-implicit-collection-auth.flow.yml` | R9.10 — §6.4's third rank, which is a flow naming no profile anywhere; the second step's `auth: none` is the opt-out from what the collection would have sent |
 
 R4b's two override rows are not files: they are the `r4-output-unproduced` fixture with one field
 changed, which `harness.js`'s `variant()` applies in memory. A near-duplicate file would have to be
 kept in step with the original by hand, and the assertion would stop meaning "the fixture minus
 this edit" the moment they drifted. F3.4 and F4.4's structural halves work the same way.
+
+## Validation
+
+`flows/validation/` is where R4h and R8.1–R8.10 live, and it is built the other way round from
+`regressions/`: each file here is **correct**, and a case is that file with one line changed by
+`harness.js`'s `variant()`. What a check reports is then the edit rather than the fixture, and a rule
+that stopped firing shows up as a case that stopped failing instead of as a message nobody reads.
+Most blocks open by asserting the clean file reports nothing at all — the half that catches a check
+firing on correct flows, which is what a static checker gets retired for.
+
+| File | Row |
+|---|---|
+| `graph.flow.yml` | R8.1 — the shape every dependency, slot and reference case edits |
+| `overrides.flow.yml` | R8.4 — every inline override position at once, each naming a field the operation declares |
+| `r4h-request.flow.yml` · `multipart.flow.yml` | R4h — a `requestBody` declaring `count: integer`, an operation declaring none, and the multipart case whose binary part is not checked |
+| `multipart.flow.yml` · `multipart-text-part.flow.yml` · `attachment.flow.yml` | R8.5 — a media type selected, a `format: binary` part supplied as text, one not supplied at all |
+| `binary.flow.yml` · `binary-options.flow.yml` · `file-in-json.flow.yml` | R8.5 — §7.5's raw payload, its multipart-only options, and a `!file` in a JSON body that is serialized rather than read |
+| `files.flow.yml` · `file-option-typo.flow.yml` | R8.6 — every path position §7.4 has, and a `!file` key that is a parse error rather than an ignored one |
+| `drop.flow.yml` · `drop-misplaced.flow.yml` | R8.6 — `!...` where §7.2 puts it, and outside any merge layer where it reads as `null` |
+| `parent.flow.yml` · `login.flow.yml` | R8.7 — a `uses:` step carrying only what §12.4 permits, over a library flow with a real interface |
+| `duplicate-operation.flow.yml` | R8.10 — a reference naming two operations at once (§6.5) |
+| `signing.flow.yml` | R8.13 — a step under an `awsv4` profile carrying a header of its own; the cases edit which header it sets, and which mode the profile is |
+| `collection-auth.flow.yml` | R8.14 — `auth: collection` with no `authProfiles:` block at all, so what validate reports depends on the scope it is given rather than on the file |
+
+`data/` and `fixtures/` under it are what those flows' `dataset:`, `bodyFile:` and `!file` positions
+resolve to. `specs/validation-v1.yml` is their document — it carries a nested `$ref`, a free-form
+object, a query parameter and an operation with no `operationId` (§6.1's method-and-path fallback) —
+and `specs/validation-duplicates-v1.yml` exists for one row: the same `operationId` on two operations.
+
+## The document schema
+
+`flows/schema/` is R4m's, built the same way: `document.flow.yml` is one correct document carrying
+one of each shape the schema decides — all three `depends` forms, a `uses:` step, a retry policy, an
+assertion, a slot — and every case is that file with one line changed. It carries no local tag on
+purpose, because the mutation helper round-trips through plain YAML; the tags are covered by
+`golden-v1.flow.yml`, which is §15's golden fixture and is read as committed and never edited.
+`library.flow.yml` is the sub-flow the others invoke, so §12.4's permitted and refused fields both
+have somewhere to be decided.
+
+`golden-v1.flow.yml` is deliberately broad rather than minimal. A golden fixture only catches what it
+exercises, and §5.4 promises a version's schema only *optional* additions — so this file must keep
+validating against `flowSchema(1)` for as long as anyone may write a v1 document, including after a
+v2 exists.
+
+## Connectors and sub-flow resolution
+
+Both are trees rather than files, for the reason above: the rules they pin are about scopes.
+
+```
+connectors/
+  flows/connectors.yml                          the workspace layer
+  flows/shared/login.flow.yml                   §12.3's row — a sub-flow resolves its own
+  collections/payments/flows/connectors.yml     the collection layer over it
+  collections/payments/flows/*.flow.yml         inherit · override · uses-shared
+subflow/
+  flows/shared/login.flow.yml                   the workspace's shared flow
+  collections/payments/flows/local-login.flow.yml
+  collections/payments/flows/uses-relative-ok.flow.yml
+  collections/payments/flows/uses-workspace-prefix.flow.yml
+```
+
+| Fixture | Row |
+|---|---|
+| `connectors/…/inherit.flow.yml` | R10.1 — no `outputs:` block anywhere, and a third alias for the same document |
+| `connectors/…/override.flow.yml` | R10.3 — the step's own block over both files: one entry suppressed with `!...`, one overridden, one added, one still inherited |
+| `connectors/…/uses-shared.flow.yml` | R10.3's §12.3 row — the shared flow resolves the workspace file alone, so an entry this collection suppresses is still exported into it |
+| `subflow/…/uses-workspace-prefix.flow.yml` | R12.1 — a collection flow reaching the workspace's shared flow through `workspace:` instead of a `../../` chain |
+| `subflow/…/uses-relative-ok.flow.yml` · `local-login.flow.yml` | R12.1 — an ordinary relative path, unchanged by the prefix existing |
+
+**The two connector files bind the same document under different aliases on purpose.** §8.5 matches
+on the document and `operationId` a reference resolves to, never on the alias string, and a fixture
+whose three files happened to agree on a name would pass whichever rule the code implemented.
 
 ## Specs
 
@@ -63,7 +152,7 @@ Minimal by design (001-C §8): real-world OpenAPI robustness — `$ref` cycles, 
 missing `operationId`, multi-document specs — is separate ground from execution semantics and is
 tracked in 001 §19.
 
-Two details are load-bearing rather than decorative:
+Three details are load-bearing rather than decorative:
 
 - **`platform-v1.yml` has a `servers[0].url`.** F4.4 asserts `createWorkspace` goes there while the
   `workspace-api` binding over the same document resolves to a host the run produced (001 §6.3).
@@ -91,9 +180,16 @@ per attempt, the dataset one for iteration nesting, the sub-flow pair for a flat
 
 ## What is not here
 
-R4f (cookie jars), R4h (request validation), R4m (the document schema), and R4n's provenance rows.
-Those need, respectively: a host-side jar the stub port would have to implement before the engine's
-scoping rules become observable; a fixture pair and the `--dry-run` the last row asks for, since
-`validateRequest` itself already runs (`step.ts`); the §5.4 schema, which does not exist yet; and a
-`secret: true` input at the §13.2 boundary, which no host supplies. R4i and R4l are the CLI's, and
-live in `packages/bruno-cli/tests/fork/flow/`.
+**One row of one requirement.** R4h's `--dry-run` case has no fixture because it has no subject: the
+flag is scheduled for v2 (001 §19.1) and `bru flow run` rejects it today, so the case is registered as
+an `it.todo` rather than written against a command that does not exist. Everything else R4h asks for
+is `validation/r4h-request.flow.yml` and the multipart file beside it, since `validateRequest` itself
+has always run (`step.ts`).
+
+R4i, R4l, R7.1–R7.8 and R13.1–R13.3 are not here either, and never will be: they are the CLI's own,
+and live in `packages/bruno-cli/tests/fork/flow/`. 001-C §2's table says which and why — a jar, a
+wire format, a proxy, a sandbox choice, a collection root on disk and what a command prints are all
+things the host owns and the stubbed ports cannot show. §6.4's implicit `collection` profile splits
+across both: the engine's half is the mapping and the resolution order (`collection-auth.spec.js`
+beside this corpus, and the two `r9-` flows above), and the host's half is reading the collection
+file that produced it (`collection-auth.spec.js` under `bruno-cli`).

@@ -1,5 +1,5 @@
 /**
- * `bru flow run`, `bru flow validate` and `bru flow list` — 001 §14.
+ * `bru flow run`, `bru flow validate`, `bru flow list` and `bru flow schema` — 001 §14.
  *
  * The command owns a *suite*: which flows were selected, what order they run in, and what the
  * process exits with. The engine's unit is one flow and its iterations (§13.2), so everything
@@ -12,6 +12,7 @@ const {
   runFlow,
   validateFlow,
   resolveFunctions,
+  resolveOutputs,
   resolveCaptureRoot,
   resolveSuiteDirectory,
   ensureCaptureIgnored,
@@ -21,6 +22,9 @@ const {
   flowSearchTerms,
   flowMatches,
   readFlowSummary,
+  flowSchema,
+  FLOW_VERSIONS,
+  CURRENT_FLOW_VERSION,
   CAPTURE_DIRNAME,
   SUITE_DIRECTORY,
   SUITE_MANIFEST_FILE
@@ -28,7 +32,9 @@ const {
 const { parseEnvironment } = require('@usebruno/filestore');
 
 const { getEnvVars } = require('../../utils/bru');
+const { getCollectionFormat } = require('../../utils/collection');
 const { createPorts } = require('./ports');
+const { authProfilesFor } = require('./collection-auth');
 const { createReporter } = require('./output');
 const {
   createSuite,
@@ -102,15 +108,25 @@ const selectFlows = (paths) => {
   return [...new Set(selected)].sort();
 };
 
-const findUp = (from, name) => {
+const walkUpUntil = (from, isRoot) => {
   let directory = from;
   for (;;) {
-    if (fs.existsSync(path.join(directory, name))) return directory;
+    if (isRoot(directory)) return directory;
     const parent = path.dirname(directory);
     if (parent === directory) return undefined;
     directory = parent;
   }
 };
+
+const findUp = (from, name) => walkUpUntil(from, (directory) => fs.existsSync(path.join(directory, name)));
+
+/**
+ * A collection root is `bruno.json` or `opencollection.yml`, whichever a directory holds — the same
+ * predicate `bru run` reads off `getCollectionFormat` to locate a collection of either on-disk
+ * format (`createCollectionJsonFromPathname` in `utils/collection.js`), so a flow scopes to the same
+ * root a request in the same tree would.
+ */
+const findCollectionRoot = (from) => walkUpUntil(from, (directory) => getCollectionFormat(directory) !== null);
 
 /** A path outside the working directory reads better absolute than as a chain of `..`. */
 const forDisplay = (file) => {
@@ -120,7 +136,7 @@ const forDisplay = (file) => {
 
 /** §7.4's boundary as seen from a directory — the collection or workspace root above it. */
 const scopeIn = (directory) => {
-  const collectionRoot = findUp(directory, 'bruno.json');
+  const collectionRoot = findCollectionRoot(directory);
   const workspaceRoot = findUp(directory, 'workspace.yml') || collectionRoot || directory;
   return { workspaceRoot, collectionRoot };
 };
@@ -359,6 +375,53 @@ const listFlows = (argv) => {
   );
 };
 
+/**
+ * `bru flow schema` — 001 §5.4's JSON Schema, for the editors that read it.
+ *
+ * Emitted rather than shipped as a file in the repository because §5.4 has one schema *per format
+ * version* and the current one is the default: a checked-in copy would be a second answer to which
+ * version this build speaks, and would go stale the first time the format gains an optional field.
+ * `--out` exists because the schema is only useful where the editor is told to look — usually
+ * `.bruno/flow.schema.json` beside the flows — and piping stdout into a path an editor already
+ * watches is one shell redirection nobody should have to remember.
+ *
+ * A version this build does not carry is §14.2's usage error rather than an empty file, and it names
+ * the versions it does carry: the schema is normally consumed by a tool that will not read stderr,
+ * so a truncated or missing file is the failure this refuses to produce.
+ */
+const printSchema = (argv) => {
+  const document = flowSchema(argv.formatVersion);
+  if (!document) {
+    console.error(
+      `no schema for format version ${argv.formatVersion} — this build has ${FLOW_VERSIONS.join(', ')}`
+    );
+    process.exit(EXIT.usage);
+    return;
+  }
+
+  const text = `${JSON.stringify(document, null, 2)}\n`;
+
+  if (argv.out === undefined) {
+    // §14.7's `--silent` is "nothing; the exit code is the whole result", and it applies to a
+    // command's own product exactly as it does to `bru flow list`'s table. `--quiet` drops step
+    // lines and there are none here, so it leaves this alone.
+    if (!argv.silent) process.stdout.write(text);
+    return;
+  }
+
+  const target = path.resolve(argv.out);
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, text);
+  } catch (error) {
+    console.error(`could not write ${forDisplay(target)}: ${error.message}`);
+    process.exit(EXIT.usage);
+    return;
+  }
+
+  if (!argv.silent) console.log(`Wrote the flow schema to ${forDisplay(target)}`);
+};
+
 const asPairs = (values) =>
   Object.fromEntries(
     [].concat(values || []).map((entry) => {
@@ -368,10 +431,32 @@ const asPairs = (values) =>
     })
   );
 
+/**
+ * §14.2 gives a usage error one exit code, `3`, and yargs' own validation — an `action` outside its
+ * choices, a `--sandbox` value outside its — exits `1` by default, which is the code a *failed flow*
+ * reports. Mapping it here keeps the two apart for a CI job that reads the number. A thrown error is
+ * not a usage error and is rethrown untouched, so a handler crash keeps its own path.
+ */
+const failUsage = (message, error, yargs) => {
+  if (error) throw error;
+  process.stderr.write(`${message}\n\n${yargs.help()}\n`);
+  process.exit(EXIT.usage);
+};
+
 const builder = (yargs) =>
   yargs
-    .positional('action', { describe: 'run, validate or list', choices: ['run', 'validate', 'list'] })
+    .fail(failUsage)
+    .positional('action', {
+      describe: 'run, validate, list or schema',
+      choices: ['run', 'validate', 'list', 'schema']
+    })
     .positional('paths', { describe: 'flow files or directories', type: 'string' })
+    .option('out', { describe: 'Where schema writes the JSON Schema; without it, stdout', type: 'string' })
+    .option('format-version', {
+      describe: `Flow document format version schema emits; this build has ${FLOW_VERSIONS.join(', ')}`,
+      type: 'number',
+      default: CURRENT_FLOW_VERSION
+    })
     .option('global-env', {
       describe: 'Workspace environment to run with, by name — <workspace>/environments/<name>.yml',
       type: 'string'
@@ -405,6 +490,19 @@ const builder = (yargs) =>
       describe: 'Treat validation warnings as errors; a flow that warns does not run and the command exits 2',
       type: 'boolean',
       default: false
+    })
+    // Word for word `bru run`'s own option (`commands/run.js`), because §8.2 is the promise that a
+    // flow script gets the sandbox a plain request in this collection would — which two flags
+    // spelling their modes differently would quietly stop being true.
+    .option('sandbox', {
+      describe: 'Javascript sandbox to use; available sandboxes are "safe" (default) or "developer"',
+      default: 'safe',
+      type: 'string',
+      // `bru run` accepts any string here and treats every value but `safe` as `developer`, so a typo
+      // silently escalates a script to `node:vm`. §8.2 is a promise about the two real values, not
+      // about the typo, and a flow refusing `develper` gives a request in the same collection nothing
+      // it had — so the choices are enforced here and the typo is §14.2's usage error, not a sandbox.
+      choices: ['safe', 'developer']
     })
     .option('env-var', { describe: 'Override a single variable (repeatable)', type: 'string' })
     .option('param', { describe: 'Supply a declared params value (repeatable)', type: 'string' })
@@ -458,7 +556,8 @@ const builder = (yargs) =>
     .example('$0 flow validate flows/ --strict', 'Fail validation on warnings as well as errors')
     .example('$0 flow validate flows/', 'Validate every flow in a directory')
     .example('$0 flow list flows/', 'Print the flows a run of those paths would execute')
-    .example('$0 flow list --grep smoke', 'Check what a pattern selects without running it');
+    .example('$0 flow list --grep smoke', 'Check what a pattern selects without running it')
+    .example('$0 flow schema --out .bruno/flow.schema.json', 'Write the flow document schema where an editor reads it');
 
 const verbosityOf = (argv) => {
   if (argv.silent) return 'silent';
@@ -467,8 +566,9 @@ const verbosityOf = (argv) => {
 };
 
 const handler = async (argv) => {
-  // A listing sends nothing, opens no suite directory and writes no report, so none of the run
-  // machinery below applies to it.
+  // Neither a listing nor the schema sends anything, opens a suite directory or writes a report, so
+  // none of the run machinery below applies to either — and the schema does not even select flows.
+  if (argv.action === 'schema') return printSchema(argv);
   if (argv.action === 'list') return listFlows(argv);
 
   // Resolved once: the engine owns where a run's artefacts go, and a report defaulting somewhere
@@ -488,7 +588,7 @@ const handler = async (argv) => {
     } else {
       // A positional path locates the *scope* whose capture root is read rather than the flows to
       // run — the roster names those. Walking up from the path works whether it is a directory or a
-      // file, since a file has no `bruno.json` beneath it to find.
+      // file, since a file has no collection root file beneath it to find.
       const scope = scopeIn(path.resolve(paths.length ? paths[0] : process.cwd()));
       const selection = await retrySelection({
         named: argv.retryFailed,
@@ -639,7 +739,10 @@ const handler = async (argv) => {
    */
   const attempt = async (file) => {
     const scope = scopeFor(file);
-    const ports = createPorts({ collectionPath: scope.collectionRoot || path.dirname(file) });
+    const ports = createPorts({
+      collectionPath: scope.collectionRoot || path.dirname(file),
+      sandbox: argv.sandbox
+    });
     const identity = identities.get(file);
     const started = suite.flowStarted(identity);
     await dispatcher.onFlowStart(identity);
@@ -670,6 +773,16 @@ const handler = async (argv) => {
       // `validate` — a run has the whole event stream to print and does not need a preamble.
       const library = await resolveFunctions({ entry: file, scope, ports });
       reporter.functions(forDisplay(file), library.map((entry) => ({ ...entry, from: forDisplay(entry.from) })));
+      // 001 §8.5's half of the same answer, over the flow as written: what each step publishes, and
+      // which layer declared it — a connector file's entries are named nowhere in the step.
+      const outputs = await resolveOutputs({ entry: file, scope, ports });
+      reporter.outputs(
+        forDisplay(file),
+        outputs.map((step) => ({
+          ...step,
+          outputs: step.outputs.map((output) => ({ ...output, file: forDisplay(output.file) }))
+        }))
+      );
       // A flow that validated is all `validate` has to report, and it exits 0 on one (§14.2).
       return 'passed';
     }
@@ -686,6 +799,11 @@ const handler = async (argv) => {
         scope,
         ports,
         variables: { ...variables, globalEnvironment: environments.get(scope.workspaceRoot) },
+        // §6.4's implicit `collection` profile, which only a host can supply — the collection's own
+        // auth for a collection-scoped flow, and nothing at all for a workspace-scoped one, where
+        // `auth: collection` stays `unknown-auth-profile`. The app supplies the same profile from
+        // the same collection files, so a flow authenticates identically under either host (§14.1).
+        authProfiles: await authProfilesFor(scope),
         params: asPairs(argv.param),
         origin,
         overrides: {
@@ -814,8 +932,10 @@ module.exports = {
   selectFlows,
   compileFilters,
   narrowToPattern,
+  printSchema,
   retrySelection,
   workspaceEnvironment,
+  scopeIn,
   exitCodeFor,
   EXIT
 };

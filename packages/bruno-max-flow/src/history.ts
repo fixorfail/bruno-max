@@ -27,6 +27,7 @@ import {
 } from './capture';
 // §5.2's identity, from the engine's one spelling of it: a rebuilt roster has to name its flows
 // exactly as the roster it stands in for would have, or a rerun matches none of them.
+import { assertContained } from './files';
 import { flowIdentity } from './meta';
 import type { RunManifest, StepCapture, SuiteFlowRecord, SuiteManifest } from './types/capture';
 import type { FlowDescription } from './types/describe';
@@ -68,6 +69,21 @@ const readContext = (root: string): FlowContext => ({
   scope: { workspaceRoot: root },
   signal: new AbortController().signal
 });
+
+/**
+ * 002 §11.2: a run directory outside the capture root is refused before the port is called.
+ *
+ * Checked against `<scopeRoot>/.bruno-runs` rather than the scope root itself, which is stricter
+ * than §11.2's wording and deliberately so — `readCapture` reads `<dir>/<step>/attempt-N.json`, and
+ * a `dir` pointing anywhere else inside the scope would read whatever JSON sits there. The renderer
+ * is the caller being guarded against: it names a `dir` across IPC, and nothing on main's side can
+ * know the value came from `listRuns` rather than from a compromised page. `readSuite` is left out
+ * on purpose: its `dir` is one the CLI's own user typed after `--retry-failed`, and §14.1's
+ * `--capture-dir` can legitimately put a suite outside the scope entirely. The same §7.4 rule as
+ * fixture reads, so a run and a `!file` are refused by one function.
+ */
+const containedRunDir = (dir: string, scopeRoot: string): string =>
+  assertContained(path.resolve(dir), path.join(scopeRoot, CAPTURE_DIRNAME), dir);
 
 /** §14.5's snapshot keeps the flow's text as text; a run written before snapshots simply has none. */
 const readText = async (readFile: ReadFile, file: string, context: FlowContext): Promise<string | undefined> => {
@@ -218,7 +234,8 @@ export const listRuns = async (options: ListRunsOptions): Promise<RunIndexEntry[
  * its captures unreachable. `stepIds` remains the fallback for runs written before snapshots.
  */
 export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
-  const context = readContext(options.dir);
+  containedRunDir(options.dir, options.scopeRoot);
+  const context = readContext(options.scopeRoot);
   const manifest = await readJson<RunManifest>(options.ports.readFile, path.join(options.dir, 'run.json'), context);
   if (!manifest) {
     throw new Error(`${options.dir} is not a run directory: no run.json`);
@@ -273,11 +290,12 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
 };
 
 export const readCapture = async (options: ReadCaptureOptions): Promise<StepCapture> => {
+  containedRunDir(options.dir, options.scopeRoot);
   const file = path.join(
     stepCaptureDir(options.dir, options.stepId, options.iteration),
     attemptFile(options.attempt)
   );
-  const capture = await readJson<StepCapture>(options.ports.readFile, file, readContext(options.dir));
+  const capture = await readJson<StepCapture>(options.ports.readFile, file, readContext(options.scopeRoot));
 
   // Unlike `listRuns`, a missing capture is a caller error rather than a state: the app asks for an
   // attempt it saw in a summary or a directory listing, so nothing there means the two disagree.

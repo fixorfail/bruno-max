@@ -1,0 +1,16 @@
+version: 1
+
+meta:
+  name: Region override
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+steps:
+  # `region` is an environment variable in both of the workspace's environments, so what the request
+  # carries says which tier the run resolved it from — 001 §7.3's precedence, decided by the engine.
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: ord_1
+      sku: "{{region}}"

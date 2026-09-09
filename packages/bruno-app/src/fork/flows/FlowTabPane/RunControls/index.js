@@ -5,6 +5,7 @@ import { IconChevronDown, IconDatabaseOff, IconPlayerPlay, IconPlayerStop } from
 import Dropdown from 'components/Dropdown';
 import { runFlow, cancelFlowRun } from '../../actions';
 import { stepSelected } from '../../slice';
+import RunConfiguration from '../RunConfiguration';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -44,6 +45,40 @@ const unaccountedCauses = (run) => {
 };
 
 /**
+ * Why the run control is refusing, or `undefined` while it is not.
+ *
+ * §6: an error blocks the run control and a warning does not. 001 §12.5's required params block it
+ * for a different reason with the same consequence — the engine refuses such a run before
+ * `run:start` and answers with 001 §14.6's `run-refused`, so a control that offered it would spend a
+ * click reaching a refusal everything on screen was already able to state.
+ *
+ * The predicate is the engine's, unchanged: a param with a default is supplied by that default, and
+ * only an absent value is missing — absent meaning what a run is actually started with, since
+ * `actions.js` drops a box that was typed into and then cleared before it sends the rest.
+ *
+ * Params gate **any flow that declares them**, which is every flow §7.2's panel and §5.6's inputs
+ * offer boxes for. `library: true` says a flow is meant to be called by another one (001 §12.5) and
+ * says nothing about whether it takes params: the engine refuses a run missing a required one either
+ * way, so a control keyed on the flag offered a click that could only reach `run-refused`.
+ */
+const blockingReason = (description, configuration) => {
+  if (!description || description.diagnostics.some((entry) => entry.severity === 'error')) {
+    return 'This flow has errors';
+  }
+
+  const supplied = configuration.params || {};
+  const missing = description.params
+    .filter((param) => param.required && param.default === undefined)
+    .filter((param) => String(supplied[param.name] ?? '').trim() === '')
+    .map((param) => param.name);
+
+  if (!missing.length) {
+    return undefined;
+  }
+  return `No value for the required param${missing.length > 1 ? 's' : ''} ${missing.join(', ')}`;
+};
+
+/**
  * The half of the split control that opens the menu. A ref-forwarding element because that is what
  * `Dropdown` hangs tippy off — the same shape §4.1's row menu uses, reused so the placement and the
  * dismissal behave identically here.
@@ -59,16 +94,42 @@ const RunOptionsTrigger = forwardRef(({ disabled }, ref) => (
   </div>
 ));
 
+/**
+ * §8.4's elapsed time, from 001 §13.2's `RunResult.duration`.
+ *
+ * Seconds below a minute and `m s` above it, because a flow is the kind of thing that takes either —
+ * and `184s` is a number a reader has to convert before it means anything. Absent for a run recorded
+ * before the field existed, and for an interrupted one that never wrote a summary: nothing is drawn
+ * rather than a zero, which would claim the run took no time at all.
+ */
+const elapsed = (duration) => {
+  if (typeof duration !== 'number') {
+    return undefined;
+  }
+
+  const seconds = duration / 1000;
+  if (seconds < 60) {
+    return `${seconds.toFixed(seconds < 10 ? 2 : 1)}s`;
+  }
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+};
+
 const RunControls = ({ flow, description, run, configuration, onConfigurationChange }) => {
   const dispatch = useDispatch();
   const dropdownRef = useRef();
   const [menuOpen, setMenuOpen] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const errors = description ? description.diagnostics.filter((entry) => entry.severity === 'error') : [];
-  // §6: errors block the run control; warnings do not.
-  const blocked = errors.length > 0 || !description;
+  const blockedReason = blockingReason(description, configuration);
+  const blocked = blockedReason !== undefined;
   const isRunning = run?.state === 'running';
+  /**
+   * §7.1: cancel has been asked for and 001 §11.3's cleanup steps are running. The control says so
+   * rather than staying on Cancel — a flow with `depends: [{ status: [cancelled] }]` steps keeps
+   * working for up to `config.cleanupGrace` after the click, and a button still offering to cancel
+   * something that is already cancelling is the exact appearance of a hang §7.1 rules out.
+   */
+  const cleaningUp = isRunning && run.cleanupDeadline !== undefined;
 
   // Capture is decided per run and never stored: `configuration` is what the panel beside this keeps
   // between runs, and whether a run wrote to `.bruno-runs/` is a fact about that run (001 §14.5).
@@ -89,7 +150,12 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
 
   return (
     <StyledWrapper>
-      {isRunning ? (
+      {cleaningUp ? (
+        <div className="run-control cleanup" data-testid="flow-cleanup" title="Cleanup steps are running">
+          <IconPlayerStop size={14} strokeWidth={1.5} />
+          Cleaning up…
+        </div>
+      ) : isRunning ? (
         <button type="button" className="run-control cancel" onClick={cancel} data-testid="flow-cancel">
           <IconPlayerStop size={14} strokeWidth={1.5} />
           Cancel
@@ -101,7 +167,7 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
             className="run-control run"
             onClick={() => start(true)}
             disabled={blocked || starting}
-            title={blocked ? 'This flow has errors' : undefined}
+            title={blockedReason}
             data-testid="flow-run"
           >
             <IconPlayerPlay size={14} strokeWidth={1.5} />
@@ -136,27 +202,29 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
         </div>
       )}
 
-      <label className="run-option">
-        Concurrency
-        <input
-          type="number"
-          min="1"
-          value={configuration.concurrency || ''}
-          placeholder="flow"
-          onChange={(event) =>
-            onConfigurationChange({ ...configuration, concurrency: Number(event.target.value) || undefined })}
-        />
-      </label>
+      {/* §7.2's panel, beside the control it configures. */}
+      <RunConfiguration
+        description={description}
+        configuration={configuration}
+        onConfigurationChange={onConfigurationChange}
+        disabled={isRunning}
+      />
 
       {run?.summary ? (
         <div className="run-summary" data-testid="flow-run-summary">
           {/* §8.4: flow vocabulary here, step vocabulary on the nodes — 001 §14.6 keeps them
               lexically distinct precisely so a summary is unambiguous about what it describes. */}
           <span className={`run-status ${run.status}`}>{run.status}</span>
+          <span data-testid="flow-run-total">{`${run.summary.total} steps`}</span>
           <span>{`${run.summary.passed} passed`}</span>
           <span>{`${run.summary.failed} failed`}</span>
           <span>{`${run.summary.skipped} skipped`}</span>
           <span>{`${run.summary.cancelled} cancelled`}</span>
+          {elapsed(run.duration) ? (
+            <span className="run-elapsed" data-testid="flow-run-elapsed">
+              {elapsed(run.duration)}
+            </span>
+          ) : null}
 
           {/* Selecting the step opens §9's pane on it, where its reason and 001 §14.6's message
               already are — so the shortest path from a red verdict to the sentence explaining it is

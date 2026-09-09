@@ -10,6 +10,7 @@ const {
   readCapture,
   readFlowProperties,
   writeFlowProperties,
+  writeNewFlowDocument,
   flowIdentity,
   writeSuiteManifest,
   resolveCaptureRoot,
@@ -20,6 +21,7 @@ const {
 const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
 const { buildVariables, collectSecrets } = require('./variables');
+const { collectionAuthProfile } = require('./collectionConfig');
 
 /**
  * The Electron host for API Flows — 002 §11.3.
@@ -377,7 +379,53 @@ const writeNewFlow = async ({ directory, filename, content }) => {
   return pathname;
 };
 
-const createFlowHandler = (request) => writeNewFlow(request);
+/**
+ * 002 §4.1c's document, composed here rather than in the renderer — 002-C R4.
+ *
+ * **The whole document is written by the engine.** `writeNewFlowDocument` is the format's only
+ * serializer for a new flow (002 §4.4), so a created flow has the same structure a flow edited
+ * through §4.4's dialog does, and neither host has to know `version:`'s placement, §5.2's `meta:`
+ * block or §5.4's local tags. Main used to emit a two-key `js-yaml` skeleton for the properties
+ * writer to splice into, which made the app a second, weaker author of the format.
+ *
+ * What stays here is the one thing only the host knows: each binding's source is resolved against the
+ * directory the flow is about to be created in (§6.2), because the renderer's `path` is a POSIX shim
+ * and a Windows flow written with a POSIX relative path is one the engine cannot resolve.
+ */
+/**
+ * The `./` prefix is cosmetic — 001 §6.2 resolves a bare `foo.yml` identically — but a source that
+ * reads as a bare word next to ones that read as paths invites being mistaken for a URL.
+ *
+ * Separators are POSIX whatever the host is: a `.flow.yml` is a committed file, and a backslash path
+ * written on Windows is one nobody else on the team can resolve.
+ */
+const relativeSpecSource = (directory, source) => {
+  const relative = path.relative(directory, source).split(path.sep).join('/');
+  return relative.startsWith('.') ? relative : `./${relative}`;
+};
+
+const newFlowDocument = ({ directory, properties, apis }) => {
+  const bindings = (apis || []).filter((binding) => binding && binding.alias && binding.source);
+
+  return writeNewFlowDocument({
+    properties: {
+      name: properties?.name,
+      description: properties?.description,
+      tags: properties?.tags || [],
+      library: properties?.library === true
+    },
+    apis: Object.fromEntries(
+      bindings.map((binding) => [binding.alias, relativeSpecSource(directory, binding.source)])
+    )
+  });
+};
+
+const createFlowHandler = async ({ directory, filename, properties, apis }) => {
+  if (typeof directory !== 'string' || !directory) {
+    throw new Error('a flow needs a directory to be created in');
+  }
+  return writeNewFlow({ directory, filename, content: newFlowDocument({ directory, properties, apis }) });
+};
 
 /**
  * 002 §4.7 — duplicating a flow: its document, under a new name.
@@ -440,14 +488,21 @@ const listSuitesHandler = ({ scopeRoot }) => {
   return listSuites({ scopeRoot, ports: { readFile, listDirectory } });
 };
 
-const readRunHandler = ({ dir, stepIds, iteration }) => {
+/**
+ * `scopeRoot` travels with `dir` on both history reads — 002 §11.2's containment. The renderer is
+ * the caller being guarded against: it names `dir` across IPC, and nothing here can tell a value
+ * copied from `listRuns` from one a compromised page assembled. The engine refuses a `dir` outside
+ * `<scopeRoot>/.bruno-runs` before its port is called, so this handler adds nothing of its own and
+ * must not: a check on this side would be a second implementation that could disagree.
+ */
+const readRunHandler = ({ scopeRoot, dir, stepIds, iteration }) => {
   const { readFile, listDirectory } = createPorts({});
-  return readRun({ dir, stepIds, iteration, ports: { readFile, listDirectory } });
+  return readRun({ dir, scopeRoot, stepIds, iteration, ports: { readFile, listDirectory } });
 };
 
-const readCaptureHandler = ({ dir, stepId, iteration, attempt }) => {
+const readCaptureHandler = ({ scopeRoot, dir, stepId, iteration, attempt }) => {
   const { readFile } = createPorts({});
-  return readCapture({ dir, stepId, iteration, attempt, ports: { readFile } });
+  return readCapture({ dir, scopeRoot, stepId, iteration, attempt, ports: { readFile } });
 };
 
 /**
@@ -466,6 +521,22 @@ const originFor = (tiers = {}) => ({
 });
 
 /**
+ * 001 §6.4's implicit `collection` profile — the third and last place a step's `auth:` resolves.
+ *
+ * **The host's to supply, because only a host knows what a collection is.** The engine reads
+ * `authProfiles` alongside the flow's own declared profiles and resolves them lexically; what it
+ * cannot do is open `collection.bru` and decide that the thing inside it is a profile named
+ * `collection`. That is the same division `setAuthHeaders` already makes for a single request, where
+ * `mode: 'inherit'` means "the collection's" and the collection object is the renderer's to hand over.
+ *
+ * A workspace-scoped flow has no collection by construction (002 §7.2), so it supplies nothing and
+ * `auth: collection` is an `unknown-auth-profile` there — which is the truthful answer rather than an
+ * empty profile that would silently send a step out unauthenticated.
+ */
+const authProfilesFor = async (scope) =>
+  scope.collectionRoot ? { collection: await collectionAuthProfile(scope.collectionRoot) } : undefined;
+
+/**
  * Resolves as soon as the run has an identity rather than when it finishes, because the renderer
  * needs the `runId` to attach the events already arriving. A failure before `run:start` — a flow
  * that does not parse — has no run to report and rejects instead.
@@ -477,6 +548,9 @@ const originFor = (tiers = {}) => ({
 const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
   requireScope(scope);
   const controller = new AbortController();
+  // Read before the run rather than inside the promise: a collection root is a file, and a rejection
+  // raised while assembling `runFlow`'s options would have no run to attach itself to.
+  const authProfiles = await authProfilesFor(scope);
 
   return new Promise((resolve, reject) => {
     let runId;
@@ -495,6 +569,7 @@ const startRun = async (win, { entry, scope, tiers, params, overrides }) => {
         onRequest: (log) => queueRequestLog(win, log)
       }),
       variables: buildVariables({ tiers, scope }),
+      authProfiles,
       secrets: collectSecrets({ tiers }),
       origin: originFor(tiers),
       params,

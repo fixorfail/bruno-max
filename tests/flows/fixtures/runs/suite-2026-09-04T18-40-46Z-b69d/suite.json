@@ -1,0 +1,22 @@
+{
+  "suiteId": "b69d8a30-68d7-4a9f-baca-60b7e6dcbd8a",
+  "startedAt": "2026-09-04T18:40:46.618Z",
+  "finishedAt": "2026-09-04T18:40:46.674Z",
+  "exitCode": 0,
+  "origin": {
+    "host": "cli"
+  },
+  "flows": [
+    {
+      "file": "{{workspaceRoot}}/flows/linear.flow.yml",
+      "id": "flows/linear",
+      "name": "Linear checkout",
+      "tags": [
+        "checkout",
+        "smoke"
+      ],
+      "outcome": "passed",
+      "runDir": "2026-09-04T18-40-46Z-514b"
+    }
+  ]
+}

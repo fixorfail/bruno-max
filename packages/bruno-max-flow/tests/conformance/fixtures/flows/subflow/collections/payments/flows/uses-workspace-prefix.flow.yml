@@ -1,0 +1,14 @@
+# R12.1 — a collection-scoped flow reaching the workspace's shared flow through the `workspace:`
+# prefix (§12.2), instead of a `../../` chain climbing back out of the collection.
+version: 1
+
+meta:
+  name: R12 — workspace prefix
+
+steps:
+  - id: auth
+    uses: workspace:flows/shared/login.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+    assert:
+      - steps.auth.token isDefined

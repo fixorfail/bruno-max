@@ -155,3 +155,20 @@ paths:
                       role: { type: string }
                       count: { type: integer }
                       active: { type: boolean }
+  /subscriptions:
+    post:
+      operationId: createSubscription
+      # A form body, whose fields are strings on the wire whatever the schema types them as — so
+      # §10.1's request check has to run against the values, not against the encoding.
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [plan, seats]
+              properties:
+                plan: { type: string, enum: [basic, pro] }
+                seats: { type: integer, minimum: 1 }
+      responses:
+        '201': { description: Created }

@@ -1,0 +1,55 @@
+# R12.2's library: two branches that exclude each other, and the value whichever one ran leaves
+# through `exports:` (§12.1).
+#
+# Nothing inside this flow reads the slot — there is no join step, and no step could descend from
+# both writers when only one of them ever runs (§9.1's `writers: any`). The boundary is the reader,
+# which is the case a `steps.<step>.<output>` export cannot express.
+version: 1
+
+meta:
+  name: R12 — charge
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+params:
+  method:
+    required: false
+    default: card
+
+shared:
+  chargeId: { writers: any }
+
+exports:
+  chargeId: shared.chargeId
+
+steps:
+  - id: authorize
+    operation: regress-api#signIn
+    body:
+      email: "{{testUserEmail}}"
+
+  - id: charge_card
+    depends: [authorize]
+    when: params.method eq card
+    operation: regress-api#createThing
+    body:
+      name: card
+    outputs:
+      chargeId: data.id
+    shared: [chargeId]
+
+  - id: charge_wallet
+    depends: [authorize]
+    when: params.method eq wallet
+    operation: regress-api#createThing
+    body:
+      name: wallet
+    outputs:
+      walletChargeId: data.id
+    shared:
+      chargeId: walletChargeId

@@ -25,7 +25,7 @@ const node = (id, rank) => ({
   rank
 });
 
-const described = ({ params = [], vars = [], exports: exported = [] } = {}) => ({
+const described = ({ params = [], vars = [], exports: exported = [], slots = [], nodes } = {}) => ({
   id: 'login.flow.yml',
   name: 'Login',
   isLibrary: true,
@@ -33,9 +33,9 @@ const described = ({ params = [], vars = [], exports: exported = [] } = {}) => (
   vars,
   exports: exported,
   apis: [],
-  nodes: [node('login', 0)],
+  nodes: nodes || [node('login', 0)],
   edges: [],
-  slots: [],
+  slots,
   stages: [],
   diagnostics: []
 });
@@ -172,5 +172,108 @@ describe('the exports panel', () => {
 
     expect(screen.queryByTestId('flow-exports')).not.toBeInTheDocument();
     expect(screen.getByTestId('flow-graph')).toBeInTheDocument();
+  });
+});
+
+/**
+ * 001 §12.1's other export root. A slot has no producing step, so the row's value comes from the
+ * description's `writes` — each writer paired with the output it publishes, in declaration order —
+ * resolved by §9.1's rule: the last write whose step ran.
+ */
+describe('a slot-sourced export row', () => {
+  const exported = [{ name: 'chargeId', source: 'shared.chargeId' }];
+
+  const slots = [
+    {
+      name: 'chargeId',
+      writers: ['charge_card', 'charge_wallet'],
+      writes: [
+        { step: 'charge_card', output: 'chargeId' },
+        { step: 'charge_wallet', output: 'walletChargeId' }
+      ],
+      readers: []
+    }
+  ];
+
+  const branches = { description: { exports: exported, slots, nodes: [node('charge_card', 0), node('charge_wallet', 0)] } };
+
+  const settled = (state) => ({ state, attempts: 1, outputs: {} });
+
+  it('shows the reference before anything has run', () => {
+    renderGraph(branches);
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('shared.chargeId');
+  });
+
+  it('shows the value of the branch that ran, whichever one it was', () => {
+    const { unmount } = renderGraph({
+      ...branches,
+      nodeStates: {
+        charge_card: { state: 'success', attempts: 1, outputs: { chargeId: 'chg_card' } },
+        charge_wallet: settled('skipped')
+      }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('"chg_card"');
+    unmount();
+
+    renderGraph({
+      ...branches,
+      nodeStates: {
+        charge_card: settled('skipped'),
+        charge_wallet: { state: 'success', attempts: 1, outputs: { walletChargeId: 'chg_wallet' } }
+      }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('"chg_wallet"');
+  });
+
+  /** §9.1: the later-declared write wins, whatever order the two finished in. */
+  it('prefers the last write in declaration order when both branches wrote', () => {
+    renderGraph({
+      ...branches,
+      nodeStates: {
+        charge_card: { state: 'success', attempts: 1, outputs: { chargeId: 'chg_card' } },
+        charge_wallet: { state: 'success', attempts: 1, outputs: { walletChargeId: 'chg_wallet' } }
+      }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('"chg_wallet"');
+  });
+
+  /** A write still outstanding can take the slot, so the row cannot claim the earlier value yet. */
+  it('claims nothing while a later-declared writer is still running', () => {
+    renderGraph({
+      ...branches,
+      nodeStates: {
+        charge_card: { state: 'success', attempts: 1, outputs: { chargeId: 'chg_card' } },
+        charge_wallet: { state: 'running', attempts: 1, outputs: {} }
+      }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('shared.chargeId');
+  });
+
+  it('stays on the reference when every branch was skipped', () => {
+    renderGraph({
+      ...branches,
+      nodeStates: { charge_card: settled('skipped'), charge_wallet: settled('skipped') }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('shared.chargeId');
+  });
+
+  /** A run recorded before `writes` existed carries slots without it, and must still draw. */
+  it('draws a slot export against a description whose slots carry no writes', () => {
+    renderGraph({
+      description: {
+        exports: exported,
+        slots: [{ name: 'chargeId', writers: ['charge_card'], readers: [] }],
+        nodes: [node('charge_card', 0)]
+      },
+      nodeStates: { charge_card: { state: 'success', attempts: 1, outputs: { chargeId: 'chg_card' } } }
+    });
+
+    expect(screen.getByTestId('flow-export-chargeId')).toHaveTextContent('shared.chargeId');
   });
 });

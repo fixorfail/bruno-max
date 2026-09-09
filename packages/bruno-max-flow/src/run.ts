@@ -5,10 +5,10 @@
  * at once (§9.2), what a failure does to the steps below it (§11.2), and how a sub-flow's internals
  * join the result (§12). Everything a single step decides for itself is `step.ts`.
  */
-import * as path from 'path';
 import { randomUUID } from 'crypto';
 
-import { createCapture, type AttemptRecord, type Capture } from './capture';
+import { createCapture, previewAttempt, type AttemptPreview, type AttemptRecord, type Capture } from './capture';
+import { Connectors } from './connectors';
 import { parseDataset } from './dataset';
 import { describeFlow } from './describe';
 import {
@@ -20,14 +20,22 @@ import {
   type NormalizedStep
 } from './document';
 import { evaluateCondition, evaluationContext } from './expression';
-import { createFileReader, FileAccessError, parseStructured, resolveWithin } from './files';
+import { createFileReader, FileAccessError, parseStructured, resolveSubflowTarget, resolveWithin } from './files';
 import { loadLibrary, withLibrary } from './functions';
 import { markRunActive, markRunFinished } from './history';
-import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
+import { interpolateScalar, interpolateValue, scopeVariables, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { SpecLoader } from './openapi';
-import { createSecretTracker, MASK, type SecretTracker } from './redact';
-import { runAttempt, retryDelay, runPreScripts, sleepFor, wantsRetry, type ScriptRunner } from './step';
+import { createRedactor, createSecretTracker, MASK, type Redactor, type SecretTracker } from './redact';
+import {
+  lowerCasedKeys,
+  runAttempt,
+  retryDelay,
+  runPreScripts,
+  sleepFor,
+  wantsRetry,
+  type ScriptRunner
+} from './step';
 import type { FlowSnapshot } from './types/capture';
 import type { RunOptions } from './types/options';
 import type { Clock, FlowContext, Vars } from './types/ports';
@@ -95,6 +103,8 @@ type RunState = {
   options: RunOptions;
   clock: Clock;
   specs: SpecLoader;
+  /** §8.5's connector files, read once per run and applied to every document `loadFlow` reads. */
+  connectors: Connectors;
   budget: Budget;
   emit: (event: FlowEvent) => void;
   /** The environment tiers, flattened per §7.3's order. `--env-var` merges into `environment`. */
@@ -104,9 +114,24 @@ type RunState = {
   /** When the run was stopped, so §11.3's cleanup window can be bounded from it. */
   stoppedAt?: number;
   cleanupGrace: number;
+  /** Whether `run:cleanup` has gone out — it is emitted once, when the run first acts on a stop. */
+  cleanupAnnounced: boolean;
+  /**
+   * The flows executing right now — the entry's, per iteration, and every sub-flow in flight. Once
+   * the run stops these are the only places a cleanup step can still come from: a sub-flow that
+   * has not started is skipped whole, and one that has finished has nothing left to run.
+   */
+  activeFlows: NormalizedFlow[];
   stop: () => void;
   /** §14.5's artifact directory. Absent under `--no-capture`. */
   capture?: Capture;
+  /**
+   * §14.4's header denylist and §14.5's preview cap, both the root flow's — the same policy the
+   * capture applies, held here because `step:end` carries a preview whether or not a capture is
+   * being written.
+   */
+  redactor: Redactor;
+  previewBytes: number;
   /**
    * §14.4's secret values, which everything this run *reports* is masked against.
    *
@@ -161,15 +186,6 @@ const recordAttempt = async (state: RunState, record: AttemptRecord): Promise<st
  * timeout dies on `SIGKILL`: no cleanup runs, the exit code is the runner's, and the resources the
  * flow created are left behind.
  */
-const stopped = (state: RunState): boolean => {
-  if (state.flowContext.signal.aborted) return true;
-  if (state.deadline !== undefined && state.clock.now() >= state.deadline) {
-    state.stop();
-    return true;
-  }
-  return false;
-};
-
 /**
  * The exception §11.3 carves out: steps whose `depends` accepts `cancelled` still run, so a flow
  * can clean up after an interrupted run. Deliberately bounded — only steps that *declared*
@@ -177,6 +193,32 @@ const stopped = (state: RunState): boolean => {
  */
 const isCleanup = (step: NormalizedStep): boolean =>
   step.depends.entries.some((entry) => entry.status.includes('cancelled'));
+
+/**
+ * 002 §7.1's state: from here until the deadline only cleanup steps run, and a host that was not
+ * told would show a cancel that appears to do nothing for up to `cleanupGrace`. Announced the first
+ * time the scheduler acts on the stop rather than from the abort listener, which can fire after
+ * `run:end` — and `run:end` is last (§13.2). The deadline is the one `withinCleanupGrace` enforces.
+ *
+ * **Only when there is a cleanup step to run.** The window is a state a host shows, and a run with
+ * no step eligible for it goes straight from the stop to `run:end`; announcing a window nothing
+ * will use would have the control read "cleaning up" over a run that is simply over. Whether one
+ * exists is asked of the flows in flight, which is where a step can still come from after a stop.
+ */
+const announceCleanup = (state: RunState): void => {
+  if (state.stoppedAt === undefined) state.stoppedAt = state.clock.now();
+  if (state.cleanupAnnounced || !state.activeFlows.some((flow) => flow.steps.some(isCleanup))) return;
+  state.cleanupAnnounced = true;
+  state.emit({ type: 'run:cleanup', runId: state.runId, deadline: state.stoppedAt + state.cleanupGrace });
+};
+
+const stopped = (state: RunState): boolean => {
+  const overBudget = state.deadline !== undefined && state.clock.now() >= state.deadline;
+  if (!state.flowContext.signal.aborted && !overBudget) return false;
+  if (overBudget) state.stop();
+  announceCleanup(state);
+  return true;
+};
 
 const withinCleanupGrace = (state: RunState): boolean =>
   state.stoppedAt === undefined || state.clock.now() < state.stoppedAt + state.cleanupGrace;
@@ -278,7 +320,10 @@ const loadFlow = async (state: RunState, file: string): Promise<NormalizedFlow> 
     const [first] = flow.errors;
     throw new Error(`${file}:${first.line}:${first.column} ${first.message}`);
   }
-  return flow;
+  // §8.5: a connector-supplied output is extracted and published exactly as an `outputs:` entry is,
+  // so from here on nothing in the run knows a connector file exists. Which files apply is decided
+  // by where *this* document is, not by who invoked it (§12.3).
+  return state.connectors.apply(flow);
 };
 
 /**
@@ -370,16 +415,6 @@ const unmetBy = (step: NormalizedStep, outcomes: Map<string, StepResult>): strin
     .map((entry) => `${entry.on} ${outcomes.get(entry.on)?.status || 'never ran'}`)
     .join(', ');
 
-/**
- * §8.3's `steps.<id>.headers.<name>`, keyed so an author can write one.
- *
- * HTTP header names are case-insensitive and nothing tells a flow which case the server chose, so
- * `{{steps.login.headers.x-request-id}}` has to resolve whatever `X-Request-Id` arrived as. Only the
- * keys are touched — a value is reported as the response gave it, a repeated header included.
- */
-const lowerCasedKeys = (headers: Record<string, string | string[]>): Record<string, string | string[]> =>
-  Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
-
 const executeFlow = async (
   state: RunState,
   run: FlowRun
@@ -420,6 +455,7 @@ const executeFlow = async (
    */
   const scopeFor = (pre: Record<string, unknown> = {}): Scope => ({
     vars: { ...state.environment, ...resolvedVars },
+    tiers: { env: state.environment, vars: resolvedVars },
     namespaces: {
       steps: stepState,
       row: run.row || {},
@@ -492,17 +528,37 @@ const executeFlow = async (
     )
   };
 
-  const record = (step: NormalizedStep, result: StepResult) => {
+  const record = (step: NormalizedStep, result: StepResult, preview?: AttemptPreview) => {
     if (result.reason === 'unresolved-dependency' && step.flags.failOnUnresolved) verdictCauses.push(result.id);
     /**
      * §14.4 masks a **copy**, at the point a result leaves the run — this array becomes
      * `RunResult.iterations`, and the event is the other way out. `publish` below is handed the
      * unmasked result on purpose: a step reading `{{steps.login.token}}` has to be sent the token.
+     * The preview arrives already masked — `previewAttempt` has to cut after masking, not before.
      */
     const reported = state.secrets.mask(result);
     outcomes.set(step.id, reported);
     results.push(reported);
-    state.emit({ type: 'step:end', id: reported.id, index: run.iteration, result: reported });
+    state.emit({
+      type: 'step:end',
+      id: reported.id,
+      index: run.iteration,
+      result: reported,
+      ...(preview ? { preview } : {})
+    });
+  };
+
+  /**
+   * §9.1: **last writer in declaration order wins.** Writes land as steps finish, and two branches
+   * running concurrently finish in whatever order the network returns — so a slot remembers which
+   * step wrote it and takes a later-finishing write only from a later-declared step. File order is
+   * what makes the same flow resolve the same value on a loaded CI machine and on a laptop.
+   */
+  const slotWriters: Record<string, number> = {};
+  const writeSlot = (slot: string, value: unknown, writer: number) => {
+    if (slotWriters[slot] !== undefined && slotWriters[slot] > writer) return;
+    slotWriters[slot] = writer;
+    slots[slot] = value;
   };
 
   /** §8.3's built-in metadata, alongside the step's declared outputs under the same id. */
@@ -525,15 +581,16 @@ const executeFlow = async (
       skipped: result.status === 'skipped',
       duration: result.durationMs
     };
+    const declaredAt = flow.steps.indexOf(step);
     for (const { slot, output } of step.shared) {
-      if (result.outputs[output] !== undefined) slots[slot] = result.outputs[output];
+      if (result.outputs[output] !== undefined) writeSlot(slot, result.outputs[output], declaredAt);
     }
   };
 
   const executeOperation = async (
     step: NormalizedStep,
     pre: Record<string, unknown>
-  ): Promise<{ result: StepResult; response?: ExecutedResponse }> => {
+  ): Promise<{ result: StepResult; response?: ExecutedResponse; preview?: AttemptPreview }> => {
     const startedAt = state.clock.now();
     const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
     const spec = step.operation ? indexed[step.operation.alias] : undefined;
@@ -611,6 +668,49 @@ const executeFlow = async (
       return step.timeout === undefined ? remaining : Math.min(step.timeout, remaining);
     };
 
+    /**
+     * Whether the engine itself aborted the attempt that just settled, which is how §14.6's
+     * `cancelled` is told apart from a genuine `transport-error`: the port reports both as a
+     * rejection, and only the side owning the signal knows which of the two it caused.
+     */
+    let dispatchAborted = false;
+
+    /**
+     * The signal the host aborts this request with, and what to do once the request has settled.
+     *
+     * §11.3's cleanup exception schedules a step *after* the run has stopped, so the run's own
+     * signal is aborted before the request is even built: handed over, it cancels the very work the
+     * grace window exists to let finish. Such a dispatch gets a signal of its own, bounded by that
+     * window — live now, aborting at the deadline `run:cleanup` announced. Every other dispatch is
+     * the run's, and is aborted by the cancellation exactly as before.
+     *
+     * The deadline is a timer rather than a reading of the injected clock because it has to
+     * interrupt a promise the *host* owns while nothing in the engine is running: `Clock` exists so
+     * retry delays and `maxRunDuration` are drivable in tests (§13.2), and both of those are read
+     * where the scheduler already passes through. `stoppedAt` and the grace are still the clock's,
+     * so the window a run announces and the window it enforces are one value.
+     */
+    const beginDispatch = (): { signal: AbortSignal; settled: () => void } => {
+      const { stoppedAt } = state;
+
+      if (!isCleanup(step) || stoppedAt === undefined) {
+        return {
+          signal: state.flowContext.signal,
+          settled: () => {
+            dispatchAborted = state.flowContext.signal.aborted;
+          }
+        };
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => {
+        dispatchAborted = true;
+        controller.abort();
+      }, Math.max(0, stoppedAt + state.cleanupGrace - state.clock.now()));
+
+      return { signal: controller.signal, settled: () => clearTimeout(timer) };
+    };
+
     // Each attempt is captured separately (§14.5) and announces itself (§13.2), so the two live
     // here rather than in the dispatch closure — a poll that reported only its first attempt would
     // be indistinguishable from a hang, which is 002 §8.2's `attempt n/m` case.
@@ -620,6 +720,7 @@ const executeFlow = async (
       const attemptStartedAt = state.clock.now();
       state.emit({ type: 'step:attempt', id: stepId, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
 
+      dispatchAborted = false;
       const outcome = await runAttempt({
         pre,
         step,
@@ -628,16 +729,25 @@ const executeFlow = async (
         // §8.7: step-local, so an assertion and an output script inside this step see it too.
         scope: scopeFor(pre),
         runScript,
-        dispatch: () =>
-          state.options.ports.executeRequest(materialized.request, {
-            ...state.flowContext,
-            stepId,
-            iteration: run.iteration,
-            attempt,
-            cookieJar: jar,
-            timeoutMs: attemptTimeout(),
-            signal: state.flowContext.signal
-          })
+        dispatch: async () => {
+          const bound = beginDispatch();
+          try {
+            return await state.options.ports.executeRequest(materialized.request, {
+              ...state.flowContext,
+              stepId,
+              iteration: run.iteration,
+              attempt,
+              cookieJar: jar,
+              // The scope the request was built from, `pre` included — not one rebuilt for the
+              // host, which could only differ from it.
+              variables: scopeVariables(scopeFor(pre)),
+              timeoutMs: attemptTimeout(),
+              signal: bound.signal
+            });
+          } finally {
+            bound.settled();
+          }
+        }
       });
 
       capturePath = await recordAttempt(state, {
@@ -708,9 +818,18 @@ const executeFlow = async (
       outcome = await attemptOnce();
     }
 
+    /**
+     * §14.6: a request the engine aborted because the run had stopped is `cancelled`, not a
+     * transport error. §11.3 names both halves of the same event — a step the run never reached is
+     * skipped, and one whose request was in flight is `cancelled` — and without this only the
+     * second-and-later attempts of a poll could reach it, since the retry delay was the sole place
+     * a stop was noticed.
+     */
+    if (dispatchAborted && outcome.reason === 'transport-error') interrupted = true;
+
     // The other way a budget ends a step: the attempt itself was cut off by the timeout above, which
     // arrives as a transport error indistinguishable from any other. Over budget, it is this one.
-    exceeded = exceeded || (overBudget() && outcome.reason === 'transport-error');
+    exceeded = exceeded || (!interrupted && overBudget() && outcome.reason === 'transport-error');
 
     // `maxAttempts` is a hard cap that always applies: a step exhausts its retries when the
     // predicate is still asking to retry at the cap (§11.1).
@@ -733,6 +852,16 @@ const executeFlow = async (
 
     return {
       response: outcome.response,
+      // The last attempt's — the one the verdict was built from, and the one the capture path names.
+      preview: previewAttempt(
+        {
+          request: outcome.reason === 'invalid-request' ? undefined : materialized.request,
+          response: outcome.response
+        },
+        state.redactor,
+        state.secrets,
+        state.previewBytes
+      ),
       result: {
         ...identity(step, prefix),
         // §14.6: `cancelled` is the status of a step that had started, where a step the run never
@@ -754,10 +883,21 @@ const executeFlow = async (
     };
   };
 
-  const executeSubflow = async (step: NormalizedStep, pre: Record<string, unknown>): Promise<StepResult[]> => {
+  /**
+   * The sub-flow a `uses:` step runs, read before the step is announced so `step:start` can say how
+   * many steps it holds (§14.7). §12.2's `workspace:` prefix and its containment (§7.4) are the same
+   * refusal a malformed path gets from `loadFlow`: reaching either means nobody ran `bru flow
+   * validate` first.
+   */
+  const loadSubflow = (step: NormalizedStep): Promise<NormalizedFlow> =>
+    loadFlow(state, resolveSubflowTarget(step.uses as string, flow.file, state.options.scope));
+
+  const executeSubflow = async (
+    step: NormalizedStep,
+    child: NormalizedFlow,
+    pre: Record<string, unknown>
+  ): Promise<StepResult[]> => {
     const startedAt = state.clock.now();
-    const target = path.resolve(path.dirname(flow.file), step.uses as string);
-    const child = await loadFlow(state, target);
 
     // §8.7: the caller's computed values are in scope while `with:` is resolved, and go no further —
     // §12.2's isolation is what stops them, since the sub-flow builds its own scopes.
@@ -798,11 +938,13 @@ const executeFlow = async (
   };
 
   const execute = async (step: NormalizedStep): Promise<void> => {
+    const child = step.kind === 'subflow' ? await loadSubflow(step) : undefined;
     state.emit({
       type: 'step:start',
       id: `${prefix}${step.id}`,
       index: run.iteration,
-      operation: step.operation ? `${step.operation.alias}#${step.operation.operationId}` : undefined
+      operation: step.operation ? `${step.operation.alias}#${step.operation.operationId}` : undefined,
+      ...(child ? { steps: child.steps.length } : {})
     });
 
     if (stopped(state) && !(isCleanup(step) && withinCleanupGrace(state))) {
@@ -870,15 +1012,15 @@ const executeFlow = async (
     // from the same run-wide pool (§9.2), and a container holding a slot too would deadlock a
     // sub-flow at `concurrency: 1` — the setting §9.2 recommends for debugging.
     const produced
-      = step.kind === 'subflow'
-        ? { steps: await executeSubflow(step, pre), response: undefined }
+      = child
+        ? { steps: await executeSubflow(step, child, pre), response: undefined, preview: undefined }
         : await state.budget.run(async () => {
-            const { result, response } = await executeOperation(step, pre);
-            return { steps: [result], response };
+            const { result, response, preview } = await executeOperation(step, pre);
+            return { steps: [result], response, preview };
           });
 
     const [own, ...internals] = produced.steps;
-    record(step, own);
+    record(step, own, produced.preview);
     results.push(...internals);
     publish(step, own, produced.response);
   };
@@ -886,22 +1028,23 @@ const executeFlow = async (
   const pending = new Set(flow.steps.map((step) => step.id));
   const running = new Map<string, Promise<void>>();
 
-  while (pending.size) {
-    const ready = flow.steps.filter(
-      (step) =>
-        pending.has(step.id)
-        && !running.has(step.id)
-        && step.depends.entries.every((entry) => {
-          const parent = outcomes.get(entry.on);
-          return Boolean(parent && terminal.has(parent.status));
-        })
-    );
+  const schedule = async (): Promise<void> => {
+    while (pending.size) {
+      const ready = flow.steps.filter(
+        (step) =>
+          pending.has(step.id)
+          && !running.has(step.id)
+          && step.depends.entries.every((entry) => {
+            const parent = outcomes.get(entry.on);
+            return Boolean(parent && terminal.has(parent.status));
+          })
+      );
 
-    let progressed = false;
-    for (const step of ready) {
-      pending.delete(step.id);
-      progressed = true;
-      if (!dependenciesSatisfied(step, outcomes)) {
+      let progressed = false;
+      for (const step of ready) {
+        pending.delete(step.id);
+        progressed = true;
+        if (!dependenciesSatisfied(step, outcomes)) {
         /**
          * A stopped run explains a step that did not run better than its parents do (§11.3): once
          * the run is over the step above it is `cancelled`, and *every* step below then reads as an
@@ -909,39 +1052,62 @@ const executeFlow = async (
          * still answers to its `depends`, because accepting a cancelled parent is the whole of how
          * it was declared.
          */
-        record(
-          step,
-          stopped(state) && !isCleanup(step)
-            ? skip(step, prefix, 'run-cancelled')
-            : skip(step, prefix, 'unmet-dependency', unmetBy(step, outcomes))
+          record(
+            step,
+            stopped(state) && !isCleanup(step)
+              ? skip(step, prefix, 'run-cancelled')
+              : skip(step, prefix, 'unmet-dependency', unmetBy(step, outcomes))
+          );
+          continue;
+        }
+        running.set(
+          step.id,
+          execute(step).finally(() => running.delete(step.id))
         );
-        continue;
       }
-      running.set(
-        step.id,
-        execute(step).finally(() => running.delete(step.id))
-      );
-    }
 
-    // A pass that resolved a step without launching one — a branch of skips — has made progress,
-    // and the steps below it become ready on the next pass.
-    if (running.size === 0 && progressed) continue;
+      // A pass that resolved a step without launching one — a branch of skips — has made progress,
+      // and the steps below it become ready on the next pass.
+      if (running.size === 0 && progressed) continue;
 
-    if (running.size === 0) {
+      if (running.size === 0) {
       // Nothing is ready and nothing is in flight: whatever is left depends on a step that never
       // reached a terminal outcome, which validation catches as a cycle before a run gets here.
-      for (const id of pending) {
-        const step = flow.steps.find((entry) => entry.id === id) as NormalizedStep;
-        record(step, skip(step, prefix, 'unmet-dependency', unmetBy(step, outcomes)));
+        for (const id of pending) {
+          const step = flow.steps.find((entry) => entry.id === id) as NormalizedStep;
+          record(step, skip(step, prefix, 'unmet-dependency', unmetBy(step, outcomes)));
+        }
+        break;
       }
-      break;
+
+      await Promise.race([...running.values()]);
     }
 
-    await Promise.race([...running.values()]);
+    await Promise.all([...running.values()]);
+  };
+
+  // Registered for as long as the schedule runs: `announceCleanup` asks the flows in flight whether
+  // any holds a cleanup step, and a flow that has returned can hold none.
+  state.activeFlows.push(flow);
+  try {
+    await schedule();
+  } finally {
+    state.activeFlows.splice(state.activeFlows.indexOf(flow), 1);
   }
 
-  await Promise.all([...running.values()]);
-
+  /**
+   * §12.1's exports, resolved here — after the schedule, with nothing left in flight.
+   *
+   * That position is what makes `shared.<slot>` exportable alongside `steps.<step>.<output>`: every
+   * writer has finished, so the last write in declaration order is settled and no reader-topology
+   * question (§9.1) applies to a read taken at the flow's own boundary.
+   *
+   * **An unwritten slot exports the empty string, and a step output that was never produced exports
+   * nothing at all.** The asymmetry is each root's own rule (§11.2) carried across the boundary
+   * unchanged: `{{shared.x}}` resolving empty is a value the run knows is empty, and `{{steps.x.y}}`
+   * resolving to nothing is a step that did not do what it was for — which is why the second omits
+   * the key and skips the caller's step, and the first hands over what it has.
+   */
   const exports: Vars = {};
   for (const [name, reference] of Object.entries(flow.exports)) {
     const value = interpolateValue(`{{${reference}}}`, scopeFor()).value;
@@ -983,12 +1149,21 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   // run can disagree with the run's own file about where it came from.
   const origin = options.origin;
 
+  const specs = new SpecLoader(options.ports.readSpec, flowContext);
+  // Before the entry is read: the entry itself is the first document whose outputs depend on them.
+  const connectors = await Connectors.load(
+    options.scope,
+    async (file) => (await options.ports.readFile(file, flowContext)).toString('utf8'),
+    specs
+  );
+
   const state: RunState = {
     runId,
     flowContext,
     options,
     clock: options.ports.clock || REAL_CLOCK,
-    specs: new SpecLoader(options.ports.readSpec, flowContext),
+    specs,
+    connectors,
     budget: new Budget(options.overrides?.concurrency || 5),
     emit: (event) => {
       // A throwing consumer never fails the run: a host bug in rendering must not turn a passing
@@ -1006,7 +1181,13 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
       ...options.variables.envVarOverrides
     },
     cleanupGrace: 30000,
+    cleanupAnnounced: false,
+    activeFlows: [],
     nestIterations: false,
+    // The flow's `config:` is not read yet; both are replaced with the root flow's below, before
+    // anything is dispatched.
+    redactor: createRedactor(),
+    previewBytes: 8192,
     // The values only this host can know are secret (§14.4); the engine adds the ones it resolves
     // itself — a `secret: true` param, an auth profile's credentials — as the run reaches them.
     secrets: createSecretTracker(options.secrets),
@@ -1079,8 +1260,11 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
   state.cleanupGrace = flow.config.cleanupGrace;
   state.nestIterations = dataset !== undefined;
   // The root flow's policy governs the whole run, sub-flows included — the same value and the same
-  // scope the capture below is given, so a host and a capture can never mask different sets.
+  // scope the capture below is given, so a host, a capture and a preview can never mask different
+  // sets.
   flowContext.redactHeaders = flow.config.redactHeaders;
+  state.redactor = createRedactor(flow.config.redactHeaders);
+  state.previewBytes = flow.config.capturePreviewBytes;
 
   // §14.5's identity file has to exist before the first step, so the capture is opened as soon as
   // the flow's own retention and redaction settings are known and before anything is dispatched.
@@ -1115,6 +1299,10 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     ? parseDataset(dataset.source, await readText(state, resolveWithin(dataset.source, flow.file, scopeRoot(state))))
     : [undefined];
 
+  // `RunResult.duration` is measured from here: the run's own clock, so a host that supplies one
+  // sees a duration made of the same time its retry delays consumed (§13.2).
+  const runStartedAt = state.clock.now();
+
   // The snapshot is reported as well as written, so a watcher draws the flow this run is executing
   // rather than the file, which can be edited while the run is still going (002 §4.3, §8.1).
   state.emit({
@@ -1148,6 +1336,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     iterations,
     decidedBy: [],
     summary: { total: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0 },
+    duration: state.clock.now() - runStartedAt,
     diagnostics: [
       ...state.diagnostics,
       {
@@ -1171,7 +1360,10 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
           params: runParams,
           row,
           iteration: index,
-          profiles: {}
+          // §6.4's host-supplied profiles — the implicit `collection` among them — sit beneath
+          // everything a flow declares: the entry flow's own block overrides them here, and a
+          // sub-flow's overrides what it inherits, so a flow that names one of these wins.
+          profiles: options.authProfiles || {}
         });
         const { status, decidedBy } = iterationStatus(results, verdictCauses, signal.aborted);
         state.emit({ type: 'iteration:end', index, status });
@@ -1204,6 +1396,7 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
         skipped: steps.filter((step) => step.status === 'skipped').length,
         cancelled: steps.filter((step) => step.status === 'cancelled').length
       },
+      duration: state.clock.now() - runStartedAt,
       diagnostics: state.diagnostics,
       captureDir: state.capture?.dir
     };

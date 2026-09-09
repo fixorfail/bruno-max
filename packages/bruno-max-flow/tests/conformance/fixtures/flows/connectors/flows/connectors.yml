@@ -1,0 +1,16 @@
+# §8.5's workspace connector file: the outputs every flow under this workspace inherits for the
+# operations named here. The collection file under `collections/payments/` layers over it — `title`
+# exists to be overridden there, and `role` to be suppressed.
+version: 1
+
+apis:
+  regress-api: ../../../specs/regressions-v1.yml
+
+connectors:
+  regress-api#signIn:
+    token: data.token
+    role: data.role
+
+  regress-api#getThing:
+    thingId: data.id
+    title: data.id

@@ -19,17 +19,35 @@ export * from './types/capture';
 export * from './types/reporter';
 
 export { runFlow } from './run';
+// §6.4's profile shape, so a host can declare the implicit `collection` profile through
+// `RunOptions.authProfiles` in the same flat form a flow's own block is written in — and the
+// mapping from a collection's stored auth block to it, which both hosts read off their own files
+// and neither may translate for itself (§13.1).
+export type { AuthProfile } from './materialize';
+export { collectionAuthProfile } from './materialize';
+// §5.4's document schema, as `bru flow schema` prints it — one schema per format version, and the
+// version a flow written today declares.
+export { flowSchema, FLOW_VERSIONS, CURRENT_FLOW_VERSION } from './schema';
+export type { JsonSchema } from './schema/v1';
 // §14.4's masking, for a host reporting a request on a surface of its own (002 §8.5). Exported so
 // the policy has one implementation rather than one per host.
 export { createRedactor, MASK } from './redact';
 export type { Redactor } from './redact';
 export { validateFlow, resolveFunctions } from './validate';
+// §8.5's listing beside `resolveFunctions`, for the same reason: each step's resolved outputs and
+// where each was declared — inline, collection connector file or workspace connector file — which is
+// what keeps a shared declaration discoverable once it is no longer visible by reading the step.
+export { resolveOutputs } from './connectors';
+export type { OutputOrigin, ResolvedOutput } from './connectors';
 // 002 §4.1's sidebar name, read from a flow's text without describing it — so a host listing flows
 // never parses `.flow.yml` itself and never has to know §5.4's local tags.
 export { readFlowMeta } from './document';
 // 002 §4.4's properties dialog. The format's only writer, for §5.1's reason: a host editing `meta:`
 // with a YAML library of its own would be the second serializer flows being YAML-only bought away.
 export { readFlowProperties, writeFlowProperties } from './meta';
+// 002 §4.1c's opening document, for the same reason: a host that emitted the skeleton `meta:` is
+// spliced into would be writing the format too.
+export { writeNewFlowDocument } from './meta';
 // §5.2's identity, exported because a roster, a report and a rerun are matched to each other by it:
 // three hosts deriving it separately would be three chances for those three to disagree.
 export { flowIdentity } from './meta';
@@ -41,6 +59,9 @@ export type { FlowProperties } from './meta';
 // flow is matchable on are extracted here so the two hosts cannot disagree about what a flow
 // contains; only the pattern is theirs to compile.
 export { flowSearchTerms, flowMatches } from './search';
+// The documents a flow binds, as paths, for a host watching the files its diagnostics depend on —
+// 002 §6 refreshes on a watcher change, and `apis:` targets live outside the directory watched.
+export { flowSpecSources } from './openapi';
 export { describeFlow } from './describe';
 export { listRuns, readRun, readCapture } from './history';
 // §14.5's `suite.json` — the invocation-level index the run directories cannot supply on their own,

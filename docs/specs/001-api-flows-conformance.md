@@ -70,6 +70,13 @@ tests/conformance/
   history.spec.js             # R4o — the runs and the suites read back through 002 §11.2's entries
   parse.spec.js               # R4p — §5.4's tags, merge keys and node positions
   describe.spec.js            # R4q — the graph 002 §11.1 hands the app
+  schema.spec.js              # R4m and R11.1 — §5.4's schema, and the pass bru flow validate runs first
+  validation.spec.js          # R4h and R8.1-R8.10 — §14.3's checks, grouped by what each one reads
+  runtime.spec.js             # R9.1-R9.8 — what a script, an assertion and an event see at run time
+  connectors.spec.js          # R10.1-R10.5 — §8.5's files: matching, precedence, suppression, provenance
+  collection-auth.spec.js     # R9.13 — the stored-auth → AuthProfile mapping, against materialize.ts directly
+  subflow-resolution.spec.js  # R12.1 — §12.2's `uses:` targets, relative and `workspace:`-prefixed
+  subflow-exports.spec.js     # R12.2 — §12.1's exports, and the slot-sourced kind
 ```
 
 The write ports (`WriteFile`, `ListDirectory`, `RemoveDirectory`) are stubbed as an **in-memory
@@ -100,11 +107,23 @@ The exceptions are listed rather than allowed to accumulate silently:
 |---|---|---|
 | R4i | `bruno-cli/tests/fork/flow/` — `selection.spec.js`, and `retry.spec.js` / `retry.integration.spec.js` for the retry half | Which flows an invocation runs, in what order, and which of them it runs again is the CLI's: the engine sees one flow at a time and never the invocation around it (§13.2) |
 | R4l | `bruno-cli/tests/fork/flow/output.spec.js` | §14.7's console rules are the CLI's own |
+| R13.1 | `bruno-cli/tests/fork/flow/output.spec.js` | Same reporter, same reason as R4l — the operation column, `--verbose` previews and TTY behaviour are all read off the CLI's own event handling, not the engine |
+| R13.2 | `bruno-cli/tests/fork/flow/output.spec.js`, and `validate.integration.spec.js` for the pass end to end | Same reporter, same reason as R4l — what `validate` prints is the CLI's; the engine's half is `resolveOutputs`, pinned by R10.5 |
+| R7.1 | `bruno-cli/tests/fork/flow/auth.integration.spec.js` | §6.4 hands over Bruno's `Auth` and stops there: applying it is each host's own auth code, and only that host's wire shows it was applied |
+| R7.2 | `bruno-cli/tests/fork/flow/transport.integration.spec.js` | The engine assembles the parts (§7.5) and a host writes them; what a multipart or binary request looks like on the wire is the host's half |
+| R7.3 | `bruno-cli/tests/fork/flow/transport.integration.spec.js` | The engine owns which jar a request uses and the host owns what a jar is (§7.6) — the conformance suite stubs the transport and has no cookies to carry |
+| R7.4 | `bruno-cli/tests/fork/flow/transport.integration.spec.js`, and `transport.spec.js` for the certificate half | §8 puts real network behaviour — proxies and certificates — in each host's own tests, for the reason it is not in the engine at all |
+| R7.5 | `bruno-cli/tests/fork/flow/sandbox.spec.js`, and `sandbox.integration.spec.js` for the end-to-end proof | §8.2's sandbox selection is a host decision the engine never makes (§13.2's `RunScript`), so only the CLI's own port can show which runtime a script actually ran in |
+| R7.6 | `bruno-cli/tests/fork/flow/sandbox.spec.js`, and `sandbox.integration.spec.js` for the end-to-end proof | §14.1's `--sandbox` is a flag on a command the engine has never heard of; R7.5's reason, one layer up |
+| R7.7 | `bruno-cli/tests/fork/flow/collection-auth.spec.js`, and `collection-auth.integration.spec.js` for the end-to-end proof | §6.4's implicit `collection` profile is host-supplied by construction — the engine is handed `RunOptions.authProfiles` and never opens a collection to build one, so only a host's own reader can show which credential the collection contributed |
+| R7.8 | `bruno-cli/tests/fork/flow/scope.spec.js`, and `scope.integration.spec.js` for the end-to-end proof | Locating a collection root on disk is host discovery (§14.1) the engine never performs — it is handed a scope already resolved (§13.2), so only a host's own directory walk can show it recognises both on-disk formats |
+| R13.3 | `bruno-cli/tests/fork/flow/schema.spec.js`, and `schema.integration.spec.js` for the command line itself | The engine owns the schema and pins its contents in `schema.spec.js`; which version an invocation emits and where it lands are §14's, and only the CLI has them |
 | R4k | Asserted throughout, by every scenario that names an outcome | §14.6's vocabulary is a property of every reason string in the suite; a dedicated scenario would restate what forty assertions already pin |
-| R4m | **No test — §5.4's `flow.schema.json` is not implemented** | The requirement is written and the artifact it validates against does not exist yet |
 
-R4d2 and R4m are the remaining gaps. R4m's is the wider one: §5.4's `flow.schema.json` does not
-exist, so the requirement is written against an artifact nobody has built.
+**R4d2 is the one requirement with no test anywhere.** R4m was the wider gap and is closed: §5.4's
+schema is built (`src/schema/`), and `schema.spec.js` runs it over every fixture flow in this file.
+One *row* is still open beside it — R4h's `--dry-run` case, registered as an `it.todo` because 001
+§19.1 schedules the flag for v2 and there is nothing yet to run it against.
 
 ## 3. F1 — Role matrix
 
@@ -1035,10 +1054,18 @@ Killing the run for the third row means terminating without the cancellation pat
 | `validateRequest: false` on that step | dispatched unvalidated |
 | operation declaring no `requestBody` schema | dispatched; the check is not applicable |
 | a multipart step with a `format: binary` part | dispatched; binary parts are not checked |
-| `--dry-run` over a flow with a mistyped body | reports the failure offline, sends nothing |
+| `--dry-run` over a flow with a mistyped body | reports the failure offline, sends nothing — **`it.todo`**, see below |
 
 The never-called row is the important one — a check that validates after dispatch has already made
 the call it was meant to prevent.
+
+**The `--dry-run` row is registered as an `it.todo` rather than left out.** 001 §19.1 schedules the
+flag for v2 and `bru flow run` rejects it today, so the case has nothing to run against — but the
+requirement is not in doubt, only its subject. A todo keeps the row in the runner's own output, where
+the shortfall is counted every time the suite runs; deleting it would make the table and the suite
+agree by removing the disagreement rather than by fixing it, which is the failure mode §2's registry
+guard exists to catch. It is the only `it.todo` in the suite, and it is expected to become an `it` on
+the same commit as the flag.
 
 ### R4i — Multi-flow run ordering, and re-running what failed
 
@@ -1260,6 +1287,8 @@ assert the *app* renders what comes back.
 | `readRun` given step ids that are not the run's | still finds the run's own captures — the ids come from the snapshot, which is what keeps a renamed step's captures reachable |
 | `readRun` over a run with no snapshot | no description, and the caller's `stepIds` are used exactly as before |
 | `listRuns` with `flow:` supplied | each entry reports `flowChanged` against the file as it is now: `false` for the run just made, `true` for one recorded against different text, and **undefined** for a run with no recorded digest — unknown is not unchanged |
+| `readRun` or `readCapture` given a `dir` outside `<scopeRoot>/.bruno-runs` — a sibling directory, a `..` climb, or the right `dir` with the wrong `scopeRoot` | refused with the §7.4 message, and **the port is never called**: the reads log is unchanged. 002 §11.2's containment for history reads, on the two readers the renderer names a directory for |
+| `readSuite` given a `dir` outside the scope | fails as "not a suite directory", never as "outside the scope" — deliberately uncontained, because `--capture-dir` (§14.1) can put a suite anywhere and its `dir` is one the CLI's own user typed |
 
 The binary-body row is the one that keeps the split honest: a reader that resolved the sibling and returned
 its bytes would put a 2 MB payload in every step-pane open, which is what "storage is split" exists
@@ -1545,6 +1574,865 @@ One documented exception, asserted rather than left to surface in a diff: the se
 trailing comment one space after its value, so padding used to align a column of them collapses.
 Nothing the format carries meaning in is affected.
 
+### R9.1 — A slot written by two branches resolves by declaration order
+
+**Pins:** §9.1's *last writer in declaration order wins*.
+
+Two branches that both run and both write one slot, joined by a reader that descends from both. The
+scenario withholds the **first-declared** writer's response until the second-declared writer's
+`step:end` has been emitted, so the writer declared first is the one that finishes last:
+
+| Case | Expected |
+|---|---|
+| the first-declared writer finishes last | the reader still reads the **second-declared** writer's value |
+| the second-declared writer finishes last | the same value — the schedule does not change the answer |
+
+F2.2's fixture cannot tell the two rules apart: its fallback's `depends` orders the two writes
+against each other, so there completion order *is* declaration order. This one is the race. A
+completion-order implementation passes F2.2 and fails the first row here, which is the row that says
+a loaded CI machine and a laptop resolve the same flow to the same value.
+
+### R9.2 — What a script's `ctx` carries
+
+**Pins:** §8.2's `ctx.env`, §8.7's `ctx.vars`, §11.1's `ctx.env` / `ctx.steps` / `ctx.failures`.
+
+| Case | Expected |
+|---|---|
+| `ctx.env.<name>` in a `pre:`, an output, a `when:` and a `shouldRetry` script | the host's environment value — §7.3's tiers, merged |
+| `ctx.vars.<name>` in the same four positions | the flow's own `vars:` entry, as this iteration resolved it |
+| `ctx.<name>` — the guide's flat form | still resolves; the named halves are additive |
+| `ctx.env.<a flow var>` and `ctx.vars.<an environment variable>` | `undefined` — the two halves are disjoint |
+| the keys of `ctx` that are not a variable, in a `pre:` and a `when:` script | exactly `env`, `vars` and §7.3's namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`, `process` — and nothing else |
+| the same, in an output script | the set above plus `req` and `res` (§10.2), since a request has gone out |
+| the same, in `shouldRetry` | the set above plus `failures` (§11.1) and neither `req` nor `res` — the response is that script's own first argument |
+
+The disjointness row is a reading rather than a quotation: §8.7's sample puts the flow var under
+`vars` and the credential under `env`, and nothing in 001 says whether `env` also holds the merged
+chain. It is pinned so a change to that reading is a failing test and not a silent one. The key-set
+rows close §18's question of whether `row`, `params`, `shared` and `flow` belong in `ctx`: they do,
+because the context is built over the same namespaces an assertion addresses, and the set is pinned
+so that a later addition is a deliberate spec change rather than a side effect of how the context
+happens to be built.
+
+### R9.3 — An assertion addresses the request as sent
+
+**Pins:** §10.2's `req.*` — a reserved root that resolved to nothing.
+
+| Case | Expected |
+|---|---|
+| `req.method`, `req.url`, `req.headers[...]`, `req.body.<field>` | the request as it went out — resolved URL with its query string, upper-case method, the body's value |
+| a header the step wrote as `X-Trace` | addressable as `req.headers['x-trace']`, and `req.headers['X-Trace']` is `undefined` — names are lower-cased, as `steps.<id>.headers` are (§8.3) |
+| the host reported `requestHeaders` (§13.2) | `req.headers` is that set, lower-cased on the same terms — the auth header and content type the host added are addressable, as they are in the capture, whichever case the host spelled them in |
+| a header the request did not carry | the assertion fails as an ordinary failed assertion with `actual: undefined`; nothing throws |
+
+`req.body` is the value for a JSON, text or urlencoded body and absent for a multipart or raw one,
+whose content is a file (§7.5) rather than something an assertion compares. Header names are
+lower-cased because HTTP does not distinguish `X-Trace` from `x-trace` and nothing tells a flow which
+spelling the host chose: one form addresses a header whichever side wrote it, which is the rule
+`steps.<id>.headers` already follows.
+
+### R9.4 — A `step:end` carries a capped, masked preview
+
+**Pins:** §5.2's `capturePreviewBytes`, §14.5's *storage is split*, §14.7's `--verbose` previews.
+
+| Case | Expected |
+|---|---|
+| a step that sent a request | its `step:end` carries `preview.request` — the request line, the headers the host wrote, and a textual body — and `preview.response`, the response body |
+| a body longer than `config.capturePreviewBytes` | the preview is cut at that many **bytes** — never mid-character — while the attempt file beside it holds the whole body and carries no `preview` / `truncated` field |
+| no `capturePreviewBytes` set | the cut is at 8192 |
+| a secret-valued variable in the request, or a denylisted header | masked in the preview exactly as in the capture — masked **before** the cut, so a truncated secret leaves no prefix behind |
+| a binary response | `preview.response` is absent — §14.5 never previews one |
+| a step that sent nothing | no `preview` at all |
+
+The preview is the reporter's inline copy §14.5 describes; the attempt file is unchanged by it. It
+travels on the event rather than in `StepResult` so `summary.json` and `RunResult` stay free of
+bodies, which is the size argument §13.2 makes for the stream.
+
+### R9.5 — A stopped run announces its cleanup window
+
+**Pins:** §11.3's grace window, 002 §7.1's cleanup state.
+
+| Case | Expected |
+|---|---|
+| `maxRunDuration` elapses with a cleanup step declared | exactly one `run:cleanup` event, after `run:start`, before the cleanup step's `step:start`, and `run:end` still last |
+| its `deadline` | when the run stopped plus `config.cleanupGrace`, on the run's clock — the same instant the engine abandons cleanup at |
+| the host's signal aborts the run instead | the identical event, for §11.3's reason that the two take one path |
+| a run that was never stopped | no `run:cleanup` |
+| a stopped run with no cleanup-eligible step — none whose `depends` accepts `cancelled` | no `run:cleanup`; the stop goes straight to `run:end`, with the in-flight step `cancelled` and the rest skipped `run-cancelled` |
+| the only cleanup step is inside a sub-flow that is still running when the run stops | the event is emitted, and that step runs |
+
+Emitted the first time the scheduler acts on the stop rather than from the abort listener: a signal
+can fire after the last step has finished, and an announcement after `run:end` would break §13.2's
+ordering guarantee for a window nothing can use. And only when there is a step for the window: it is
+a state 002 §7.1 shows, and a run with nothing eligible would have the control read "cleaning up" over
+a run that is simply over. Whether one exists is asked of the flows in flight — the entry flow and
+every sub-flow that has started — since a sub-flow the stop reaches first is skipped whole.
+
+### R9.6 — A run reports its own duration
+
+**Pins:** 002 §8.4's elapsed time; §14.5's `summary.json` carrying the outcome.
+
+| Case | Expected |
+|---|---|
+| a run whose only time is four 1000 ms retry delays on the injected clock | `RunResult.duration` is 4000 — `run:start` to `run:end`, on §13.2's clock |
+| the same run's `summary.json` | carries the same `duration` |
+| a run cancelled by its budget | the duration covers the cleanup window as well as the steps |
+
+Run-level rather than derived from the steps: under `concurrency > 1` step durations overlap, and
+no sum of them is the elapsed time a summary line shows. `IterationResult` gains nothing — §13.2
+declares no per-iteration duration.
+
+### R9.7 — A cleanup step is dispatched with a live signal, bounded by the grace window
+
+**Pins:** §11.3's cleanup exception and its grace window; §13.2's `StepContext.signal`.
+
+| Case | Expected |
+|---|---|
+| a cleanup step scheduled after the run stopped, against a port that answers its signal | the request goes out and the step is `success` — the signal it was handed is not already aborted |
+| a cleanup request still pending when `stoppedAt + cleanupGrace` arrives | aborted at that instant, and the step is `cancelled · run-cancelled` |
+| the window the run announced | `run:cleanup.deadline` is the same instant the abort fires at |
+
+The signal a cleanup dispatch receives cannot be the run's own: §11.3 schedules the step *after* the
+stop, so the run's signal is aborted before the request is built and handing it over cancels the very
+work the window exists to let finish. The window is the bound instead, which is also what keeps
+§11.3's promise that an unattended run cannot hang in cleanup — the deadline holds against a host
+that never returns, not only against a scheduler that checks between steps.
+
+### R9.8 — A request in flight when the run is cancelled is `cancelled`
+
+**Pins:** §11.3's "in-flight requests are aborted and their steps recorded as `cancelled`"; §14.6's
+status vocabulary.
+
+| Case | Expected |
+|---|---|
+| a step whose request is pending when the run is cancelled | `cancelled · run-cancelled`, not `failed · transport-error` |
+| the steps that had already settled | keep the verdicts they reached; the cancel renames nothing behind it |
+
+A host reports an abort and a dropped connection identically — a rejected promise — so only the side
+that owns the signal can tell them apart, and §13.2 puts that side in the engine. Without it
+`cancelled` was reachable only from a retry delay, which made it a property of polling steps rather
+than of cancellation.
+
+### R9.9 — Request validation reaches urlencoded and multipart bodies
+
+**Pins:** §10.1's request schema check and the three cases it is *not* applicable to.
+
+| Case | Expected |
+|---|---|
+| a urlencoded body whose fields resolve to the declared types | dispatched, and the fields flattened to strings for the wire |
+| a urlencoded field that breaks the schema | `failed · invalid-request`, nothing sent, the field named in the message |
+| a multipart body's non-binary part breaking the schema | the same, naming the part |
+| the `format: binary` part beside it | never checked, and never reported missing from `required` |
+| `validateRequest: false` on the step | dispatched unchecked, as for a JSON body |
+
+§10.1 lists exactly three things the check does not apply to — an operation with no `requestBody`
+schema, `format: binary` parts, and raw binary bodies — so a form body is inside it. What the check
+runs against is the body **before** §7.5 encoded it: a urlencoded field is a string on the wire
+whatever the schema declares, and validating the encoded form would fail every request the operation
+types as anything but a string.
+
+### R9.10 — A host supplies the implicit `collection` profile
+
+**Pins:** §6.4's implicit `collection` profile and its place in the resolution order; §13.2's
+`RunOptions.authProfiles`.
+
+| Case | Expected |
+|---|---|
+| `auth: collection` on a binding or a step, with the host supplying `authProfiles.collection` | the request carries that profile, resolved to Bruno's `Auth` exactly as a declared one is (R4j); `{{...}}` in its fields resolves against the run's environment |
+| the flow's own `authProfiles:` declares `collection` too | the flow's wins |
+| a sub-flow using `collection`, where the caller declared one | the caller's — inherited ahead of the host's, as any inherited profile is |
+| the credential the host's profile resolved to | masked wherever it later appears (§14.4), as a declared profile's is |
+| no host profile supplied — a workspace-scoped run | `failed · invalid-request`, `no auth profile named collection`, nothing sent: exactly what it was before the field existed |
+| no `auth:` on the step and none on its binding, with the host supplying `authProfiles.collection` | that profile — §6.4's third rank, which is what makes a collection flow that "declares no `authProfiles` at all" authenticate exactly as the collection does |
+| `auth: none` on a step in that same flow | `mode: 'none'` — the opt-out, and the only thing a step that must *not* carry the collection's credentials has to write |
+| no `auth:` anywhere and no host profile — a workspace-scoped run | `mode: 'none'`: with no collection there is no default to fall to, and the fourth rank is reached |
+
+The resolution order is therefore four ranks, not three: the step's `auth:`, the binding's, the
+implicit `collection` profile, then `none`. The third exists because the common collection flow
+names no profile anywhere, and reading that as "send nothing" would make a flow authenticate
+differently from every request in the collection around it.
+
+A named profile is found in one of three places, in this order: the flow's own `authProfiles:`
+block, the profiles inherited from the flow that invoked it (§12.3), then what the host supplied.
+The host's are last because they are the ambient default — the collection's configured auth, which
+§6.4 says a collection flow calling one API never spells out — and anything a file says is a
+decision over a default. A host profile carries no declaring flow, so §6.4's lexical rule has no
+scope to resolve it in; it resolves where it is used.
+
+### R9.11 — The dispatch port receives the scope the request was interpolated against
+
+**Pins:** §13.2's `StepContext.variables`; §7.4's file sources, which is where a host's own proxy and
+certificate configuration is interpolated for `bru run`.
+
+| Case | Expected |
+|---|---|
+| `ctx.variables` at dispatch | one map holding §7.3's chain flattened, the flow's `vars:` as this iteration resolved them, and every namespace as a key — `steps`, `row`, `params`, `shared`, `flow`, `pre`, `process` |
+| `pre` in it | the dispatching step's own computed values (§8.7), and empty for a step that computed none |
+| a host interpolating its own template against it | the same string the request body resolved to from the same `{{...}}` — it is the scope the request was built from, not one rebuilt for the host |
+
+`bru run` interpolates a collection's proxy URL and certificate paths against the request's
+variables, and a host running a flow could do the same only by rebuilding §7.3's chain from
+`RunOptions.variables` — which is precedence, which is the engine's (§13.2). The map is what
+`{{...}}` reads, handed over rather than re-derived, so the request and what surrounds it resolve
+the same way.
+
+### R9.12 — A `uses:` step announces how many steps its sub-flow runs
+
+**Pins:** §14.7's `sub-flow (2 steps)`; §13.2's `step:start`.
+
+| Case | Expected |
+|---|---|
+| a `uses:` step's `step:start` | carries `steps`, the number of steps the sub-flow declares — a nested `uses:` inside it counting as one |
+| an operation step's `step:start` | no `steps` key at all |
+
+The count is what §14.7's line prints while the container is still in flight, and `step:end` cannot
+supply it: that event arrives only once every internal has, which is after the line was needed. It is
+the sub-flow's *own* step count rather than the flattened total, because that is what the line
+describes — one flow, invoked as one step — and what a reader would count by opening the file.
+
+### R7.1 — Every §6.4 auth mode reaches the wire
+
+**Pins:** §6.4. CLI-level, against a server that records what arrived — §2's table says where.
+
+§6.4's claim is that flows introduce no auth mechanics of their own: the engine resolves a profile to
+Bruno's `Auth` (R4j) and each host applies it with the code it already has. Only the wire can show
+that it did, so one flow declares a profile per mode and every case asserts the header the mode
+produces on the request the server received.
+
+| Mode | Expected on the wire |
+|---|---|
+| `bearer`, `basic` | `Authorization`, the scheme and the encoding `bru run` sends |
+| `apikey`, both placements | the named header, or the named query parameter on the URL |
+| `wsse` | an `X-WSSE` username token carrying a digest, a nonce and a timestamp |
+| `awsv4` | an `AWS4-HMAC-SHA256` credential scoped to the profile's region and service |
+| `oauth1` | an `OAuth` header naming the consumer key |
+| `oauth2` (`client_credentials`) | one request to the profile's `accessTokenUrl`, and the token it returned placed by the profile's `tokenPlacement` and `tokenHeaderPrefix` |
+| `digest`, `ntlm` | **two legs** — the unauthenticated request that drew the 401, then the answer to the challenge |
+| `akamai-edgegrid` | an `EG1-HMAC-SHA256` signature naming the client token |
+
+The challenge modes are the reason this cannot be asserted from the resolved `Auth` alone. Their
+interceptors read the challenge off a *rejected* 401, and a flow's request is dispatched with every
+status resolving because §10.1 leaves the judgment to the engine — so a host that forgot the
+exception would send one unauthenticated request, report the 401 as the step's result, and look
+exactly like an API that refused a valid credential.
+
+One further case, which is §6.4's per-field override rather than a mode: a step declaring
+`Authorization` itself keeps its own value, and the profile does not replace it. The engine hands
+the step's headers and the resolved profile over separately precisely so that a host can tell which
+of the two a value came from; folding them the other way would silently discard a pre-signed token.
+
+### R7.2 — Multipart and binary bodies are sent as the engine assembled them
+
+**Pins:** §7.5. CLI-level — §2's table says where.
+
+| Case | Expected on the wire |
+|---|---|
+| a multipart body with a `!file` part, a text field and a number | one part per key, with the boundary in `Content-Type` |
+| the file part's `filename:` override | the name the flow gave it, not the fixture's own |
+| the file part's content type | the one the engine resolved (§7.5's four steps), not one re-derived from the path |
+| a binary body from `bodyFile:` | the file's bytes, unaltered, under the operation's media type |
+
+The filename row is what rules out the obvious reuse. `bru run` builds its multipart bodies with
+`utils/form-data`'s `createFormData`, which takes file *paths*, reads them itself and derives each
+part's name from the path — and §7.5 gives all three to the engine, which has already read the file
+through the `ReadFile` port and applied the `filename:` override. A host that reached for the
+existing helper would send `tmp-3f9a.csv` where the flow said `september-invoice.csv`, which §7.5
+notes servers routinely key validation and storage on.
+
+### R7.3 — A cookie jar per run, per iteration
+
+**Pins:** §7.6. CLI-level — §2's table says where.
+
+| Case | Expected |
+|---|---|
+| a step whose response sets cookies, followed by another step | the later request carries them |
+| two dataset iterations, each logging in | each carries **its own** session, never the other's |
+| the first request of a run | no `Cookie` header — the jar starts empty |
+
+Per-iteration isolation is the rule §7.6 calls load-bearing, and the failure it prevents is a
+passing test: under one run-wide jar a role matrix's second row sends the first row's cookie, the
+server answers as the wrong user, and the flow reports three identities tested when it tested one.
+The engine mints the jar id, so what this pins on the host side is that two ids never resolve to one
+jar — which is exactly what reusing `utils/cookies`' process-wide jar would do.
+
+### R7.4 — The collection's proxy and certificates apply
+
+**Pins:** §7.6's *ambient configuration of the transport*, and §6.2's scopes.
+
+| Case | Expected |
+|---|---|
+| a collection whose `bruno.json` pins a proxy | the request reaches the proxy, with the API's absolute URL on the request line, and never the API directly |
+| a client certificate whose domain matches the request | looked for at the path the collection names, resolved against the collection |
+| the same certificate and a request to another host | not consulted |
+| a proxy written as `{{variable}}` | resolved against the run's variables before the agent is built, so the request reaches the host the variable names |
+| a certificate whose `certFilePath` / `keyFilePath` is written as `{{variable}}` | resolved the same way, against the variables that step resolved |
+| a certificate whose `domain` is written as `{{variable}}` | resolved before the match, so the certificate is consulted for the host the variable names rather than for the literal `{{apiHost}}` |
+| a workspace-scoped flow, with no collection config to read | dispatched normally |
+
+A flow declares none of this and a collection configures all of it, which is what §7.6 means by
+ambient: a proxy and a certificate are properties of how a host reaches an API, not of the flow that
+calls it. The consequence worth pinning is the negative one — a flow and a `bru run` in the same
+collection must not reach the same API by different routes, and only the proxy seeing the request
+says so.
+
+The three interpolation rows are the same argument applied to the config's own text (§7.4). A team
+whose proxy or certificate directory differs between staging and production writes it as a variable,
+and a host that matched on the literal `{{apiHost}}` would consult no certificate at all and report
+nothing — a request that quietly went out unauthenticated by the transport's own standard.
+
+### R7.5 — A script runs in the sandbox a plain request in this collection would get
+
+**Pins:** §8.2. CLI-level — §2's table says where.
+
+| Case | Expected |
+|---|---|
+| an `outputs:` script | its return value, computed with no access to `node:vm`'s globals — `require`, `process` |
+| the same script, throwing | the step fails with `script-error`, carrying the script's own message |
+
+§8.2's promise is "no new security posture": a flow script runs in the same sandbox mode a plain
+request in this collection would. `bru run` derives that mode from its own `--sandbox` option,
+default `safe` (QuickJS), and `bru flow run` now takes the same flag with the same default (§14.1) —
+R7.6 is the one that pins the flag, and this is the unflagged default it falls back to. What this
+pins is the CLI's `runScript` port reaching QuickJS's value-returning entry point rather than the
+`node:vm` sandbox it used unconditionally before — a script that could reach `require` there could
+read or write anything the CLI process could, regardless of what the collection asked for.
+
+### R7.6 — `--sandbox` selects that mode, exactly as `bru run`'s does
+
+**Pins:** §8.2 and §14.1's `--sandbox` row. CLI-level — §2's table says where.
+
+| Case | Expected |
+|---|---|
+| no flag | QuickJS — `require` and `process` are undefined to a script (R7.5) |
+| `--sandbox safe` | the same, so naming the default cannot change the sandbox an unflagged run got |
+| `--sandbox developer` | `node:vm` — the script is given `require`, and still returns its own value and rejects with its own error |
+| a value that is neither | a usage error, exit 3, the two values named, no flow read — where `bru run` would read it as `developer` |
+| an `action` the command does not have | exit 3 likewise: yargs' own validation exited 1, a failed flow's code, until the command mapped it |
+| `--sandbox developer` through a whole run | a step's `outputs:` script sees `require` in the run's JSON report |
+
+The `develper` row is the one worth stating: §8.2's promise is about parity on the two sandboxes a
+request can actually be given, and the flow flag keeps that — same values, same default. It is
+deliberately stricter on a third value, because `bru run`'s reading of one is that a typo runs the
+scripts unsandboxed, silently, and a flag that can do that in a CI line is the failure direction
+§8.2 exists to rule out. Refusing is loud and costs nothing a request had.
+
+### R7.7 — The collection's own auth is what `auth: collection` sends
+
+**Pins:** §6.4's implicit `collection` profile. CLI-level — §2's table says where.
+
+| Case | Expected |
+|---|---|
+| a collection-scoped flow declaring no `authProfiles:`, a step `auth: collection` | the collection's own credential on the wire |
+| the same, resolved from the binding's `auth:` rather than the step's | the same credential; a step's `auth: none` still overrules it |
+| a collection whose credential reads `{{authToken}}` | interpolated against the run's variables — the host attaches no lexical scope, so the using step's is what it resolves in |
+| a collection whose auth is `none`, `inherit`, or absent | a `none` profile: `auth: collection` resolves, and sends nothing |
+| a collection root file that is missing or does not parse | the same `none` profile — reading a collection's auth never fails a run |
+| a workspace-scoped flow, step `auth: collection` | `unknown-auth-profile`, exit 2, nothing sent |
+| each mode of Bruno's `AuthMode` the collection can store | flattened from `{ mode, <mode>: { … } }` to the profile shape §6.4 authors, Akamai's `akamaiEdgegrid` key included |
+
+§6.4 says a collection flow "declares no `authProfiles` at all and authenticates exactly as the
+collection does", and the engine cannot make that true on its own: it resolves `authProfiles`
+alongside the flow's own and never opens `collection.bru`, because what a collection *is* is host
+knowledge (§13.2). So each host reads its own collection root and hands the profile over, and the
+row worth stating is the empty one — a collection that configures no auth still supplies a profile,
+`mode: none`, rather than leaving `auth: collection` to fail for some collections and not others
+depending on whether anyone had filled the auth in. The workspace row is the other direction: no
+collection means no profile at all, so the reference stays unresolved instead of quietly sending an
+unauthenticated request.
+
+### R7.8 — A yml-format collection scopes exactly like a `.bru` one
+
+**Pins:** §5.1's containment boundary and §14.1's discovery. CLI-level — §2's table says where.
+
+| Case | Expected |
+|---|---|
+| a flow under a directory holding `opencollection.yml` and no `bruno.json` | scoped to that directory as its collection root, exactly as a `bruno.json` directory would be |
+| the same flow, a step naming `auth: collection` | the yml collection's own credential reaches the wire, not `unknown-auth-profile` |
+| the same scope, §14.5's capture root and the ports' `collectionPath` | both the yml collection's directory, not an ancestor workspace |
+| a directory holding both `bruno.json` and `opencollection.yml` | the same root either way — scope detection only asks whether a directory is *a* collection root; which root file a reader goes on to open is `getCollectionFormat`'s own precedence (`yml` first), unchanged by this |
+| a flow with no collection above it at all | still `unknown-auth-profile`, exit 2 — untouched by recognising the second format |
+
+Bruno collections come in two on-disk formats, and `bru run` locates either one's root the same way
+(`getCollectionFormat`, `utils/collection.js`). `bru flow run`'s own scope detection did not: it
+walked up for `bruno.json` alone, so a yml collection with no `bruno.json` beside it was invisible to
+it and every flow under it scoped to the nearest ancestor workspace instead — `auth: collection`
+unresolved, §7.4's containment boundary drawn one level too high, and the capture root and
+`collectionPath` both pointed at the wrong directory. The fix reads the same predicate `bru run`
+already uses rather than inventing a second one, so the two commands agree about what a collection
+is for the same tree.
+
+### R13.1 — Verbose previews, the operation column, and TTY in-place updates
+
+**Pins:** §14.7 — the sample's operation column, the `--verbose` row of the verbosity table, and
+the TTY/CI table's in-flight-row, cursor-control and colour rows. CLI-level tests, not engine ones,
+for R4l's reason: §14.7's console rules are the CLI's own. Properties only, never exact text, for
+the same reason R4l gives — §14.7 is deliberately not a stable format.
+
+| Property | Why it is contractual |
+|---|---|
+| a `step:start` naming an operation | shown on that step's line |
+| a `step:start` naming none | it is a `uses:` step (§5.3), and the column reads `sub-flow (N steps)` from that event's `steps` — never the id, which would print the same word twice in adjacent columns |
+| a `step:start` naming none and carrying no `steps` | the column reads `sub-flow` — an older engine still leaves the kind worth naming |
+| a passing step's `step:end.preview`, default verbosity | not shown — bodies are inlined only under `--verbose` |
+| the same, under `--verbose` | the request and response preview both appear, exactly as given |
+| a preview cut short before it arrived | printed exactly as given — never re-truncated, completed, or otherwise reshaped |
+| a `step:end` with no `preview` | nothing extra is printed for it, `--verbose` or not |
+| a step with passing assertions, under `--verbose` | each one appears |
+| a TTY, a `step:start` | an in-flight line appears before that step's `step:end` |
+| the same step's `step:end` | the in-flight line is rewritten in place, with cursor control — never appended a second time |
+| two in-flight steps that complete out of the order they started | each rewrite lands on its own row, not the other's |
+| not a TTY | no in-flight line ever appears, and no cursor control appears in the output of a passing or a failing run alike |
+| `FORCE_COLOR` set on a TTY, `NO_COLOR` also set | colour — `FORCE_COLOR` wins |
+| `FORCE_COLOR` set and not a TTY | still no colour, and no escape sequence of any kind — an archived CI log is not a TTY that happened to have the variable set (R4l) |
+
+The not-a-TTY row is the one a naive `FORCE_COLOR` implementation gets wrong: the variable's usual
+meaning elsewhere is "colour this even though nothing is watching," and §14.7's own TTY/CI table
+gives the CI column exactly one rule — never — with no exception carved out for it.
+
+### R8.0 — A step's own budget
+
+**Pins:** §11.1's `maxDuration`.
+
+| Case | Expected |
+|---|---|
+| a poll whose budget elapses before `maxAttempts` is spent | `failed`, reason `max-duration-exceeded`, and the attempt that would not fit is never scheduled |
+| the rest of the flow | runs; the budget bounds the step and not the run, which is §11.3's separate bound |
+| a poll that settles inside its budget | judged on what it settled as, not on the clock |
+
+`maxAttempts × (timeout + delay)` is the wall clock a poll can otherwise take, and on the schedules
+polls actually use that is tens of minutes — so a flow that set the bound and got nothing was a flow
+with no bound at all.
+
+### R8.1 — The graph a document declares
+
+**Pins:** §5.3's uniqueness, §9.1's join shapes and status vocabulary.
+
+| Case | Expected |
+|---|---|
+| a well-formed flow | **no diagnostics at all** — the case that catches a check firing on correct files |
+| two steps sharing an id | `duplicate-step-id`; the second otherwise overwrites the first's state and captures |
+| a `depends:` mapping carrying neither `all:` nor `any:` | `invalid-depends` |
+| a `depends:` mapping whose list is empty | `invalid-depends` — it normalizes to an unconditional root that runs *first* |
+| `status: [succeeded]` | `invalid-dependency-status`, listing the four outcomes; a near miss carries a did-you-mean |
+| a cycle | `cyclic-dependency` once, and `unreachable-step` for every step it leaves unrunnable |
+
+The empty-join row is the expensive one: a join emptied by a bad edit does not fail, it runs before
+everything it was meant to wait for.
+
+### R8.2 — Names that have to resolve
+
+**Pins:** §8.1, §9.1's write side, §12.1's exports.
+
+| Case | Expected |
+|---|---|
+| `{{steps.x.tokne}}` where `x` declares `token` | `unknown-output-reference`, with the did-you-mean |
+| a `uses:` step's export read as `{{steps.auth.token}}` | accepted — a sub-flow's exports are the invoking step's outputs (§12.2) |
+| an `exports:` entry naming an output no step produces | `unknown-export` |
+| a step's `shared:` publishing an output it does not produce | `invalid-shared-entry` |
+| a step's `shared:` publishing into a slot nothing declares | `invalid-shared-entry` |
+
+### R8.3 — Expressions parse and their operators exist
+
+**Pins:** §10.2's triple, §9.3's rule that a condition precedes the request.
+
+| Case | Expected |
+|---|---|
+| `res.status equals 201` | `unknown-operator` — the operator is not found, so the whole line is asserted for truthiness and passes every time |
+| `{ expr, op: equalTo, value }` | `unknown-operator` |
+| a bare expression, with and without `isDefined` | accepted |
+| `when: res.status eq 201` | `condition-reads-response` |
+
+### R8.4 — Inline overrides against the operation schema
+
+**Pins:** §7.1's structural drift.
+
+| Case | Expected |
+|---|---|
+| overrides naming what the schema declares | no diagnostics |
+| a top-level body field the schema has no property for | `unknown-field`, with the did-you-mean |
+| a field under a `$ref`'d object | `unknown-field` — a schema lifted out of a document is a fragment of it, and nearly every real one is a `$ref` |
+| a field on an array's items | `unknown-field` |
+| a key under an `additionalProperties: true` object | accepted |
+| a query parameter the operation declares none of | accepted — `parameters:` is optional and routinely omitted, so the document's silence is not evidence of a typo |
+| a query parameter beside ones it does declare | `unknown-field` |
+| a `pathParams:` key the template does not name | `unknown-field` — it substitutes into nothing |
+
+### R8.5 — Media types, files and parts
+
+**Pins:** §7.5.
+
+| Case | Expected |
+|---|---|
+| a step selecting one of two declared media types, supplying its part as `!file` | no diagnostics |
+| `contentType:` on an operation declaring one | `unexpected-content-type` |
+| `contentType:` naming an undeclared type | `unknown-media-type` |
+| two declared types and no `contentType:` | `ambiguous-media-type` |
+| a `format: binary` part written as a plain string | `missing-binary-part` — §5.4's row where the schema and validation see the same characters and must disagree |
+| a required binary part nobody supplied | `missing-binary-part` |
+| `!file` in a JSON body | `file-not-allowed` |
+| `filename:` on a raw binary body | `binary-file-options` |
+| a single-payload media type with no file at all | `missing-binary-body` |
+
+### R8.6 — Paths, and the tags that name them
+
+**Pins:** §7.4's containment, §5.4's tags, §7.2's removal token.
+
+| Case | Expected |
+|---|---|
+| `!file`, `bodyFile:` and `dataset:` paths inside the scope root | no diagnostics |
+| a `bodyFile:` climbing out of it | `path-outside-scope` |
+| a `dataset:` naming nothing on disk | `missing-file` |
+| a path carrying `{{...}}` | left alone — §7.4 resolves it when the step materializes |
+| `!file` carrying a fourth option | `parse-error`, at the line — dropped in silence, `filenmae:` uploads under the wrong name |
+| `!...` in a step's `body` | accepted |
+| `!...` in `vars:` | `misplaced-drop` — there is no seeded key to remove and it reads as `null` |
+
+### R8.7 — What a `uses:` step may carry
+
+**Pins:** §12.4's table.
+
+| Case | Expected |
+|---|---|
+| a call site carrying only the legal fields | no diagnostics |
+| `retry:` on the step | `invalid-subflow-field` — replaying a sequence replays every side effect it committed |
+| `auth:`, `body:`, `timeout:` | one `invalid-subflow-field` each |
+| `dataset:` in the sub-flow | `subflow-dataset`, reported against the **sub-flow's** file |
+| a `uses:` target that is not there | `unresolved-subflow`, and the rest of the document still checked |
+| a misspelled `with:` key | `unknown-param`, with the did-you-mean |
+
+### R8.8 — Declared and never used
+
+**Pins:** §14.3's three lints. All warnings: a value nothing consumes is legal, and is nearly always
+the other half of a typo reported somewhere else.
+
+| Case | Expected |
+|---|---|
+| an output nothing reads | `unused-output` *(warning)* |
+| a declared slot nothing writes | `slot-without-writer` *(warning)* |
+| a declared slot nothing reads | `unused-slot` *(warning)* |
+
+### R8.9 — Reserved names and the library flag
+
+**Pins:** §7.3's namespaces, §12.5's lint.
+
+| Case | Expected |
+|---|---|
+| `vars: { flow: ... }` | `shadowed-reserved-name` *(warning)* — the namespace shadows it and nothing at run time says so |
+| a required param with no default, `library:` unset | `required-param-without-library` *(warning)* |
+| the same flow marked `library: true` | silent |
+| the same flow with the param supplied through `ValidateOptions.params` | silent — the check sees what the run it is validating would supply |
+
+### R8.10 — Which operation a reference names
+
+**Pins:** §6.1's fallback and its normalization, §6.5's duplicate.
+
+| Case | Expected |
+|---|---|
+| `api#POST /orders/{orderId}/refund` against a document with no `operationId` | resolves; no diagnostics |
+| the same, described | the graph's node carries that method and path |
+| a trailing slash, doubled slashes, an origin, a query, a lowercase method | all resolve to the same operation |
+| a method+path matching nothing | `unknown-operation` |
+| an `operationId` the document declares twice | `ambiguous-operation` — an index built by assignment keeps the last, and the step calls the other endpoint |
+
+§6.1 asks for a **committed corpus asserted by both** the engine and `openapi-sync.js`. The engine's
+half is the row above; the other half is
+`packages/bruno-electron/src/ipc/openapi-sync.spec.js` (002-C U5.14), which asserts the same rows
+against that file's own `normalizeUrlPath`, reached through its existing `NODE_ENV=test` export
+block. Drift is now a failing test on one side or the other rather than a flow that silently cannot
+resolve an operation openapi-sync matches fine.
+
+### R8.11 — Names a script's context shadows
+
+**Pins:** §8.2's `ctx.env` and `ctx.vars`, which §7.3's namespace table does not carry. Neither is an
+interpolation namespace — `{{env}}` resolves to a variable of that name like any other — so the
+warning is about the *script* half: the context puts both objects above its flat spread of
+variables, and a variable so named is reachable from a request and invisible to every script that
+would read it.
+
+| Case | Expected |
+|---|---|
+| `vars: { env: ... }` | `shadowed-reserved-name` *(warning)* — naming `ctx.env`, which is the environment tiers |
+| `params: { vars: ... }` | `shadowed-reserved-name` *(warning)* — naming `ctx.vars`, which is the flow's own `vars:` |
+| `vars: { flow: ..., env: ... }` | two warnings under one code, each with its own reason: §7.3's namespace shadows `flow` in `{{...}}` too |
+| a variable named neither | silent |
+
+### R8.12 — An export nothing at the call site reads
+
+**Pins:** §14.3's decision *not* to report one, and the check that covers what it would have caught.
+
+| Case | Expected |
+|---|---|
+| a caller reading `{{steps.<uses>.<export>}}` | silent |
+| the same caller with that read removed | silent — no diagnostic of any code |
+| a read naming an export the sub-flow does not declare | `unknown-output-reference`, an **error**, against the step that reads it |
+
+A library's `exports:` are declared for callers it has not met, so a flow reading three of six is
+what a shared library is *for*. Warned about, that fires at nearly every call site and is dismissed
+at nearly every one — and a warning everybody learns to scroll past devalues the ones beside it,
+which is the cost this row exists to refuse. It is §8.5's rule for connector-supplied outputs with a
+different noun: a declaration made once for every consumer is not evidence against a consumer that
+uses part of it.
+
+The third row is why nothing is lost. The failure the warning could have caught alone is a typo, and
+a typo names an output the sub-flow does not export — reported as an error, at the position it was
+typed, rather than as a warning against the `uses:` step some lines above.
+
+### R8.13 — A header a signing mode computes
+
+**Pins:** §14.3's signing-mode bullet and §6.4's rule behind it, defined here as the step's own
+`headers:` against the headers its resolved profile computes. Which of the two wins is the *host's*
+and not the flow's, and the hosts do not agree: `aws4` deletes an `Authorization` it finds and signs
+over what is left, while the digest interceptor answers no challenge at all for a request that
+already carries one. Either way the request goes out as something nobody wrote, and the API answers
+401 — which reads as a credentials problem rather than as the configuration one it is.
+
+A **warning**, not the error §6.4 states: §6.4's own per-field override is the documented way to hand
+one call a pre-signed token, and only these modes collide with it.
+
+| Case | Expected |
+|---|---|
+| an `awsv4` step carrying `X-Request-Id` | silent — a header the mode computes nothing for is not this check's business |
+| the same step setting `Authorization` | `signed-header-override` *(warning)* |
+| `x-amz-date` and `X-Amz-Security-Token`, in either case | one warning each — a name is case-insensitive on the wire |
+| a `bearer` profile and an `Authorization` header | silent — §6.4's per-field override |
+| a `digest` profile and an `Authorization` header | warned, and told what it actually does: the handshake is skipped, so the profile authenticates nothing |
+| a `wsse` profile setting `X-WSSE` and `Authorization` | one warning, for `X-WSSE` — `wsse` computes no `Authorization` |
+| an `oauth1` profile with `placement: query` and an `Authorization` header | silent — the signature is not in the header |
+
+The modes are `awsv4`, `digest`, `ntlm`, `oauth1`, `akamai-edgegrid` and `wsse`, and each one's
+headers are read off the signer that writes them rather than off a list: `aws4/aws4.js`,
+`digestauth-helper.js`, `ntlm.ts`, `oauth1-request-authorization.ts`, `edgegrid-helper.js` and
+`prepare-request.js`'s `wsse` branch.
+
+### R12.1 — A `uses:` target's `workspace:` prefix, and the containment it still answers to
+
+**Pins:** §12.2's prefix, §7.4's containment applied to it. Engine-level, `run`, `describe` and
+`validate` each asserted against the same fixture, since all three resolve a `uses:` target
+themselves and are expected to agree by construction.
+
+| Case | Expected |
+|---|---|
+| a collection-scoped flow's `uses: workspace:flows/shared/login.flow.yml` | resolves from the workspace root; `run`, `describe` and `validate` agree |
+| a plain relative `uses:` path to a sibling in the same collection | resolves against the invoking file, unprefixed — the prefix leaves this case unchanged |
+| a plain relative `uses:` path climbing out of the collection's own scope root | `path-outside-scope`, and the same refusal at run time before the sub-flow is read |
+| a `workspace:` path climbing out of the workspace root | `path-outside-scope`, and the same refusal at run time before the sub-flow is read |
+
+Without the prefix, a collection-scoped flow's scope root is the collection itself (§7.4) — the same
+boundary a `!file` or `bodyFile:` answers to — so `workspace:` only widens where a `uses:` target may
+resolve *to*, never what it may resolve *outside of*. Both escaping paths are validation and run-time
+errors before anything is read, which is what keeps a workspace-level shared flow from becoming a way
+to name any path on disk.
+
+### R12.2 — A slot leaves the flow through `exports:`
+
+**Pins:** §12.1's second export root, `shared.<slot>`, and §11.2's empty-slot rule carried across
+§12.2's boundary.
+
+The fixture is a library with two branches that exclude each other — one `when:` per branch, on the
+same param — and **no join step**. Only one branch ever runs, so no step descends from both writers
+and there is no `steps.<step>.<output>` in the file that names the value either produced. Nothing
+inside the flow reads the slot; the boundary is its only reader.
+
+| Case | Expected |
+|---|---|
+| the first branch's condition holds | the caller reads its value off the invoking step, as an ordinary output |
+| the second branch's condition holds | the same export carries the other branch's value |
+| neither condition holds | the export is `''`, and the caller's step **runs** rather than skipping |
+| `bru flow validate` over the library and over the caller | no diagnostics at either end — in particular not `unused-slot`, which the export is a read for |
+| the library described | the exports panel reports the source the file wrote, `shared.chargeId` |
+
+The third row is the decision in this requirement. §11.2 has a `steps.*` reference that resolved to
+nothing skip its reader — the step did not do what it was for — and an unwritten slot resolve empty,
+because that is a value the run *knows* is empty. Both rules cross the boundary unchanged rather
+than being reconciled there: an export whose producing step was skipped is absent and skips the
+caller's step, and an export whose slot nobody wrote is `''` and does not. A caller cannot see the
+slot, so the alternative — omitting it — would make "no branch ran" indistinguishable at the call
+site from a library that failed, and a fallback branch that legitimately writes nothing would skip
+work the author meant to run.
+
+### R10.1 — A connector file supplies an operation's outputs
+
+**Pins:** §8.5's premise, and its claim that a connector-supplied output is a declaration like any
+other — §8.4's visibility, 002 §5's data edge, §14.3's checks.
+
+The fixture is a workspace with a collection inside it: `flows/connectors.yml` at each root, and a
+collection flow whose steps declare no `outputs:` at all.
+
+| Case | Expected |
+|---|---|
+| a step targeting a covered operation, with no `outputs:` block | its `StepResult.outputs` carries the file's entries, extracted from the response |
+| a later step interpolating `{{steps.x.<connector output>}}`; an auth profile reading one | resolves — the value reaches the request, exactly as a declared output's does |
+| `bru flow validate` over that flow | **no diagnostics at all** — not `unknown-output-reference`, not `undeclared-dependency`, and not `unused-output` for the entries nothing reads |
+| the same flow described | the node's `outputs` lists them; each one read draws a `data` edge with `declared: true` |
+| a reference to a name no layer supplies | `unknown-output-reference`, as for an inline output |
+
+The `unused-output` row is a decision rather than a consequence: a connector file declares an
+operation's defaults for *every* flow that targets it, and most flows read a few of them. Warning
+on the rest would fire in every flow the file serves, so the check is scoped to the step's own block.
+
+### R10.2 — Matching is by resolved spec identity
+
+**Pins:** §8.5's rule that an entry applies by the document an alias resolves to, never by the alias;
+§6.1's fallback identity.
+
+| Case | Expected |
+|---|---|
+| the workspace file, the collection file and the flow each bind the one document under a different alias | every entry applies |
+| a step addressing the operation as `api#GET /things/{id}` (§6.1) | the entry declared as `api#getThing` applies |
+| a second document declaring the same `operationId`, bound in the flow's place | nothing applies — the node's `outputs` is empty and every read of one is `unknown-output-reference` |
+
+### R10.3 — Resolution order, and what removes an inherited entry
+
+**Pins:** §8.5's order — workspace file → collection file → the step's own `outputs:` — with `!...`
+as the removal token and `null` refused; §12.3's rule that a sub-flow's connectors resolve from its
+own scope.
+
+| Case | Expected |
+|---|---|
+| the collection file redeclares an entry's output with another path | the collection's path wins |
+| the collection file adds an output the workspace file did not name | inherited alongside the workspace's |
+| the collection file writes `role: !...` | `role` is not published, and a step reading it is `unknown-output-reference` |
+| a step's `outputs:` writing `thingId: !...`, redeclaring `title`, adding `own` | the run publishes `title` (the step's path), `own`, and the entries it did not touch — and not `thingId` |
+| a step reading the entry it suppressed | `unknown-output-reference` |
+| `name: null` in a step's `outputs:` | `null-output`, anchored to the step's line |
+| `name: null` in a connector file | `null-output`, anchored to the connector file and its line — `null` is not the removal token there either |
+| a library flow under the workspace's `flows/`, invoked from a collection whose file suppresses `role` | its `exports: { role: steps.login.role }` resolves — the workspace file alone applies to it (§12.3) — and the parent reads `steps.auth.role` |
+| a scope root with no `flows/connectors.yml` | the steps inherit nothing; no diagnostic names the missing file |
+
+### R10.4 — A connector file is checked against the documents it binds
+
+**Pins:** §14.3's row — every entry resolves to a real operation, and its paths check against the
+operation's response schema (§8.5).
+
+Every diagnostic here carries `file: <the connector file>` and a line in it, and no `stepId`: the
+thing to fix is in the file the diagnostic names, not in the flow being validated.
+
+| Case | Expected |
+|---|---|
+| `nope#getThing:` where the file's `apis:` binds no `nope` | `unresolved-alias` |
+| `api#getWidget:` where the document has no such operation | `unknown-operation` |
+| an entry naming an `operationId` the document declares twice | `ambiguous-operation` (§6.5) |
+| `api#getThing: data.id` — a scalar where a mapping of outputs belongs | `invalid-connector-entry` |
+| `thingName: data.nmae` against a `200` whose schema has `data.name` | `unknown-output-path`, with the did-you-mean |
+| a path bruno-query selects by value — a filter, a wildcard | not checked; no diagnostic |
+| a connector file that does not parse | `parse-error` against that file, and nothing else in it is checked |
+| a run over a flow whose collection file has an unresolved entry | the run proceeds; the entry supplies nothing, and the other layers apply unchanged — what the run ignores is exactly what `validate` names |
+
+### R10.5 — Where each output was declared
+
+**Pins:** §8.5's answer to the locality it costs, and §14.1's — each step's *resolved* outputs and
+where each was declared, inline, collection connector file or workspace connector file.
+
+`resolveOutputs` (§13.2, beside `resolveFunctions`) lists them over the flow as written.
+
+| Case | Expected |
+|---|---|
+| a step redeclaring `title`, suppressing `thingId`, adding `own`, inheriting `thingName` | `[title:inline, thingName:collection, own:inline]` — in the order first declared, whichever layer had the last say, and each with the file it came from |
+| a step declaring nothing over both files | `[thingId:workspace, title:collection, thingName:collection]` |
+| a `uses:` step | an empty list — its outputs are its sub-flow's exports, not declarations of its own |
+
+### R11.1 — The schema pass inside `bru flow validate`
+
+**Pins:** §14.3's ordering, and §5.4's versioning read from the command's side rather than the
+document's. R4m is what the schema decides about a file; this is what `bru flow validate` then does
+with that verdict, which is a separate claim and fails separately.
+
+| Case | Expected |
+|---|---|
+| a `version:` this build ships no schema for | `schema-violation` naming the versions it does describe — a document is never validated against nothing |
+| a document that both violates the schema and names an operation the bound document does not declare | both reported. The pass is not a gate: a mistyped key that halted validation would hide every real error under it, and only a document that did not *parse* has no model to read |
+| a violation of a rule §14.3 names for itself — `invalid-step-id`, `invalid-subflow-field`, `invalid-dependency-status`, `operation-and-uses`, `body-and-body-file` | reported once, under that name, by the check that owns it. The schema states it as well, because an editor runs the schema and nothing else — but the code is what a `--strict` list or a host filtering its gutter addresses (§14.6), and two spellings of one mistake makes neither addressable |
+
+### R13.2 — `bru flow validate` prints where each output was declared
+
+**Pins:** §8.5's answer to the locality a connector file costs, and §14.3's pass printing it — R10.5
+is what `resolveOutputs` resolves, this is what the command then does with it, which is a separate
+claim and fails separately. CLI-level tests, not engine ones, for R4l's reason: §14.7's console rules
+are the CLI's own. Tested elsewhere — `bruno-cli/tests/fork/flow/output.spec.js` for the reporter's
+properties, `bruno-cli/tests/fork/flow/validate.integration.spec.js` for the pass end to end.
+Properties only, never exact text, for the same reason R4l gives.
+
+| Property | Why it is contractual |
+|---|---|
+| a step whose outputs a connector file supplied | every name is printed with the layer that had the last say and that layer's file — the names appear nowhere in the flow, so this is the only place a reader can see them |
+| the step's own `outputs:` entries | printed beside them as `inline`, so which half a name came from is answerable rather than merged into one list |
+| a step that resolved no outputs | no row for it — a `uses:` step declares none of its own (§12), and rows saying so would be most of the listing in a flow that composes sub-flows |
+| a flow whose every step resolved none | nothing printed at all, not a heading over an empty listing |
+| not a TTY | no escape sequence of any kind, `FORCE_COLOR` set or not (R4l) |
+| `--quiet` or `--silent` | nothing — a listing is neither a failure nor a summary |
+
+Under `validate` and not `run` for the reason §8.6's library listing is: what a step publishes and
+who declared it is an authoring question, asked while reading a flow rather than while watching one
+execute, and a run has the whole event stream to print without a preamble in front of it.
+
+### R13.3 — `bru flow schema` emits §5.4's document schema
+
+**Pins:** §5.4, and §14's `bru flow schema` block. CLI-level — §2's table says where. The schema's
+*contents* are the engine's and are pinned by its own `schema.spec.js`; what is contractual here is
+which version comes out, where it goes, and what an unemittable request does.
+
+| Case | Expected |
+|---|---|
+| no flags | the current format version's schema on stdout, parseable as JSON with nothing else in it |
+| that output | ends with a newline — a file an editor reads is read whole |
+| `--format-version <n>` for a version this build carries | that version's schema, since §5.4 has one schema per version and a v1 fixture is validated against v1's |
+| `--format-version` for a version it does not | exit 3 (§14.2), naming the versions it does carry, and nothing on stdout |
+| `--format-version` given something non-numeric | the same refusal — yargs makes it `NaN`, which is no more emittable |
+| `--out <path>` | written there, with the directories it names created, and stdout says where |
+| `--out` at a path that cannot be written | exit 3, rather than a half-written file |
+| `--silent` | nothing on stdout (§14.7), and `--out` still written — the flag governs stdout, and a file the invocation was told to produce is not stdout |
+| `--quiet` | the schema, unchanged — §14.7's `--quiet` drops step lines and failure detail, and this command prints neither |
+
+The refusal is the row that earns its place. A schema is normally consumed by a tool that will not
+read stderr, so a version this build does not carry has to stop the command before anything
+downstream reads an empty or truncated file — an editor silently validating against nothing is worse
+than one told there is no schema.
+
+### R8.14 — The implicit collection profile at validate time
+
+**Pins:** §6.4's implicit `collection` profile against `bru flow validate`, closing the gap §14.3's
+own bullet names: the check knew nothing about a flow's scope, so `auth: collection` was reported
+`unknown-auth-profile` from either scope — the right outcome for a workspace-scoped flow, the wrong
+one for a collection-scoped flow, which never declares the profile itself because supplying it is
+the host's job at run time (`RunOptions.authProfiles.collection`, `materialize.ts`).
+
+A scope's `collectionRoot` (`ValidateOptions.scope`) is what `validate` can know that a run's own
+host input cannot yet answer: whether there is a collection at all to inherit a profile from.
+Whether the host actually passes one through `RunOptions.authProfiles` stays a run-time question —
+`materialize.ts` still raises `unknown-auth-profile` there if it did not (R9.10).
+
+| Case | Expected |
+|---|---|
+| `auth: collection` on an `apis:` binding, in a scope with a `collectionRoot`, no `authProfiles:` declared | no diagnostic |
+| `auth: collection` on a step directly, in the same scope | no diagnostic |
+| the same flow in a workspace-only scope (no `collectionRoot`) | `unknown-auth-profile`, naming that this scope has no collection to inherit an auth profile from |
+| a flow that declares its own `authProfiles.collection` | that profile wins in either scope — resolution order (§6.4) is unchanged |
+| `auth:` naming any other profile no `authProfiles:` block declares | `unknown-auth-profile`, worded as before — this rule narrows only the `collection` case |
+
+### R9.13 — One mapping from a collection's stored auth to its profile
+
+**Pins:** §13.1 — the engine exists so the CLI and the app cannot diverge — over §6.4's implicit
+`collection` profile, whose shape each host had been translating for itself.
+
+Bruno stores a collection's auth nested under a key named for its mode (`{ mode: 'bearer', bearer:
+{ token } }`); an `AuthProfile`'s fields are flat. Both hosts read a collection root off disk, and
+both had a copy of the flattening — including the one key that is not the mode string. A mode one
+copy flattens and the other does not is a collection that authenticates under `bru flow run` and
+silently does not in the app, which is the class of divergence §13.1 exists to make impossible. The
+mapping is `collectionAuthProfile(auth)`, exported from `@bruno-max/flow` beside the `resolveAuth`
+that nests it back; what stays each host's is finding the block — which file holds it, in which
+format, and what to do when it will not parse.
+
+| Case | Expected |
+|---|---|
+| every mode `AuthMode` names — `bearer`, `basic`, `apikey`, `awsv4`, `digest`, `ntlm`, `wsse`, `oauth2`, `oauth1`, `akamai-edgegrid` | `{ fields: { mode, ...that mode's own fields } }`, with the mode's key gone rather than left beside them |
+| `akamai-edgegrid` | read from `akamaiEdgegrid` — the one key that is not the mode string |
+| a credential written `{{authToken}}` | carried over as written; §6.4 resolves it in the using step's scope |
+| the profile's `scope` | absent: nothing declared this profile, so §6.4's lexical rule has no scope to carry |
+| auth that is `none`, `inherit`, absent, or not an auth block at all | `{ fields: { mode: 'none' } }` — §6.4's promise holds for a collection that authenticates with nothing |
+| a mode whose own block is missing or is not a mapping | that mode alone, with no fields invented |
+| both hosts | import it; neither keeps a flattening of its own, and each host's existing spec passes against the shared mapping unchanged |
+
 ### R5 — Unresolved variables never reach the wire
 
 Assert that a declared-but-unwritten `shared` slot interpolated into a body sends `""` and **not**
@@ -1616,3 +2504,5 @@ it belongs in another test suite.
 | — | 002 §10 could not render a past run: `listRuns` reports counts and `readCapture` one attempt, so no entry point returned a stored run's per-step outcomes — found building the run selector | R4o |
 | — | §14.5's capture directory name is a lossy encoding of the step id (`/`→`__`, device suffix, hash truncation), so `capturedSteps` could not be recovered by walking the tree as 002 §11.2 first assumed | R4o |
 | — | An auth profile reached `ExecuteRequest` in the flat form it was authored in rather than Bruno's nested `Auth`, so the one shape §6.4 promises hosts could reuse was the one shape they could not — found running a flow through the app's `setAuthHeaders` | R4j |
+| — | §6.4's third resolution rank was specified and never built: a collection flow naming no profile anywhere sent `none`, so it authenticated differently from every request in the collection around it — found wiring the hosts' `authProfiles` | R9.10 |
+| — | Both hosts had their own copy of the stored-auth → `AuthProfile` flattening, including the one key that is not the mode string, so a mode one copy handled and the other did not was a collection that authenticated under `bru flow run` and silently did not in the app | R9.13 |

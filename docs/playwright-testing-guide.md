@@ -25,6 +25,11 @@ Bruno uses Playwright for end-to-end testing of its Electron application. The te
 - All dependencies installed (`npm install`)
 - Electron app can be built and run
 
+Electron has no headless mode, so each test launch opens a real app window. Under the fixture's
+`PLAYWRIGHT=true` the app reveals that window inactive and keeps itself off the macOS Dock
+(`packages/bruno-electron/src/fork/window.js`), so a running suite does not take focus from you;
+Playwright's `--headed` flag has no effect on Electron either way.
+
 ## Creating Tests Using Codegen
 
 The easiest way to create tests is using Playwright's codegen feature, which records your UI interactions and generates test code.

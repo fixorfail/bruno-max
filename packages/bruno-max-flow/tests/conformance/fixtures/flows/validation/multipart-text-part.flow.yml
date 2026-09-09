@@ -1,0 +1,20 @@
+# R8.5 — §5.4's table, the row where the schema and the validator must disagree: a plain string is a
+# valid document, and a part declared `format: binary` needs the tag that makes it a file.
+version: 1
+
+meta:
+  name: R8 — a binary part written as text
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: bundle
+    operation: regress-api#createBundle
+    contentType: multipart/form-data
+    body:
+      name: bundle-1
+      manifest: ./fixtures/manifest.csv

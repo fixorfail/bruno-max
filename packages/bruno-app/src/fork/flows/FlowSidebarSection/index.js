@@ -39,7 +39,7 @@ import {
   runFlowSelection
 } from '../actions';
 import { buildFlowTree, flowLabel, folderKeysOf, relativePathOf } from '../flowTree';
-import { folderToggled, foldersCollapsed, foldersExpanded } from '../slice';
+import { folderToggled, foldersCollapsed, foldersExpanded, runOutcomeSeen } from '../slice';
 import CreateFlow from '../CreateFlow';
 import FlowProperties from '../FlowProperties';
 import RenameScript from '../RenameScript';
@@ -753,6 +753,13 @@ const FlowSidebarSection = () => {
    * not: §8.5's network rows outlive the workspace switch that follows the run.
    */
   const openFlow = (flow, type) => {
+    // §4.1: the mark a finished run left is cleared by opening the flow — the reader is back, which
+    // is the whole of what an ambient mark was waiting for. Only the run view counts as opening it:
+    // §4.3's editor and §4.5's script are views of a file and say nothing about a run.
+    if (type === 'flow') {
+      dispatch(runOutcomeSeen({ pathname: flow.pathname }));
+    }
+
     dispatch(
       addTab({
         uid: uuid(),
@@ -848,7 +855,12 @@ const FlowSidebarSection = () => {
       >
         <span className="flow-name">{flowLabel(flow)}</span>
         <div className="flow-row-actions">
-          {run ? <span className={`flow-run-mark ${run.status || run.state}`} /> : null}
+          {/* §4.1: the running indicator stands while the run executes; the pass/fail mark it leaves
+              behind is cleared the next time the flow is opened. A run still on the tab from earlier
+              in the session is not a thing to keep pointing at. */}
+          {run && (run.state === 'running' || !run.outcomeSeen) ? (
+            <span className={`flow-run-mark ${run.status || run.state}`} />
+          ) : null}
           <FlowMenu
             relativePath={relativePath}
             onEditYaml={() => openFlow(flow, 'flow-yaml')}

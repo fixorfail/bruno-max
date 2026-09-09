@@ -1,0 +1,25 @@
+version: 1
+
+meta:
+  name: Polling settlement
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+vars:
+  settleKey: "{{$randomUUID}}"
+
+steps:
+  - id: settle_order
+    operation: orders#settleOrder
+    pathParams:
+      key: "{{settleKey}}"
+    query:
+      after: 2
+    retry:
+      maxAttempts: 10
+      delay: 300
+      shouldRetry: |
+        (res) => res.body.state === 'pending'
+    assert:
+      - res.body.state eq settled

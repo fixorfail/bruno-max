@@ -14,6 +14,7 @@ import { buildToastLocators } from './toast';
 import { buildRequestLocators } from '../request';
 import { buildCollectionHeaderLocators } from './collection/collection-header';
 import { buildEnvironmentLocators } from './environments';
+import { buildFlowLocators } from './flows';
 import { buildTimelineHeaderLocators } from './timeline-headers';
 import { buildDevToolsLocators } from './devtools-console';
 import { buildVariablesTabLocators } from './variables-tab';
@@ -50,6 +51,7 @@ export const buildCommonLocators = (page: Page) => ({
   workspaceOverview: buildWorkspaceOverviewLocators(page),
   migrateToYml: buildMigrateToYmlLocators(page),
   environment: buildEnvironmentLocators(page),
+  flows: buildFlowLocators(page),
   variablesTab: buildVariablesTabLocators(page),
   actions: {
     collectionActions: (collectionName: string) =>

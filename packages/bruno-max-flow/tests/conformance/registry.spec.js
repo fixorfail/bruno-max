@@ -20,10 +20,25 @@ const SPEC = path.join(__dirname, '../../../../docs/specs/001-api-flows-conforma
 const SUITE = __dirname;
 
 /** Registered in 001-C, deliberately not a `describe` here — see §2's table for each reason. */
-const TESTED_ELSEWHERE = ['R4i', 'R4k', 'R4l'];
+const TESTED_ELSEWHERE = [
+  'R4i',
+  'R4k',
+  'R4l',
+  'R7.1',
+  'R7.2',
+  'R7.3',
+  'R7.4',
+  'R7.5',
+  'R7.6',
+  'R7.7',
+  'R7.8',
+  'R13.1',
+  'R13.2',
+  'R13.3'
+];
 
 /** Registered in 001-C with no test anywhere. Removing one from this list is the point of it. */
-const NOT_YET_PINNED = ['R4d2', 'R4m'];
+const NOT_YET_PINNED = ['R4d2'];
 
 const specIds = () => {
   const text = fs.readFileSync(SPEC, 'utf8');

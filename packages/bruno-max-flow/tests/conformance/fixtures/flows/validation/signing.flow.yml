@@ -1,0 +1,30 @@
+# R8.13 — a step under a signing profile, carrying a header of its own that the signature has nothing
+# to do with. What a signing mode computes is the host's to write (§6.4); everything else is the
+# step's, and a check that could not tell them apart would make signed requests unwritable.
+version: 1
+
+meta:
+  name: R8 — a signed request
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+authProfiles:
+  signer:
+    mode: awsv4
+    accessKeyId: "{{awsAccessKeyId}}"
+    secretAccessKey: "{{awsSecretAccessKey}}"
+    region: us-east-1
+    service: execute-api
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    auth: signer
+    headers:
+      X-Request-Id: "{{flow.runId}}"
+    body:
+      name: widget

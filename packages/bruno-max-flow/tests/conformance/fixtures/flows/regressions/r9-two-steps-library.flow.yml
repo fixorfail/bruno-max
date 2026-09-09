@@ -1,0 +1,29 @@
+# R9.12's sub-flow: two steps, the second of which is itself a `uses:` — so the count a container
+# announces is its own step count, with a nested sub-flow counted as the one step it is to this flow.
+version: 1
+
+meta:
+  name: R9.12 — two steps
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+exports:
+  thingId: steps.make.thingId
+
+steps:
+  - id: make
+    operation: regress-api#createThing
+    body:
+      name: inner
+    outputs:
+      thingId: data.id
+
+  - id: sign_in
+    uses: ../f2-login.flow.yml
+    with:
+      email: "{{testUserEmail}}"

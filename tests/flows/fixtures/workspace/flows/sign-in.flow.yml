@@ -1,0 +1,30 @@
+version: 1
+
+meta:
+  name: Sign in
+  library: true
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+params:
+  email:
+    required: true
+  region:
+    required: false
+    default: eu
+
+vars:
+  attempt: sign-in
+
+exports:
+  token: steps.authenticate.token
+
+steps:
+  - id: authenticate
+    operation: orders#createOrder
+    body:
+      id: "tok_{{params.region}}"
+      sku: "{{params.email}}"
+    outputs:
+      token: id

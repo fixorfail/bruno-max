@@ -8,111 +8,41 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
+const { runScriptInQuickJsForValue } = require('@usebruno/js/src/fork/quickjs-value-runner');
 const { runScriptInNodeVm } = require('@usebruno/js/src/sandbox/node-vm');
 
+const { createExecuteRequest } = require('./transport');
+
 /**
- * §6.4 hands over Bruno's own `Auth` shape rather than a header, so applying it stays the host's —
- * unchanged from how a request carries it today. The modes below are the ones a flow can currently
- * resolve; the signing modes go through the existing interceptors when flows reach them.
+ * 001 §8.2: flow scripts run in the sandbox mode a plain request in this collection would get, and
+ * §14.1's `--sandbox` is how an invocation says which — the same flag, the same two values and the
+ * same `safe` default as `bru run`. Only those two values reach here: `--sandbox` is declared with
+ * `choices`, so a third is §14.2's usage error before any flow is read. That is one deliberate
+ * difference from `bru run`, whose `getJsSandboxRuntime` treats every value but `safe` as
+ * `developer` — a typo there silently escalates a script to `node:vm`, and §8.2's parity promise is
+ * about the two sandboxes a request can actually be given, not about what a misspelling should do.
+ *
+ * `safe` is QuickJS through `runScriptInQuickJsForValue` (`bruno-js/src/fork/quickjs-value-runner.js`),
+ * the value-returning entry point the app host uses too: bruno-js's own script closure always
+ * resolves to the fixed string `'done'` and discards what a script evaluates to. `node:vm` has no
+ * such value-returning entry point either, so `developer` hands the value back through a host object
+ * on the context for the same reason.
  */
-const applyAuth = (auth, headers, query) => {
-  if (!auth || auth.mode === 'none') return;
-
-  if (auth.mode === 'bearer') {
-    headers.Authorization = `Bearer ${auth.bearer.token}`;
-    return;
-  }
-  if (auth.mode === 'basic') {
-    const { username, password } = auth.basic;
-    headers.Authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-    return;
-  }
-  if (auth.mode === 'apikey') {
-    const { key, value, placement } = auth.apikey;
-    if (placement === 'queryparams') query.push({ name: key, value });
-    else headers[key] = value;
-    return;
-  }
-  throw new Error(`the CLI does not apply ${auth.mode} auth for flows yet`);
-};
-
-const bodyForAxios = (body) => {
-  switch (body.kind) {
-    case 'none':
-      return { data: undefined, contentType: undefined };
-    case 'json':
-      return { data: body.value, contentType: 'application/json' };
-    case 'text':
-      return { data: body.value, contentType: body.contentType };
-    case 'urlencoded':
-      return {
-        data: new URLSearchParams(body.fields.map((field) => [field.name, field.value])).toString(),
-        contentType: 'application/x-www-form-urlencoded'
-      };
-    default:
-      throw new Error(`the CLI does not send a ${body.kind} body for flows yet`);
-  }
-};
-
-const executeRequest = async (request, ctx) => {
-  const headers = { ...request.headers };
-  const query = [...request.query];
-  applyAuth(request.auth, headers, query);
-
-  const { data, contentType } = bodyForAxios(request.body);
-  if (contentType && !Object.keys(headers).some((name) => name.toLowerCase() === 'content-type')) {
-    headers['content-type'] = contentType;
+const createRunScript = ({ collectionPath, sandbox = 'safe' }) => {
+  if (sandbox === 'safe') {
+    return async (source, args) => runScriptInQuickJsForValue({ source, args, console });
   }
 
-  const startedAt = Date.now();
-  const response = await axios({
-    method: request.method,
-    url: request.url,
-    params: new URLSearchParams(query.map((entry) => [entry.name, entry.value])),
-    headers,
-    data,
-    signal: ctx.signal,
-    timeout: ctx.timeoutMs,
-    // The engine judges the status (§10.1); axios treating a 4xx as a rejection would turn a
-    // negative test into a transport error.
-    validateStatus: () => true,
-    transformResponse: (raw) => raw
-  });
-
-  const text = typeof response.data === 'string' ? response.data : '';
-  let parsed = response.data;
-  if (text && String(response.headers['content-type'] || '').includes('json')) {
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      parsed = text;
-    }
-  }
-
-  return {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-    body: parsed,
-    bytes: text ? Buffer.from(text) : undefined,
-    responseTimeMs: Date.now() - startedAt,
-    size: { body: text.length, headers: 0 }
+  return async (source, args) => {
+    const box = { args, result: undefined };
+    await runScriptInNodeVm({
+      script: `__flow.result = await (${source})(...__flow.args);`,
+      context: { __flow: box, console },
+      collectionPath,
+      scriptingConfig: {}
+    });
+    return box.result;
   };
-};
-
-/**
- * The script's value comes back through a host object on the context, because the sandbox wraps a
- * script in an async closure and discards what it evaluates to.
- */
-const runScript = (collectionPath) => async (source, args) => {
-  const box = { args, result: undefined };
-  await runScriptInNodeVm({
-    script: `__flow.result = await (${source})(...__flow.args);`,
-    context: { __flow: box, console },
-    collectionPath,
-    scriptingConfig: {}
-  });
-  return box.result;
 };
 
 const readSpec = async (source) => {
@@ -123,8 +53,8 @@ const readSpec = async (source) => {
   return { text: fs.readFileSync(source, 'utf8'), from: 'file' };
 };
 
-const createPorts = ({ collectionPath }) => ({
-  executeRequest,
+const createPorts = ({ collectionPath, sandbox }) => ({
+  executeRequest: createExecuteRequest({ collectionPath }),
   readFile: async (target) => fs.promises.readFile(target),
   writeFile: async (target, data) => {
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
@@ -133,7 +63,7 @@ const createPorts = ({ collectionPath }) => ({
   listDirectory: async (target) => fs.promises.readdir(target),
   removeDirectory: async (target) => fs.promises.rm(target, { recursive: true, force: true }),
   readSpec,
-  runScript: runScript(collectionPath)
+  runScript: createRunScript({ collectionPath, sandbox })
 });
 
-module.exports = { createPorts, applyAuth, bodyForAxios };
+module.exports = { createPorts };

@@ -1,0 +1,9 @@
+{
+  "runId": "883c4a80-d2b7-4507-8921-fee57aaf48c1",
+  "flow": "{{workspaceRoot}}/flows/polling.flow.yml",
+  "startedAt": "2026-09-04T18:40:49.186Z",
+  "origin": {
+    "host": "cli"
+  },
+  "flowHash": "3b2909d4228392a28f67833a40dd669c451148053a4ba814acda0ada08a07fa5"
+}

@@ -75,7 +75,7 @@ params:                        # library flows only
   region:   { required: false, default: eu }
   apiToken: { required: true, secret: true }   # value masked in the run record
 exports:                       # library flows only — FULL references
-  token: steps.sign_in.token
+  token: steps.sign_in.token   # or shared.<slot>, named whole
 
 steps: [ ... ]
 ```
@@ -277,12 +277,47 @@ transport error.
 > `{ from: pre, path: x }`. The validator warns with `interpolation-in-output-path`.
 
 Always available on any step without declaring: `steps.<id>.status`, `.ok`, `.skipped`,
-`.duration`.
+`.duration`, and — where the step got a response — `.body` and `.headers`.
 
-> **`steps.<id>.body` and `.headers` do NOT resolve at run time.** The spec describes them as an
-> escape hatch and the validator warns about them, but the engine publishes only declared outputs
-> and the four built-ins above. A step reading `{{steps.x.body.y}}` is skipped with
-> `unresolved-dependency`. **Always declare an output.**
+`.headers` keys are lower-cased, whatever case the server sent. A declared output named `body` or
+`headers` wins over the raw response; the four built-ins above win over a declared output.
+
+> **`.body` and `.headers` resolve, and are still the wrong habit.** They are an escape hatch: not
+> drawn as graph edges, not checked before a run, and reported as an `undeclared-dependency` warning
+> at the step that reads them. **Declare an output.**
+
+### Connector files
+
+`flows/connectors.yml` — in a collection, in the workspace, or both — gives an operation its default
+outputs once. Any step targeting that operation gets them with no `outputs:` block.
+
+```yaml
+# flows/connectors.yml
+version: 1
+apis:
+  auth-api: ../apispec/auth-v2.yml
+connectors:
+  auth-api#login:
+    token:  data.access_token
+    userId: data.user.id
+```
+
+Matching is by the document and `operationId` a reference **resolves to**, not by the alias string —
+the connector file's aliases are its own. Layers, later winning: workspace file → collection file →
+the step's `outputs:`. A step **extends** what it inherits; a same-named entry overrides, and `!...`
+drops one:
+
+```yaml
+    outputs:
+      state:     !...                 # drop the inherited entry
+      paymentId: data.payment.id      # override it
+```
+
+`null` is not the removal token — that is `null-output`. Connector-supplied outputs are ordinary
+declarations: drawn as data edges, held to the visibility rule, and their paths checked against the
+operation's response schema (`unknown-output-path`). A sub-flow resolves its own connector files, not
+its caller's. `bru flow validate` prints each step's resolved outputs and which file each came from,
+which is how a step's outputs stay findable once they are no longer written on it.
 
 ## Order and conditions
 
@@ -392,6 +427,20 @@ steps:
 value is read at the moment each request is built. A step that must go out unauthenticated says
 `auth: none`.
 
+`mode` takes any of the twelve Bruno has: `bearer`, `basic`, `apikey`, `wsse`, `awsv4`, `oauth1`,
+`oauth2`, `digest`, `ntlm`, `akamai-edgegrid`, `none`, `inherit`.
+
+**A flow in a collection inherits the collection's auth by default.** Resolution is first-match-wins:
+the step's `auth:`, the binding's `auth:`, the collection's own configured auth, then none. So the
+common collection flow declares no `authProfiles:` at all, and `auth: none` marks the one step that
+must not carry those credentials. A workspace-scoped flow has no collection, so `auth: collection`
+there is `unknown-auth-profile`.
+
+A header the step declares beats the profile for that header alone — except under a signing mode
+(`awsv4`, `digest`, `ntlm`, `oauth1`, `akamai-edgegrid`, `wsse`), where the signer overwrites what you
+wrote or the handshake is skipped; `bru flow validate` warns `signed-header-override`. An OAuth2 token
+fetch that fails fails the step as `transport-error` rather than sending the request unauthenticated.
+
 ## Assertions
 
 `<expression> <operator> <value>`; every entry is evaluated, so you get all failures.
@@ -415,6 +464,11 @@ Operators: `eq` `neq` `==` `!=` `gt` `gte` `lt` `lte` `in` `notIn` `contains` `n
 The operator is the first token that is a known operator name, so expressions and values may
 contain spaces. Operands beginning with a reserved namespace are references; anything else is a
 literal. `{{...}}` works in any operand position.
+
+**`req.*` is the request as sent** — `req.method`, `req.url` (query string included), `req.headers`,
+`req.body` (a `urlencoded` body as an object; absent for multipart and binary). Assertions only: a
+`when:` runs before the request exists, and reading `req.*` or `res.*` there is
+`condition-reads-response`.
 
 ## Retry and polling
 
@@ -448,6 +502,18 @@ All three script fields take a **function expression**; the engine calls what yo
 `res` is `{ status, statusText, headers, body, responseTime }` — `undefined` in `shouldRetry` when
 the attempt got no response. `ctx` is variables plus the namespaces; in `shouldRetry` it also
 carries `ctx.failures`, the assertions that failed. A throw fails the step with `script-error`.
+
+`ctx` also groups two of those flat variables so a script can say where a value came from:
+**`ctx.env`** is the environment tiers the run was given (global environment, collection variables,
+the selected environment, `--env-var` on top) and **`ctx.vars`** is this flow's own resolved `vars:`.
+Additive — `ctx.env.x` and `ctx.x` are the same value — and a script's only: `{{...}}` has no `env.`
+or `vars.` prefix. The two are disjoint: `ctx.env` holds only the environment tiers, `ctx.vars` only
+the flow's `vars:`. A variable actually *named* `env` or `vars` is shadowed in a script and reachable
+only as `{{env}}`; `bru flow validate` warns `shadowed-reserved-name`.
+
+`bru flow run --sandbox safe|developer` selects the sandbox, `safe` (QuickJS) by default — `bru run`'s
+own flag. In the app it follows the collection's security setting, and a workspace-scoped flow, which
+has no collection, gets `safe`. Write against plain JavaScript and what you are handed.
 
 ### A shared library
 
@@ -520,6 +586,19 @@ steps:
     outputs: { accessToken: data.token }
 ```
 
+An export may also name a **whole slot**, which is how a value two exclusive branches might produce
+leaves the flow — there is no step below both to point at:
+
+```yaml
+shared:
+  chargeId: { writers: any }
+exports:
+  chargeId: shared.chargeId       # whichever branch ran; no sub-path — shared.chargeId.id is an error
+```
+
+Exports resolve after the flow ends, so every writer has settled. An unwritten slot exports `''` and
+the caller runs; a step output that was never produced is absent and the caller's step skips.
+
 Caller:
 
 ```yaml
@@ -528,6 +607,17 @@ Caller:
     with:
       email: "{{testEmail}}"
 ```
+
+Or from the workspace root, which is what a collection flow reaching a shared library should use
+rather than a `../../../` chain:
+
+```yaml
+  - id: sign_in
+    uses: workspace:flows/shared/sign-in.flow.yml
+    with: { email: "{{testEmail}}" }
+```
+
+Either form has to stay inside the flow's collection or workspace, or it is `path-outside-scope`.
 
 Its exports read like any step's outputs: `{{steps.sign_in.token}}`. A step declares `operation:`
 or `uses:`, never both. Recursion is refused.
@@ -550,6 +640,9 @@ bru flow run flows/checkout.flow.yml
 | Option | Does |
 |---|---|
 | `--global-env name` | Run against a workspace environment — `<workspace>/environments/<name>.yml` |
+| `--dataset path` | Run each selected flow over this file instead of the one it declares — and over one it declares none |
+| `--strict` | Promote validation warnings to errors; a warning then exits 2 |
+| `--sandbox safe\|developer` | Which sandbox flow scripts run in; `safe` by default |
 | `--env-var name=value` | Override one variable (repeatable) |
 | `--param name=value` | Supply a library flow's param (repeatable) |
 | `--grep pattern` | Run only the selected flows the pattern matches |
@@ -570,11 +663,23 @@ its path-relative id, `meta.name`, each `meta.tags` entry, `meta.testId`, and ev
 form. Exit codes are `0` pass, `1` a flow failed, `2` a flow did not run, `3` a bad command, `4`
 cancelled.
 
+`bru flow schema [--out <path>] [--format-version <n>]` emits the JSON Schema for the flow document,
+for an editor's YAML language server; without `--out` it goes to stdout. Register the local tags too,
+or the editor flags every valid `!file` and `!...`:
+`"yaml.customTags": ["!file scalar", "!file mapping", "!... scalar"]`.
+
+A collection's proxy and client certificates apply to a flow's requests exactly as they do to a
+request's, and a `{{variable}}` in a proxy host or a certificate path, domain or passphrase is
+resolved per request against that step's variables. A collapsed sub-flow's console line reads
+`sub-flow (N steps)`. Piped output is never coloured, `FORCE_COLOR` included.
+
 ## Diagnostics
 
 | Code | Meaning |
 |---|---|
 | `parse-error` | The YAML did not parse; nothing else is checked |
+| `schema-violation` | A field of the wrong type, a value outside the set it accepts, or an unknown `version:` |
+| `unknown-property` *(warning)* | A key the format does not have, with a did-you-mean on a near miss |
 | `invalid-step-id` | Not a valid identifier — letters, digits, `_`, not starting with a digit |
 | `unknown-dependency` | `depends:` names a step that does not exist |
 | `cyclic-dependency` | A dependency cycle, or a sub-flow invoking itself |
@@ -588,6 +693,7 @@ cancelled.
 | `undeclared-slot` | Reads a slot no `shared:` block declares |
 | `slot-not-downstream` | Reads a slot written off this step's branch — declare it `writers: any` if the writers are alternatives |
 | `unknown-auth-profile` | `auth:` names an undeclared profile |
+| `signed-header-override` *(warning)* | A step sets a header its signing-mode profile computes — `awsv4`, `digest`, `ntlm`, `oauth1`, `akamai-edgegrid`, `wsse` |
 | `unknown-param` / `missing-param` | `with:` passes an undeclared param, or omits a required one |
 | `unknown-pre-value` | An output takes `from: pre` naming a value the step does not compute |
 | `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
@@ -599,6 +705,38 @@ cancelled.
 | `interpolation-in-output-path` *(warning)* | An output path contains `{{…}}` — it is a path into the response, not an interpolation, and selects nothing |
 | `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion — the step accepts any status, including the 500 it did not mean |
 | `undeclared-dependency` *(warning)* | Reads `steps.x.body…` rather than a declared output |
+| `duplicate-step-id` | Two steps share an id; the second overwrites the first |
+| `invalid-depends` | A `depends:` mapping without exactly one non-empty `all:` or `any:` |
+| `invalid-dependency-status` | A `depends.status` that is not `success`, `failed`, `skipped` or `cancelled` |
+| `unknown-output-reference` | `{{steps.x.y}}` where `x` produces no `y` |
+| `invalid-shared-entry` | A step's `shared:` names an undeclared slot, or an output the step does not produce |
+| `unknown-export` | An `exports:` entry does not name an internal step's output or a declared slot, or reaches into a slot with a sub-path |
+| `unknown-operator` | An operator the dialect does not have — the line is then asserted for truthiness and always passes |
+| `condition-reads-response` | A `when:` reading `res.*` or `req.*`, which do not exist before the request is built |
+| `unknown-field` | An inline `body`, `query` or `pathParams` key the operation's schema does not have |
+| `unexpected-content-type` | `contentType:` on an operation declaring a single request media type |
+| `unknown-media-type` | `contentType:` names a media type the operation does not declare |
+| `ambiguous-media-type` | The operation declares several request media types and the step names none |
+| `file-not-allowed` | `!file` where the media type does not take one |
+| `missing-binary-body` | A raw payload operation with no `body: !file` and no `bodyFile:` |
+| `missing-binary-part` | A `format: binary` part written as text, or a required one left out |
+| `binary-file-options` | `filename:` or `contentType:` on a raw binary body — multipart-only |
+| `misplaced-drop` | `!...` outside a step's `body`, `query`, `headers` or `pathParams` |
+| `path-outside-scope` | A `!file`, `bodyFile:` or `dataset:` path that climbs out of the scope root |
+| `missing-file` | A path that names no file that exists |
+| `ambiguous-operation` | The bound document declares that `operationId` twice |
+| `unresolved-subflow` | A `uses:` target that did not resolve |
+| `invalid-subflow-field` | A field a `uses:` step may not carry — `retry:`, `body:`, `auth:` and the rest |
+| `subflow-dataset` | `dataset:` in a sub-flow; only a top-level flow iterates |
+| `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry named for one of the reserved namespaces, or named `env` or `vars`, which every script reads as `ctx.env` and `ctx.vars` |
+| `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
+| `unused-output` *(warning)* | An output nothing in the flow reads |
+| `unused-slot` *(warning)* | A declared slot nothing reads |
+| `slot-without-writer` *(warning)* | A declared slot no step publishes into |
+| `unreachable-step` *(warning)* | A step nothing can make eligible |
+| `null-output` | An output written `name: null`, in a step or a connector file — `!...` is the removal token, `null` drops nothing |
+| `invalid-connector-entry` | A `connectors.yml` entry that is not a mapping of outputs |
+| `unknown-output-path` | A `connectors.yml` output path the operation's response schema does not have |
 
 Two codes come from a *run* rather than from validation, so no amount of checking the file predicts
 them: `capture-write-failed` *(warning)*, a step whose capture could not be written — the verdict
@@ -619,12 +757,16 @@ engine, which reports the run as failed with no steps at all.
 
 Do not write a flow that depends on these:
 
-- **`steps.<id>.body` / `.headers` at run time** — declare an output instead.
-- **The implicit `collection` auth profile** — declare your own profile.
-- **The document schema** — unknown and misspelled keys are silently ignored.
-- **Connector files (`connectors.yml`)** — declare `outputs:` on the step. For shared *code*,
-  `functions:` is built and works.
 - **`--dry-run`** — specified, scheduled for v2 (001 §19.1), not a flag; `bru flow run` rejects it
   as unknown. There is no `--env` either: on the command line a collection environment's values come
-  from `--env-var` or the process environment.
-- **`bru flow schema`** — the command takes `run`, `validate` and `list` only.
+  from `--env-var` or the process environment. `bru flow validate` already prints the resolved-outputs
+  listing `--dry-run` was also going to.
+- **A scope's `.env` under `bru flow run`** — the app reads it, the CLI does not. Pass `--env-var` or
+  set the process environment in CI.
+- **Secret provenance under `bru flow run`** — the app tells the engine which values are secret and
+  they are masked by value everywhere; the CLI does not, so under `bru` masking is by header name
+  only (`config.redactHeaders`).
+
+And one omission that is deliberate rather than pending: **a step's `headers:` are not checked against
+the operation**, and will not be. `body:`, `query:` and `pathParams:` are. OpenAPI documents declare
+header parameters rarely and never exhaustively, so the check would fire on correct flows.

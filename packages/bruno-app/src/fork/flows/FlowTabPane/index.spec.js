@@ -7,7 +7,15 @@ jest.mock('providers/Theme', () => ({
   useTheme: () => ({ theme: jest.requireActual('themes/index').dark, displayedTheme: 'dark' })
 }));
 
-import { act, render, screen } from '@testing-library/react';
+// `jest.setup.js` stubs nanoid with only `nanoid`, and `uuid()` reaches for `customAlphabet` — so
+// §6's diagnostic cannot open §4.3's tab in a test without this.
+let mockUid = 0;
+jest.mock('utils/common', () => ({
+  ...jest.requireActual('utils/common'),
+  uuid: () => `uid-${++mockUid}`
+}));
+
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Provider } from 'react-redux';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
@@ -50,7 +58,11 @@ const renderPane = async (diagnostics, run) => {
       flows: flowsReducer,
       globalEnvironments: () => ({ globalEnvironments: [], activeGlobalEnvironmentUid: null }),
       collections: () => ({ collections: [] }),
-      workspaces: () => ({ workspaces: [] })
+      workspaces: () => ({ workspaces: [] }),
+      // §6's diagnostic opens §4.3's tab, which is upstream's slice — stubbed to what these
+      // scenarios read of it rather than mounted, since the strip is not what they are about.
+      tabs: (state = { tabs: [] }, action) =>
+        (action.type === 'tabs/addTab' ? { tabs: [...state.tabs, action.payload] } : state)
     },
     preloadedState: {
       flows: {
@@ -73,7 +85,7 @@ const renderPane = async (diagnostics, run) => {
   // §10's run list resolves after the render; letting it land here keeps every scenario below
   // asserting on a settled pane rather than on one mid-update.
   await act(async () => {});
-  return utils;
+  return { store, ...utils };
 };
 
 const warning = { severity: 'warning', code: 'undeclared-dependency', message: 'create is read raw', line: 12 };
@@ -242,5 +254,93 @@ describe('the run view diagnostics (§6)', () => {
 
     expect(screen.queryByTestId('flow-diagnostics')).not.toBeInTheDocument();
     expect(screen.queryByTestId('flow-warnings')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * 002 §6: *the document view — anchored at `line`/`column` … this is the primary surface: a
+ * diagnostic about `depends` is most useful next to the `depends` that caused it.*
+ *
+ * The document view is §4.3's tab rather than a second view in this one — §4.2 is explicit about
+ * that — so the line a diagnostic names is a control that goes there. Before this it was a label
+ * with no click handler, anchored to nothing.
+ */
+describe('anchoring a diagnostic in the document (§6)', () => {
+  beforeEach(() => {
+    window.ipcRenderer = { invoke: jest.fn().mockResolvedValue([]) };
+  });
+
+  /**
+   * A `flows/connectors.yml` entry (001 §8.5) carries that file and its own line. The app has no tab
+   * that can open it (002 §15.2), so the line is stated with the file named and is not a control —
+   * the alternative, offered until now, opened the flow's YAML at a line number from another file.
+   */
+  it('names another file rather than opening the flow at its line', async () => {
+    const elsewhere = {
+      severity: 'error',
+      code: 'unknown-output-path',
+      message: 'token is not a path in the response',
+      file: '/w/flows/connectors.yml',
+      line: 3
+    };
+    const { store } = await renderPane([elsewhere]);
+
+    expect(screen.getByTestId('flow-diagnostic-file-3')).toHaveTextContent('connectors.yml, line 3');
+    expect(screen.queryByTestId('flow-diagnostic-line-3')).toBeNull();
+    expect(store.getState().flows.documentAnchors[pathname]).toBeUndefined();
+  });
+
+  /** The flow's own file is still a control — `file` set to the flow itself changes nothing. */
+  it('keeps the control when the diagnostic names the flow itself', async () => {
+    await renderPane([{ ...error, file: pathname }]);
+
+    expect(screen.getByTestId('flow-diagnostic-line-4')).toBeInTheDocument();
+    expect(screen.queryByTestId('flow-diagnostic-file-4')).toBeNull();
+  });
+
+  it('records the line the reader asked for', async () => {
+    const { store } = await renderPane([error]);
+
+    fireEvent.click(screen.getByTestId('flow-diagnostic-line-4'));
+
+    expect(store.getState().flows.documentAnchors[pathname]).toMatchObject({ line: 4 });
+  });
+
+  /** Asking twice for the same line is two requests: the second is what somebody clicks after scrolling away. */
+  it('counts a second request for the same line', async () => {
+    const { store } = await renderPane([error]);
+
+    fireEvent.click(screen.getByTestId('flow-diagnostic-line-4'));
+    fireEvent.click(screen.getByTestId('flow-diagnostic-line-4'));
+
+    expect(store.getState().flows.documentAnchors[pathname].nonce).toBe(2);
+  });
+
+  /** §4.2 puts the document in its own tab, so anchoring one has to open it. */
+  it('opens the flow\'s YAML tab on the same file, in the same collection', async () => {
+    const { store } = await renderPane([error]);
+
+    fireEvent.click(screen.getByTestId('flow-diagnostic-line-4'));
+
+    expect(store.getState().tabs.tabs).toEqual([
+      expect.objectContaining({ type: 'flow-yaml', pathname, preview: false })
+    ]);
+  });
+
+  /** A warning is anchored the same way; only its listing differs (§6). */
+  it('anchors a warning too', async () => {
+    const { store } = await renderPane([warning]);
+
+    fireEvent.click(screen.getByTestId('flow-diagnostic-line-12'));
+
+    expect(store.getState().flows.documentAnchors[pathname]).toMatchObject({ line: 12 });
+  });
+
+  /** §6: a diagnostic with no position has nowhere to go, so it is stated rather than offered. */
+  it('offers nothing for a diagnostic that names no line', async () => {
+    await renderPane([{ severity: 'error', code: 'unresolved-api', message: 'httpbin is not bound' }]);
+
+    expect(screen.getByTestId('flow-diagnostics')).toHaveTextContent('unresolved-api');
+    expect(screen.queryByTestId(/flow-diagnostic-line-/)).not.toBeInTheDocument();
   });
 });

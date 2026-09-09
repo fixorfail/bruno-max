@@ -1,0 +1,221 @@
+{
+  "id": "flows/skips.flow.yml",
+  "name": "Skip reasons",
+  "isLibrary": false,
+  "params": [],
+  "vars": [],
+  "exports": [],
+  "apis": [
+    {
+      "alias": "orders"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "create_order",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "POST",
+        "path": "/api/echo/json",
+        "operationId": "createOrder"
+      },
+      "rank": 0,
+      "outputs": [
+        "orderId",
+        "receiptId"
+      ],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 14,
+        "column": 5
+      }
+    },
+    {
+      "id": "skipped_by_condition",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/echo/headers",
+        "operationId": "getOrder"
+      },
+      "rank": 1,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": true,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 24,
+        "column": 5
+      }
+    },
+    {
+      "id": "failing_step",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/auth/bearer/protected",
+        "operationId": "auditOrder"
+      },
+      "rank": 1,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 30,
+        "column": 5
+      }
+    },
+    {
+      "id": "skipped_by_parent",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/echo/headers",
+        "operationId": "getOrder"
+      },
+      "rank": 2,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 34,
+        "column": 5
+      }
+    },
+    {
+      "id": "skipped_unresolved",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "POST",
+        "path": "/api/echo/json",
+        "operationId": "createOrder"
+      },
+      "rank": 1,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 38,
+        "column": 5
+      }
+    },
+    {
+      "id": "slow_step",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/wait-for",
+        "operationId": "awaitOrder"
+      },
+      "rank": 1,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 44,
+        "column": 5
+      }
+    },
+    {
+      "id": "never_reached",
+      "kind": "operation",
+      "operation": {
+        "api": "orders",
+        "method": "GET",
+        "path": "/api/echo/headers",
+        "operationId": "getOrder"
+      },
+      "rank": 2,
+      "outputs": [],
+      "pre": [],
+      "markers": {
+        "conditional": false,
+        "allowsErrorStatus": false,
+        "usesSharedSlot": false,
+        "computesValues": false
+      },
+      "position": {
+        "line": 50,
+        "column": 5
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "create_order",
+      "to": "skipped_by_condition",
+      "kind": "depends"
+    },
+    {
+      "from": "create_order",
+      "to": "failing_step",
+      "kind": "depends"
+    },
+    {
+      "from": "failing_step",
+      "to": "skipped_by_parent",
+      "kind": "depends"
+    },
+    {
+      "from": "create_order",
+      "to": "skipped_unresolved",
+      "kind": "depends"
+    },
+    {
+      "from": "create_order",
+      "to": "slow_step",
+      "kind": "depends"
+    },
+    {
+      "from": "slow_step",
+      "to": "never_reached",
+      "kind": "depends"
+    },
+    {
+      "from": "create_order",
+      "to": "skipped_unresolved",
+      "kind": "data",
+      "output": "receiptId",
+      "declared": true
+    }
+  ],
+  "slots": [],
+  "stages": [],
+  "diagnostics": []
+}

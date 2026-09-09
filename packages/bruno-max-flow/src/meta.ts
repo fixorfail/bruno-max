@@ -21,6 +21,7 @@ import * as path from 'path';
 import * as YAML from 'yaml';
 
 import { asRecord, parseDocument } from './document';
+import { CURRENT_FLOW_VERSION } from './schema';
 import type { FlowIdentity } from './types/reporter';
 
 /** §5.2's `meta:`, as a dialog edits it. */
@@ -126,6 +127,36 @@ const ensureMetaBlock = (document: YAML.Document): void => {
   contents.items.splice(version + 1, 0, pair as YAML.Pair<unknown, unknown>);
 };
 
+/** The edit itself, on a parsed document. `false` means nothing was written and the text stands. */
+const writeProperties = (document: YAML.Document, properties: FlowProperties): boolean => {
+  const entries: [string, unknown][] = [
+    ['name', typeof properties.name === 'string' ? properties.name.trim() : ''],
+    ['description', typeof properties.description === 'string' ? properties.description.trim() : ''],
+    ['testId', typeof properties.testId === 'string' ? properties.testId.trim() : ''],
+    ['tags', asStringArray(properties.tags)],
+    ['library', properties.library === true]
+  ];
+
+  if (!YAML.isMap(document.getIn(['meta']))) {
+    if (!entries.some(([, value]) => isMeaningful(value))) {
+      // Nothing to say, and no block to say it in. Creating an empty `meta:` would be an edit to a
+      // file the author changed nothing about.
+      return false;
+    }
+    ensureMetaBlock(document);
+  }
+
+  for (const [key, value] of entries) {
+    if (isMeaningful(value)) {
+      document.setIn(['meta', key], value);
+    } else {
+      document.deleteIn(['meta', key]);
+    }
+  }
+
+  return true;
+};
+
 /**
  * The same block, written back — 002 §4.4.
  *
@@ -141,32 +172,30 @@ const ensureMetaBlock = (document: YAML.Document): void => {
 export const writeFlowProperties = (text: string, properties: FlowProperties): string | undefined => {
   const document = YAML.parseDocument(text, OPTIONS);
   if (document.errors.length) return undefined;
+  return writeProperties(document, properties) ? String(document) : text;
+};
 
-  const entries: [string, unknown][] = [
-    ['name', typeof properties.name === 'string' ? properties.name.trim() : ''],
-    ['description', typeof properties.description === 'string' ? properties.description.trim() : ''],
-    ['testId', typeof properties.testId === 'string' ? properties.testId.trim() : ''],
-    ['tags', asStringArray(properties.tags)],
-    ['library', properties.library === true]
-  ];
-
-  if (!YAML.isMap(document.getIn(['meta']))) {
-    if (!entries.some(([, value]) => isMeaningful(value))) {
-      // Nothing to say, and no block to say it in. Creating an empty `meta:` would be an edit to a
-      // file the author changed nothing about.
-      return text;
-    }
-    ensureMetaBlock(document);
-  }
-
-  for (const [key, value] of entries) {
-    if (isMeaningful(value)) {
-      document.setIn(['meta', key], value);
-    } else {
-      document.deleteIn(['meta', key]);
-    }
-  }
-
+/**
+ * A flow's opening document — 002 §4.1c — which is the skeleton `writeFlowProperties` splices
+ * `meta:` into, built here so no host ever emits one: `version:` for the format written today,
+ * `meta:` as the dialog writes it, and an `apis:` binding per selected document.
+ *
+ * **No `steps:` key**, per §4.1c: the app cannot guess a step, and an empty list would claim to
+ * describe a flow rather than the absence of one. `apis:` is written only when there is a binding
+ * to write, for the reason a default `meta:` key is an absence.
+ *
+ * `apis` maps each alias to the source path *as the host resolved it* — relative to the directory
+ * the file is about to sit in (§6.2) — because paths are the host's, and the engine has no
+ * directory to measure from. An entry with a blank alias or source is nothing to bind and is left
+ * out, rather than written as a key the run would then report as an unresolvable binding.
+ */
+export const writeNewFlowDocument = (input: { properties: FlowProperties; apis: Record<string, string> }): string => {
+  const apis = Object.entries(input.apis).filter(([alias, source]) => alias.trim() && source.trim());
+  const document = new YAML.Document({
+    version: CURRENT_FLOW_VERSION,
+    ...(apis.length ? { apis: Object.fromEntries(apis) } : {})
+  });
+  writeProperties(document, input.properties);
   return String(document);
 };
 

@@ -1,0 +1,61 @@
+# R4m — a document with nothing wrong with it, carrying one of each shape the schema decides: all
+# three `depends` forms, a `uses:` step holding only what §12.4 permits, a retry policy, an
+# assertion and a slot. Every case in `schema.spec.js` is this file with one line changed, so what
+# the schema reports is the edit rather than the fixture.
+#
+# It carries no local tag on purpose: the mutation helper round-trips through plain YAML and has no
+# representer for `!file` or `!...` (§5.4). The tags are exercised by `golden-v1.flow.yml`, which is
+# read as committed.
+version: 1
+
+meta:
+  name: R4m — a well-formed document
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [thingId]
+
+steps:
+  - id: auth
+    uses: ./library.flow.yml
+    with:
+      email: "{{testUserEmail}}"
+
+  - id: create
+    operation: regress-api#createThing
+    depends: [auth]
+    headers:
+      Authorization: "Bearer {{steps.auth.token}}"
+    body:
+      name: widget
+    retry:
+      maxAttempts: 3
+      backoff: exponential
+    outputs:
+      thingId: data.id
+    shared:
+      thingId: thingId
+    assert:
+      - res.status eq 201
+
+  - id: read_back
+    operation: regress-api#getThing
+    depends:
+      all:
+        - on: create
+          status: success
+    pathParams:
+      id: "{{shared.thingId}}"
+    outputs:
+      name: data.name
+
+  - id: report
+    operation: regress-api#getState
+    depends:
+      any: [read_back]
+    assert:
+      - steps.read_back.name eq widget

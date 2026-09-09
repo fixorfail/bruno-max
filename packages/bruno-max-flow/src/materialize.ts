@@ -225,25 +225,40 @@ const resolveBaseUrl = (
  * A profile carries the scope of the flow that *declared* it: §6.4 resolves profiles lexically, so
  * an inherited `{{steps.auth.token}}` reads the parent's step state and a sub-flow cannot use an
  * inherited profile to reach parent data indirectly (§12.3).
+ *
+ * `scope` is absent on a profile a host supplied (`RunOptions.authProfiles` — §6.4's implicit
+ * `collection`): no flow declared it, so there is no lexical scope to carry, and it resolves in the
+ * scope of the step that uses it.
  */
-export type AuthProfile = { fields: Record<string, unknown>; scope: () => Scope };
+export type AuthProfile = { fields: Record<string, unknown>; scope?: () => Scope };
 
 /**
- * §6.4, first match wins: the step's `auth:`, then the binding's, then `none`. The implicit
- * `collection` profile exists only for collection-scoped flows and is the host's to supply.
+ * §6.4, first match wins: the step's `auth:`, then the binding's, then the implicit `collection`
+ * profile, then `none`. That third rank is what makes §6.4's promise true — a collection flow
+ * calling one API "declares no `authProfiles` at all and authenticates exactly as the collection
+ * does" — so a step naming nothing sends the collection's credentials rather than none.
+ *
+ * The implicit profile exists only for collection-scoped flows and is the host's to supply, through
+ * `RunOptions.authProfiles`; `scope` is the using step's, which is what such a profile resolves in.
+ * Where no host supplied one — a workspace-scoped run — there is no default to fall to and the step
+ * sends `none`.
+ *
+ * `auth: none` stays the opt-out, on the step or on the binding: the step that must *not* carry the
+ * collection's credentials is the only one that has to say so.
  */
 const resolveAuth = (
   step: NormalizedStep,
   binding: ApiBinding | undefined,
-  profiles: Record<string, AuthProfile>
+  profiles: Record<string, AuthProfile>,
+  scope: Scope
 ): Auth => {
-  const name = step.auth || binding?.auth;
-  if (!name || name === 'none') return { mode: 'none' };
+  const name = step.auth || binding?.auth || (profiles.collection ? 'collection' : 'none');
+  if (name === 'none') return { mode: 'none' };
 
   const profile = profiles[name];
   if (!profile) throw new MaterializationError('unknown-auth-profile', `${step.id}: no auth profile named ${name}`);
 
-  const { mode, ...fields } = interpolateValue(profile.fields, profile.scope()).value as {
+  const { mode, ...fields } = interpolateValue(profile.fields, profile.scope ? profile.scope() : scope).value as {
     mode?: AuthMode;
     [field: string]: unknown;
   };
@@ -257,6 +272,36 @@ const resolveAuth = (
 
 /** Every mode's fields live under its own name in `Auth`; only Akamai's key is not the mode string. */
 const authFieldKey = (mode: AuthMode): string => (mode === 'akamai-edgegrid' ? 'akamaiEdgegrid' : mode);
+
+/**
+ * §6.4's implicit `collection` profile: a collection's stored auth block, as the `AuthProfile` a
+ * host hands to `RunOptions.authProfiles`.
+ *
+ * Bruno stores auth nested — `{ mode: 'bearer', bearer: { token } }`, which is what `setAuthHeaders`
+ * reads and what `collection.bru` and `opencollection.yml` parse to — while a profile's fields are
+ * authored flat, `mode:` beside that mode's own fields. This is that nesting undone, and it lives
+ * beside the `resolveAuth` that nests it back for §13.1's reason: every host reads its own files,
+ * but a mapping each of them owned a copy of is a mapping the CLI and the app can disagree about.
+ *
+ * **Never fails, and always answers.** A collection whose auth is `none`, is `inherit` — there is
+ * nothing above a collection root to inherit from — is absent, or is not an auth block at all
+ * yields `{ fields: { mode: 'none' } }`. §6.4 promises a collection flow "authenticates exactly as
+ * the collection does", and a collection that authenticates with nothing is still one of those, so
+ * `auth: collection` resolves for every collection rather than for the ones somebody had filled in.
+ *
+ * No `scope`: a profile's scope decides what its `{{...}}` resolve against, and §6.4 resolves a
+ * *declared* profile lexically against the flow that declared it. No flow declared this one, so it
+ * resolves in the using step's scope — which is what makes `{{authToken}}` in a collection's bearer
+ * token read the run's variables rather than nothing.
+ */
+export const collectionAuthProfile = (auth: unknown): AuthProfile => {
+  const stored = isMapping(auth) ? auth : {};
+  const mode = stored.mode as AuthMode | undefined;
+  if (!mode || mode === 'none' || mode === 'inherit') return { fields: { mode: 'none' } };
+
+  const fields = stored[authFieldKey(mode)];
+  return { fields: { mode, ...(isMapping(fields) ? fields : {}) } };
+};
 
 /**
  * §14.4's provenance half, over the credentials the engine resolves itself: which field of each
@@ -311,9 +356,28 @@ const toQuery = (query: Record<string, unknown>): { name: string; value: string 
     (Array.isArray(value) ? value : [value]).map((entry) => ({ name, value: String(entry) }))
   );
 
+/**
+ * §10.1's checkable view of a multipart body: every part but the files, whose bytes are one of the
+ * three things the check is "not applicable" to. Dropping them here rather than at the check keeps
+ * `FileRef` — §7.5's marker — inside the module that assembles bodies out of it.
+ */
+const withoutFileParts = (merged: unknown): Record<string, unknown> | undefined =>
+  isMapping(merged)
+    ? Object.fromEntries(Object.entries(merged).filter(([, value]) => !containsFile(value)))
+    : undefined;
+
 export type Materialized = {
   request: MaterializedRequest;
   mediaType?: string;
+  /**
+   * The body as the operation's schema describes it — the merged structure, before §7.5 encoded it
+   * for the wire. §10.1 validates *this* rather than `request.body`, because a urlencoded field is
+   * a string on the wire whatever the schema declares and a multipart part is its own document:
+   * checking the encoded form would fail every request the schema types as anything but a string.
+   *
+   * Absent where §10.1 has nothing to check — a raw binary body, or no body at all.
+   */
+  validatableBody?: unknown;
   /** `steps.*` references naming an output the run never produced (§11.2). */
   unresolved: string[];
   /** What the resolved auth profile contributed to §14.4's set of secret values. */
@@ -359,6 +423,7 @@ export const materialize = async (
   const url = `${resolveBaseUrl(binding, config, resolved, scope)}${substitute(resolved.template, value.pathParams as Record<string, unknown>)}`;
 
   let body: RequestBody = { kind: 'none' };
+  let validatableBody: unknown;
   if (raw) {
     const reference = step.bodyFile ? new FileRef(step.bodyFile) : step.body;
     if (!(reference instanceof FileRef)) {
@@ -370,6 +435,7 @@ export const materialize = async (
     body = await assembleBinary(step, reference, scope, read);
   } else if (mediaType === 'multipart/form-data') {
     body = await assembleMultipart(step, resolved.operation, value.body, read);
+    validatableBody = withoutFileParts(value.body);
   } else if (mediaType !== undefined) {
     if (containsFile(value.body)) {
       throw new MaterializationError(
@@ -378,12 +444,14 @@ export const materialize = async (
       );
     }
     body = asStructuredBody(mediaType, value.body);
+    if (body.kind !== 'none') validatableBody = value.body;
   }
 
-  const auth = resolveAuth(step, binding, profiles);
+  const auth = resolveAuth(step, binding, profiles, scope);
 
   return {
     mediaType,
+    validatableBody,
     unresolved,
     secrets: credentialValues(auth),
     request: {

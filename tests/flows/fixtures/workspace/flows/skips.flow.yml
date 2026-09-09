@@ -1,0 +1,52 @@
+version: 1
+
+meta:
+  name: Skip reasons
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+config:
+  concurrency: 1
+  failOnUnresolved: false
+
+steps:
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: ord_1
+    outputs:
+      orderId: id
+      # The echo answers with the body it was sent, which carries no receipt — so nothing is
+      # produced for this name and the step reading it below cannot resolve its reference.
+      receiptId: receipt.id
+
+  - id: skipped_by_condition
+    operation: orders#getOrder
+    depends: [create_order]
+    when: steps.create_order.status eq 999
+
+  # No credential, so the protected route answers 401 and the step fails.
+  - id: failing_step
+    operation: orders#auditOrder
+    depends: [create_order]
+
+  - id: skipped_by_parent
+    operation: orders#getOrder
+    depends: [failing_step]
+
+  - id: skipped_unresolved
+    operation: orders#createOrder
+    depends: [create_order]
+    body:
+      id: "{{steps.create_order.receiptId}}"
+
+  - id: slow_step
+    operation: orders#awaitOrder
+    depends: [create_order]
+    query:
+      time: 5000
+
+  - id: never_reached
+    operation: orders#getOrder
+    depends: [slow_step]

@@ -1,4 +1,10 @@
-import { flowTreeUpdated, runEventsReceived, suiteEventReceived, requestLogsReceived } from './slice';
+import {
+  flowTreeUpdated,
+  flowDependencyChanged,
+  runEventsReceived,
+  suiteEventReceived,
+  requestLogsReceived
+} from './slice';
 import { refreshFlowSource, watchScope } from './actions';
 
 /**
@@ -26,6 +32,16 @@ export const registerFlowIpcEvents = (dispatch) => {
     if (event === 'changeFile' || event === 'addFile') {
       dispatch(refreshFlowSource(entry));
     }
+  });
+
+  /**
+   * §6: a file under a watched scope that is not a row in the sidebar — an OpenAPI document the
+   * watcher follows by path, a `flows/connectors.yml` — but that an open flow's diagnostics may be
+   * derived from. There is nothing to add to the tree; what it invalidates is what has been
+   * described.
+   */
+  const removeDependencyListener = ipcRenderer.on('main:flow-dependency-changed', () => {
+    dispatch(flowDependencyChanged());
   });
 
   const removeRunEventListener = ipcRenderer.on('main:flow-run-event', (batch) => {
@@ -61,6 +77,7 @@ export const registerFlowIpcEvents = (dispatch) => {
 
   return () => {
     removeTreeListener();
+    removeDependencyListener();
     removeRunEventListener();
     removeSuiteEventListener();
     removeRequestLogListener();

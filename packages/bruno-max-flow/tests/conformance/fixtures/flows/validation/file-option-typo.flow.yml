@@ -1,0 +1,22 @@
+# R8.6 — §5.4: a `!file` mapping carrying a key other than path, filename or contentType is a parse
+# error rather than an ignored one. Dropped in silence, `filenmae:` uploads under the wrong name.
+version: 1
+
+meta:
+  name: R8 — a misspelled file option
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: bundle
+    operation: regress-api#createBundle
+    contentType: multipart/form-data
+    body:
+      name: bundle-1
+      manifest: !file
+        path: ./fixtures/manifest.csv
+        filenmae: manifest.csv

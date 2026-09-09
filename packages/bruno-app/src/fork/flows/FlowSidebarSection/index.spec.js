@@ -589,9 +589,9 @@ describe('FlowSidebarSection', () => {
         directory: '/home/dev/workspace-one/flows',
         filename: 'checkout.flow.yml'
       });
-      expect(request.content).toContain('name: Checkout');
-      expect(request.content).toContain('description: the happy path');
-      expect(request.content).toContain('auth-v2: ../apispec/auth-v2.yaml');
+      // 002-C R4: the form sends what the flow declares, and the host writes the document.
+      expect(request.properties).toMatchObject({ name: 'Checkout', description: 'the happy path' });
+      expect(request.apis).toEqual([{ alias: 'auth-v2', source: '/home/dev/workspace-one/apispec/auth-v2.yaml' }]);
     });
 
     /**
@@ -610,7 +610,7 @@ describe('FlowSidebarSection', () => {
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
       const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
       expect(request.filename).toBe('order-fulfillment.flow.yml');
-      expect(request.content).toContain('name: Order Fulfillment');
+      expect(request.properties.name).toBe('Order Fulfillment');
     });
 
     it('keeps a file name the author typed', async () => {
@@ -626,7 +626,7 @@ describe('FlowSidebarSection', () => {
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
       const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
       expect(request.filename).toBe('f2-checkout.flow.yml');
-      expect(request.content).toContain('name: Order Fulfillment');
+      expect(request.properties.name).toBe('Order Fulfillment');
     });
 
     /** The name is YAML text, so what it may contain is not what a filename may contain. */
@@ -639,7 +639,9 @@ describe('FlowSidebarSection', () => {
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
       const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
       expect(request.filename).toBe('order-fulfillment-v2.flow.yml');
-      expect(request.content).toContain('name: \'Order: fulfillment / v2\'');
+      // The name is the author's prose and travels as prose; the quoting a colon needs is the
+      // host's problem, and `ipc/flow/index.spec.js` is where it is asserted.
+      expect(request.properties.name).toBe('Order: fulfillment / v2');
     });
 
     /** Version suffixes are how the flows and specs on disk are named; `auth-v-2` is not one. */
@@ -674,7 +676,7 @@ describe('FlowSidebarSection', () => {
 
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
       const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
-      expect(request.content).toContain('library: true');
+      expect(request.properties.library).toBe(true);
     });
 
     /** A spec left unchecked is one the flow does not bind, not one it binds and never uses. */
@@ -686,7 +688,7 @@ describe('FlowSidebarSection', () => {
 
       await waitFor(() => expect(invoke).toHaveBeenCalledWith('renderer:flow-create', expect.anything()));
       const [, request] = invoke.mock.calls.find(([channel]) => channel === 'renderer:flow-create');
-      expect(request.content).not.toContain('apis:');
+      expect(request.apis).toEqual([]);
     });
 
     it('creates nothing without a name', async () => {

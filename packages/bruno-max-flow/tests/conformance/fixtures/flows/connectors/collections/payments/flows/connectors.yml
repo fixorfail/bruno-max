@@ -1,0 +1,15 @@
+# The collection layer over the workspace file (§8.5): `getThing` gains `thingName` and has its `title`
+# overridden, and `signIn` loses `role`. The alias differs from the workspace file's on purpose —
+# matching is by the document an alias resolves to, never by the alias.
+version: 1
+
+apis:
+  things: ../../../../../specs/regressions-v1.yml
+
+connectors:
+  things#getThing:
+    title: data.name
+    thingName: data.name
+
+  things#signIn:
+    role: !...

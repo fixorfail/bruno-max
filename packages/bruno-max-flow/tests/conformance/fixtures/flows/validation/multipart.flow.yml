@@ -1,0 +1,20 @@
+# R8.5 and R4h — an operation declaring two request media types, so the step selects one, and a
+# `format: binary` part supplied the only way §7.5 accepts: as a `!file`.
+version: 1
+
+meta:
+  name: R8 — a multipart body
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: bundle
+    operation: regress-api#createBundle
+    contentType: multipart/form-data
+    body:
+      name: bundle-1
+      manifest: !file ./fixtures/manifest.csv

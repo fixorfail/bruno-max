@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const FlowsWatcher = require('./flowsWatcher');
 
-/** 002-C U5.6 — the watcher reports, and reads only `meta.name`. */
+/** 002-C U5.6, and U5.6c's files a flow's diagnostics come from. */
 describe('FlowsWatcher', () => {
   let workspaceRoot;
   let flowsDir;
@@ -136,6 +136,79 @@ describe('FlowsWatcher', () => {
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     expect(win.webContents.send).not.toHaveBeenCalled();
+  });
+
+  /**
+   * 002 §6: a flow's diagnostics are derived from files the sidebar has no row for, and one of those
+   * kinds does not even live under the watched directory. A watcher that reported only the tree left
+   * every one of them reporting the *old* file until the flow that read it happened to be touched.
+   */
+  describe('the files a flow depends on', () => {
+    const dependencyChanges = () =>
+      win.webContents.send.mock.calls.filter(([channel]) => channel === 'main:flow-dependency-changed');
+
+    it('reports a change to an unlisted file under flows/, which no row stands for', async () => {
+      const connectors = path.join(flowsDir, 'connectors.yml');
+      fs.writeFileSync(connectors, 'version: 1\n');
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => dependencyChanges().length === 1);
+
+      fs.writeFileSync(connectors, 'version: 1\napis: {}\n');
+      await until(() => dependencyChanges().length === 2);
+
+      expect(dependencyChanges()[1][1]).toBe(connectors);
+      // It is not a flow, a script or a fixture, so it must not arrive as a row of the sidebar.
+      expect(sent('changeFile')).toEqual([]);
+    });
+
+    /** 001 §6.2's `apis:` target, which normally sits outside `flows/` entirely. */
+    it('follows the OpenAPI document a flow binds, and reports a change to it', async () => {
+      const spec = path.join(workspaceRoot, 'apispec', 'payments-v1.yml');
+      fs.mkdirSync(path.dirname(spec));
+      fs.writeFileSync(spec, 'openapi: 3.0.3\n');
+      fs.writeFileSync(
+        path.join(flowsDir, 'settle.flow.yml'),
+        'version: 1\napis:\n  payments-api: ../apispec/payments-v1.yml\n'
+      );
+
+      await watcher.listFlows({ workspaceRoot });
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => sent('addFile').length === 1);
+
+      fs.writeFileSync(spec, 'openapi: 3.0.3\ninfo: { title: Payments, version: 1.0.0 }\n');
+      await until(() => dependencyChanges().some(([, pathname]) => pathname === spec));
+    });
+
+    /** A binding added to a flow that was already being watched has to be picked up on that edit. */
+    it('follows a document a flow only binds after the watcher started', async () => {
+      const spec = path.join(workspaceRoot, 'apispec', 'late.yml');
+      fs.mkdirSync(path.dirname(spec));
+      fs.writeFileSync(spec, 'openapi: 3.0.3\n');
+      const flowFile = path.join(flowsDir, 'late.flow.yml');
+      fs.writeFileSync(flowFile, 'version: 1\n');
+
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => sent('addFile').length === 1);
+
+      fs.writeFileSync(flowFile, 'version: 1\napis:\n  late-api: ../apispec/late.yml\n');
+      await until(() => sent('changeFile').length === 1);
+
+      fs.writeFileSync(spec, 'openapi: 3.0.3\ninfo: { title: Late, version: 1.0.0 }\n');
+      await until(() => dependencyChanges().some(([, pathname]) => pathname === spec));
+    });
+
+    /** `readSpec` fetches a remote document; there is no file to put a handle on. */
+    it('does not try to watch a remote document', async () => {
+      fs.writeFileSync(
+        path.join(flowsDir, 'remote.flow.yml'),
+        'version: 1\napis:\n  remote: https://api.example.com/openapi.yml\n'
+      );
+
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => sent('addFile').length === 1);
+
+      expect(dependencyChanges()).toEqual([]);
+    });
   });
 
   it('carries the collection root when the scope has one', async () => {

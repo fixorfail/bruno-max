@@ -1060,11 +1060,11 @@ describe('R4g — the whole-run budget', () => {
 });
 
 /**
- * R4h — §11.1's `maxDuration`, the step's own budget. `maxAttempts × (timeout + delay)` is the
+ * R8.0 — §11.1's `maxDuration`, the step's own budget. `maxAttempts × (timeout + delay)` is the
  * wall-clock a poll can otherwise take, and on the schedules polls actually use that is tens of
  * minutes: a flow that set the bound and got nothing was a flow with no bound at all.
  */
-describe('R4h — a step\'s own budget', () => {
+describe('R8.0 — A step\'s own budget', () => {
   const pending = { status: 200, body: { data: { id: 'thing-1', name: 'pending' } } };
 
   it('ends the poll when the budget elapses, whatever maxAttempts allows', async () => {

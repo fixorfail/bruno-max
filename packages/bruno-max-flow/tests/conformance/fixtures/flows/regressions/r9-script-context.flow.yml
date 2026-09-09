@@ -1,0 +1,47 @@
+# R9.2 — what a script's `ctx` carries. §8.2 and §8.7 write `ctx.env.<environment variable>` and
+# `ctx.vars.<flow var>`, and the guide writes the same values flat (`ctx.webhookSecret`); all four
+# script positions are exercised, and the two named halves are pinned as disjoint.
+version: 1
+
+meta:
+  name: R9.2 — ctx.env and ctx.vars
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  nonce: n-1
+
+steps:
+  - id: sign
+    operation: regress-api#createThing
+    when:
+      script: |
+        (ctx) => ctx.vars.nonce === 'n-1' && ctx.env.signingSecret === 'sekrit'
+    pre:
+      fromEnv: |
+        (ctx) => ctx.env.signingSecret
+      fromVars: |
+        (ctx) => ctx.vars.nonce
+      flat: |
+        (ctx) => ctx.signingSecret + ':' + ctx.nonce
+      disjoint: |
+        (ctx) => ctx.env.nonce === undefined && ctx.vars.signingSecret === undefined
+    body:
+      name: "{{pre.fromVars}}"
+    outputs:
+      fromEnv: { from: pre }
+      fromVars: { from: pre }
+      flat: { from: pre }
+      disjoint: { from: pre }
+      afterResponse:
+        script: |
+          (res, ctx) => ctx.env.signingSecret + ':' + ctx.vars.nonce + ':' + res.body.data.id
+    retry:
+      maxAttempts: 2
+      delay: 0
+      shouldRetry: |
+        (res, attempt, ctx) => ctx.env.signingSecret !== 'sekrit' || ctx.vars.nonce !== 'n-1'

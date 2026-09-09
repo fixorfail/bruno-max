@@ -1422,3 +1422,109 @@ describe('FlowGraph stages', () => {
     expect(document.querySelector('.stage-rule')).toBeNull();
   });
 });
+
+/**
+ * 002 §5.3: *an `any` join is marked at the receiving node, because `all` and `any` differ in whether
+ * the step runs at all and the incoming edges look identical otherwise* — 001 §9.1's `FlowEdge.join`,
+ * which the engine populates and the drawing has to spend somewhere.
+ */
+describe('an any join (§5.3)', () => {
+  const joined = (join) => ({
+    ...description,
+    nodes: [node('primary', 0), node('fallback', 0), node('settle', 1)],
+    edges: [
+      { from: 'primary', to: 'settle', kind: 'depends', join },
+      { from: 'fallback', to: 'settle', kind: 'depends', join }
+    ]
+  });
+
+  it('marks the step that waits on one of its dependencies', () => {
+    renderGraphOf(joined('any'), {});
+
+    expect(screen.getByTestId('flow-node-marker-join-settle')).toHaveTextContent('any');
+  });
+
+  /** `all` is the default and marking it would be a mark on almost every box on the drawing. */
+  it('marks nothing for a step that waits on all of them', () => {
+    renderGraphOf(joined('all'), {});
+
+    expect(screen.queryByTestId('flow-node-marker-join-settle')).not.toBeInTheDocument();
+  });
+
+  /** It is marked on the receiving node, not on the lines — which is where `all` and `any` differ. */
+  it('marks the receiving node rather than the steps it waits on', () => {
+    renderGraphOf(joined('any'), {});
+
+    expect(screen.queryByTestId('flow-node-marker-join-primary')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('flow-node-marker-join-fallback')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The toolbar hides data edges and the slot layer, and whether a step waits on all of its
+   * dependencies or on one of them is a fact about the flow that no view toggle changes.
+   */
+  it('survives the data-edge toggle being off', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <FlowGraph
+          description={joined('any')}
+          nodeStates={{}}
+          diagnostics={[]}
+          expandedSubflows={[]}
+          showDataEdges={false}
+          onSelectStep={() => {}}
+          onToggleSubflow={() => {}}
+        />
+      </ThemeProvider>
+    );
+
+    expect(screen.getByTestId('flow-node-marker-join-settle')).toHaveTextContent('any');
+  });
+});
+
+/**
+ * 002 §5.1 and 001 §8.5 — an output the step does not declare, from `FlowNode.outputOrigins`.
+ *
+ * 001 §8.5 names locality as the cost of a connector file: the step's outputs are no longer visible
+ * by reading the step. On the graph the distance is one further — an edge leaves a box carrying a
+ * value whose declaration is in a file the drawing never mentions.
+ */
+describe('connector-supplied outputs (§5.1)', () => {
+  const withOrigins = (outputOrigins) => ({
+    ...description,
+    nodes: [{ ...node('sign_in', 0), outputOrigins }, node('echo', 1)]
+  });
+
+  it('marks the step whose output was declared in the workspace connector file', () => {
+    renderGraphOf(withOrigins({ token: 'workspace' }), {});
+
+    expect(screen.getByTestId('flow-node-marker-connector-sign_in')).toHaveAttribute(
+      'title',
+      'token from the workspace connector file'
+    );
+  });
+
+  /** Which layer declared it is the question a reader hunting the declaration is actually asking. */
+  it('says which layer each output came from, in resolution order', () => {
+    renderGraphOf(withOrigins({ token: 'workspace', role: 'collection', userId: 'workspace' }), {});
+
+    expect(screen.getByTestId('flow-node-marker-connector-sign_in')).toHaveAttribute(
+      'title',
+      'token, userId from the workspace connector file; role from the collection connector file'
+    );
+  });
+
+  /** A step's own `outputs:` block is where a reader already looks, so it earns no mark. */
+  it('marks nothing for a step whose outputs are all its own', () => {
+    renderGraphOf(withOrigins({ token: 'inline' }), {});
+
+    expect(screen.queryByTestId('flow-node-marker-connector-sign_in')).not.toBeInTheDocument();
+  });
+
+  /** `outputOrigins` is absent altogether when every output on the flow is inline. */
+  it('marks nothing for a description that carries no origins', () => {
+    renderGraphOf(description, {});
+
+    expect(screen.queryByTestId('flow-node-marker-connector-bearer_check')).not.toBeInTheDocument();
+  });
+});

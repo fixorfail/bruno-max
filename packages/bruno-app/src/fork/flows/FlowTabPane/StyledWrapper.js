@@ -119,8 +119,15 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.warning};
   }
 
+  /* A control rather than a label: it opens §4.3's editor on the line, which is where §6 puts the
+     primary reading of a diagnostic. */
   .diagnostic-line {
     margin-left: auto;
+    border-bottom: 1px dotted currentColor;
+
+    &:hover {
+      color: ${(props) => props.theme.colors.text.white};
+    }
   }
 
   /* §6's warnings: a count at the end of the toolbar, its list one hover away. Right-aligned by the

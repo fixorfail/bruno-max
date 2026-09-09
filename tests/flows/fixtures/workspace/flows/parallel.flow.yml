@@ -1,0 +1,34 @@
+version: 1
+
+meta:
+  name: Parallel branches
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+config:
+  concurrency: 2
+
+steps:
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: ord_1
+    outputs:
+      orderId: id
+
+  - id: wait_left
+    operation: orders#awaitOrder
+    depends: [create_order]
+    query:
+      time: 2000
+
+  - id: wait_right
+    operation: orders#awaitOrder
+    depends: [create_order]
+    query:
+      time: 2000
+
+  - id: rejoin
+    operation: orders#getOrder
+    depends: [wait_left, wait_right]

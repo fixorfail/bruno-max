@@ -1,0 +1,37 @@
+# R10.1 — no `outputs:` block anywhere, and a third alias for the same document: every value `create`
+# reads was declared in a connector file (§8.5).
+version: 1
+
+meta:
+  name: R10 — inherit
+
+apis:
+  svc: ../../../../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+authProfiles:
+  user-token:
+    mode: bearer
+    token: "{{steps.sign_in.token}}"
+
+steps:
+  - id: sign_in
+    operation: svc#signIn
+    auth: none
+    body:
+      email: "{{testUserEmail}}"
+
+  - id: get_thing
+    operation: svc#getThing
+    auth: user-token
+    pathParams:
+      id: thing-1
+
+  - id: create
+    operation: svc#createThing
+    auth: user-token
+    body:
+      name: "{{steps.get_thing.title}}"
+      ref: "{{steps.get_thing.thingId}}"

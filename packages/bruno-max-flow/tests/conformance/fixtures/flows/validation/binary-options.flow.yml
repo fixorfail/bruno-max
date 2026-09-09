@@ -1,0 +1,19 @@
+# R8.5 — §7.5: `filename:` and `contentType:` are multipart-only. On a raw payload there is no part
+# to name, and the type is the operation's declared media type.
+version: 1
+
+meta:
+  name: R8 — options on a raw binary body
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: scan
+    operation: regress-api#uploadScan
+    body: !file
+      path: ./fixtures/scan.pdf
+      filename: signed.pdf

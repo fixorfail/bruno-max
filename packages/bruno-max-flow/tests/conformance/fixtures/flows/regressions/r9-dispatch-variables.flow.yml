@@ -1,0 +1,38 @@
+# R9.11 — §13.2's `StepContext.variables`: the scope a request was interpolated against, handed to
+# the host so what it interpolates around the request — a proxy, a certificate path — resolves the
+# same way. The body reads one value from every source the scope has, so the map can be checked
+# against what the request actually carries.
+version: 1
+
+meta:
+  name: R9.11 — the dispatch scope
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  nonce: n-1
+
+shared:
+  handle: {}
+
+steps:
+  - id: first
+    operation: regress-api#createThing
+    body:
+      name: seed
+    outputs:
+      thingId: data.id
+    shared:
+      handle: thingId
+
+  - id: second
+    operation: regress-api#createThing
+    pre:
+      stamp: |
+        (ctx) => 'stamp-' + ctx.vars.nonce
+    body:
+      name: "{{nonce}}/{{steps.first.thingId}}/{{pre.stamp}}/{{shared.handle}}/{{flow.iteration}}"

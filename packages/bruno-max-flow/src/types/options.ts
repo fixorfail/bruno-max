@@ -1,6 +1,7 @@
 /**
  * The entry API's options — 001 §13.2, plus 002 §11.1 and §11.2's read-only entries.
  */
+import type { AuthProfile } from '../materialize';
 import type { SuiteFlowRecord } from './capture';
 import type { FlowDescription } from './describe';
 import type { Vars, EnginePorts, ReadOnlyPorts, ListDirectory, ReadFile } from './ports';
@@ -42,6 +43,17 @@ export type RunOptions = {
   variables: VariableTiers;
   /** --param, for a library flow (§12.5). */
   params?: Vars;
+  /**
+   * §6.4's profiles only a host can declare — the implicit `collection` profile is
+   * `authProfiles.collection`, carrying the collection's configured auth in the same flat, authored
+   * shape a flow's own `authProfiles:` block uses.
+   *
+   * Resolved last: a flow's own profile of the same name wins, then one inherited from the flow that
+   * invoked it, then these. A step naming a profile found in none of the three still fails
+   * `unknown-auth-profile`, so a workspace-scoped run — where the host supplies nothing — is
+   * unchanged by the field's existence.
+   */
+  authProfiles?: Record<string, AuthProfile>;
   /**
    * The values this host knows to be secret — its `secret: true` environment entries — for §14.4's
    * provenance tracking.
@@ -135,6 +147,14 @@ export type RunIndexEntry = {
 export type ReadRunOptions = {
   /** A run directory, as `listRuns` reports it. */
   dir: string;
+  /**
+   * Where `.bruno-runs/` lives (§14.5). `dir` must resolve inside it or the read is refused before
+   * any port is called — 002 §11.2's containment for history reads, and the reason this is required
+   * rather than optional: an optional root is a check a caller can decline. `listRuns` is the only
+   * thing that hands out a `dir`, and it has this root; a caller that has a `dir` and no root has
+   * it from somewhere the engine did not vouch for.
+   */
+  scopeRoot: string;
   /** The ids to ask about — §14.5's directory name cannot be inverted back to one. */
   stepIds?: string[];
   /** Which iteration's captures to look under, for a `dataset:` flow (§14.5). */
@@ -176,6 +196,8 @@ export type StoredRun = RunIndexEntry & {
 
 export type ReadCaptureOptions = {
   dir: string;
+  /** As on `ReadRunOptions`: the capture root `dir` must sit inside. */
+  scopeRoot: string;
   stepId: string;
   iteration?: number;
   attempt: number;

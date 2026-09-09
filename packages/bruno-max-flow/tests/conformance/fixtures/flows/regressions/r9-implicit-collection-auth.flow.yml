@@ -1,0 +1,24 @@
+# R9.10 — §6.4's third rank. Nothing here names an auth profile: no `auth:` on the binding and none
+# on the first step, which is the collection flow §6.4 describes as declaring no `authProfiles` at
+# all. `auth: none` on the second step is the opt-out from what the collection would have sent.
+version: 1
+
+meta:
+  name: R9.10 — the implicit collection default
+
+apis:
+  regress-api:
+    source: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: implicit
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: opted_out
+    operation: regress-api#getState
+    auth: none

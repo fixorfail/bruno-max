@@ -396,6 +396,11 @@ steps:
     expect(withConfig('  captureRetainRuns: 10\n  concurrency: 3').config.concurrency).toBe(3);
   });
 
+  /**
+   * §5.4: flagged for the author, never fatal. A file written by a newer Bruno declaring a `config:`
+   * key this build does not implement still runs here, which is what §15's forward-compatibility
+   * rule costs — an error would make the older CLI refuse a valid flow.
+   */
   it('never fails validation', async () => {
     const { entry, files } = variant(flow('r4q-graph.flow.yml'), (document) => {
       document.config = { ...document.config, captureRetainRuns: 10 };
@@ -403,7 +408,9 @@ steps:
     const diagnostics = await validate(entry, { files });
 
     expect(diagnostics.filter((entry_) => entry_.severity === 'error')).toEqual([]);
-    expect(diagnostics.some((entry_) => JSON.stringify(entry_).includes('captureRetainRuns'))).toBe(false);
+    expect(diagnostics.filter((entry_) => entry_.message.includes('captureRetainRuns'))).toEqual([
+      expect.objectContaining({ code: 'unknown-property', severity: 'warning' })
+    ]);
   });
 });
 

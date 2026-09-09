@@ -1,0 +1,21 @@
+# R8.6 — every path position §7.4 has: a `!file` var, a step's `bodyFile:`, and a `dataset:`.
+version: 1
+
+meta:
+  name: R8 — file sources
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+vars:
+  catalog: !file ./fixtures/catalog.json
+
+dataset: ./data/rows.csv
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    bodyFile: ./fixtures/body.json

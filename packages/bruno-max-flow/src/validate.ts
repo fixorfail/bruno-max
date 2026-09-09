@@ -12,12 +12,27 @@
  */
 import * as path from 'path';
 
+import { Connectors } from './connectors';
 import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
+import { resolveSubflowTarget } from './files';
 import { collectLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
 import { ranksOf, resolveStages } from './graph';
-import { SpecLoader } from './openapi';
-import { referenceKind, referencesIn, referencesOf, type Reference } from './references';
-import type { ValidateOptions } from './types/options';
+import { SpecLoader, resolveOperation } from './openapi';
+import {
+  readsOf,
+  referenceKind,
+  referencesIn,
+  referencesOf,
+  type Reference
+} from './references';
+import { checkDocumentSchema } from './schema';
+import { checkSignedHeaders } from './validate/auth';
+import { checkConnectors } from './validate/connectors';
+import { checkOperation } from './validate/operation';
+import { checkPaths } from './validate/paths';
+import { createReport, suggest } from './validate/report';
+import { checkShape } from './validate/shape';
+import type { Scope, ValidateOptions } from './types/options';
 import type { Diagnostic } from './types/result';
 import type { FlowContext } from './types/ports';
 
@@ -68,12 +83,20 @@ const hasCycle = (flow: NormalizedFlow): string | undefined => {
 
 type Tools = {
   specs: SpecLoader;
+  scope: Scope;
+  scopeRoot: string;
   readFlow: (file: string) => Promise<NormalizedFlow>;
   readText: (file: string) => Promise<string>;
 };
 
-const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<string>): Promise<Diagnostic[]> => {
-  const diagnostics: Diagnostic[] = [];
+/**
+ * Where in the call graph a document is being checked, which two rules turn on: §12.4 refuses a
+ * `dataset:` in a sub-flow, and §12.5's library lint asks what a run would supply — `--param` for a
+ * flow run directly, the call site's `with:` for one invoked.
+ */
+type Visit = { seen: Set<string>; supplied: string[]; invoked: boolean };
+
+const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit): Promise<Diagnostic[]> => {
   const file = flow.file;
 
   // Every check below reads the model, and a document that did not parse has none worth reading —
@@ -90,28 +113,71 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     }));
   }
 
+  const report = createReport(flow);
+  const { diagnostics, error, warn } = report;
+
   /**
-   * A diagnostic anchors to the step it names, or to an explicit node for the checks no step owns
-   * (002 §6 puts these in the gutter of the document view, so one without a line has nowhere to
-   * land). Steps carry their own position from the parse; anything else is addressed by path.
+   * §5.4's document schema, which §14.3 runs **first**: it is the only pass that needs neither the
+   * graph nor the bound documents, and it catches the class of mistake that happens while typing —
+   * `assertt:`, a string where a number belongs — that every check below reads straight past.
+   *
+   * It does not stop the rest. A document that parsed still has a graph and a set of references
+   * worth checking, and halting here would let one mistyped key hide every real error under it.
    */
-  const at = (stepId?: string, node?: (string | number)[]) => {
-    if (node) return flow.positions.at(node);
-    return stepId === undefined ? undefined : flow.steps.find((step) => step.id === stepId)?.position;
-  };
+  for (const issue of checkDocumentSchema(flow.raw)) {
+    // A rule §14.3 names with a code of its own is reported by the check named for it, further
+    // down. The schema states it anyway, because an editor runs the schema and nothing else — but a
+    // reader of `bru flow validate` gets one diagnostic per mistake rather than two spellings of it.
+    if (issue.named) continue;
+    const stepId = issue.node[0] === 'steps' && typeof issue.node[1] === 'number'
+      ? flow.steps[issue.node[1]]?.id
+      : undefined;
+    (issue.severity === 'error' ? error : warn)(issue.code, issue.message, stepId, issue.node);
+  }
 
-  const report = (
-    severity: Diagnostic['severity'],
-    code: string,
-    message: string,
-    stepId?: string,
-    node?: (string | number)[]
-  ) => diagnostics.push({ severity, code, message, file, stepId, ...at(stepId, node) });
+  /**
+   * Sub-flows are read before anything else asks a question about a step, because a `uses:` step's
+   * outputs are the sub-flow's `exports:` with no re-declaration in the parent (§12.2). A check that
+   * did not have them would call every reference to one an unknown output.
+   */
+  const children = new Map<string, NormalizedFlow>();
+  for (const step of flow.steps) {
+    if (!step.uses) continue;
 
-  const error = (code: string, message: string, stepId?: string, node?: (string | number)[]) =>
-    report('error', code, message, stepId, node);
-  const warn = (code: string, message: string, stepId?: string, node?: (string | number)[]) =>
-    report('warning', code, message, stepId, node);
+    // §12.2's `workspace:` prefix and its containment (§7.4) are the same rule one command
+    // earlier than `files.ts` enforces it at run time — reported rather than thrown, for the same
+    // reason a missing target below is: a mistake in one document should not stop the rest.
+    let target: string;
+    try {
+      target = resolveSubflowTarget(step.uses, file, tools.scope);
+    } catch {
+      error('path-outside-scope', `${step.id} invokes ${step.uses}, which resolves outside the scope root (§7.4)`, step.id);
+      continue;
+    }
+
+    if (visit.seen.has(target)) {
+      error('cyclic-dependency', `${step.id} invokes ${step.uses}, which is already on the call path`, step.id);
+      continue;
+    }
+    try {
+      children.set(step.id, await tools.readFlow(target));
+    } catch (cause) {
+      // Reported rather than thrown: a `uses:` naming a file that is not there is an ordinary
+      // mistake in a document, and refusing to produce diagnostics for the rest of it would leave
+      // the author fixing one typo per run.
+      error('unresolved-subflow', `${step.id} invokes ${step.uses}: ${(cause as Error).message}`, step.id);
+    }
+  }
+
+  const published = (step: NormalizedStep): string[] => [
+    ...step.outputs.map((output) => output.name),
+    ...Object.keys(children.get(step.id)?.exports || {})
+  ];
+
+  // §14.3's unused-value lints, over one index of what the flow reads.
+  const reads = readsOf(flow);
+
+  checkShape(flow, report, { supplied: visit.supplied, invoked: visit.invoked, published, reads });
 
   const ids = new Set(flow.steps.map((step) => step.id));
   const ancestors = ancestorsOf(flow);
@@ -121,9 +187,6 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
   }
 
   for (const step of flow.steps) {
-    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(step.id)) {
-      error('invalid-step-id', `${step.id} is not a valid step id — try ${step.id.replace(/[-.]/g, '_')}`, step.id);
-    }
     for (const entry of step.depends.entries) {
       if (!ids.has(entry.on)) error('unknown-dependency', `${step.id} depends on ${entry.on}, which is not a step`, step.id);
     }
@@ -292,9 +355,21 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
       error('unresolved-alias', `${step.id} names the api alias ${step.operation.alias}, which is not bound`, step.id);
       continue;
     }
-    if (!spec.operations.has(step.operation.operationId)) {
+    const resolved = resolveOperation(spec, step.operation.operationId);
+    if (!resolved) {
       error('unknown-operation', `${step.operation.operationId} is not an operation in ${spec.source}`, step.id);
+      continue;
     }
+    if (resolved === 'ambiguous') {
+      error(
+        'ambiguous-operation',
+        `${step.operation.operationId} is declared by more than one operation in ${spec.source} —`
+        + ' an operationId identifies one (§6.5)',
+        step.id
+      );
+      continue;
+    }
+    checkOperation(step, resolved, report);
   }
 
   // §7.3: nothing has run when `vars:` are evaluated.
@@ -323,14 +398,30 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
         return;
       }
 
+      const producer = flow.steps.find((candidate) => candidate.id === reference.name);
+      const kind = referenceKind(reference, producer, producer ? published(producer) : []);
+
       // §8.3: raw `.body` / `.headers` access is permitted — refusing it would push people to
       // declare junk outputs — but it is not a declared data path, and the warning is what keeps
       // "make data paths explicit" enforceable by tooling rather than by convention.
-      const producer = flow.steps.find((candidate) => candidate.id === reference.name);
-      if (referenceKind(reference, producer) === 'raw') {
+      if (kind === 'raw') {
         warn(
           'undeclared-dependency',
           `${where} reads ${reference.text}.${reference.field} directly instead of a declared output`,
+          step.id
+        );
+      }
+
+      /**
+       * §8.4's other half. A reference to a *name* the ancestor never produces resolves to nothing,
+       * and §11.2 turns that into a skip — so the step furthest from the typo is the one reported,
+       * with a reason naming the reference rather than the misspelling in it.
+       */
+      if (kind === 'unknown' && reference.field !== undefined && producer) {
+        error(
+          'unknown-output-reference',
+          `${where} reads ${reference.text}.${reference.field}, which ${reference.name} does not produce`
+          + suggest(reference.field.split('.')[0], published(producer)),
           step.id
         );
       }
@@ -386,9 +477,23 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     }
 
     const profileName = step.auth || (step.operation ? flow.apis[step.operation.alias]?.auth : undefined);
-    if (profileName && profileName !== 'none' && !flow.authProfiles[profileName]) {
-      error('unknown-auth-profile', `${step.id} authenticates with ${profileName}, which is not declared`, step.id);
+    const profile = profileName && profileName !== 'none' ? flow.authProfiles[profileName] : undefined;
+    /**
+     * §6.4's implicit `collection` profile is never declared in a flow's own `authProfiles:` — it is
+     * the host's to supply at run time, through `RunOptions.authProfiles.collection`. A scope with a
+     * `collectionRoot` always has a collection to inherit one from, so `auth: collection` there is
+     * resolvable in principle; whether the host actually passed one is a run-time concern the run
+     * itself reports (`unknown-auth-profile` again, from `materialize.ts`, if it did not). A
+     * workspace-only scope has no collection at all, and `auth: collection` there stays unresolved.
+     */
+    const implicitCollection = profileName === 'collection' && !profile && Boolean(tools.scope.collectionRoot);
+    if (profileName && profileName !== 'none' && !profile && !implicitCollection) {
+      const reason = profileName === 'collection'
+        ? 'and this scope has no collection to inherit an auth profile from'
+        : 'which is not declared';
+      error('unknown-auth-profile', `${step.id} authenticates with ${profileName}, ${reason}`, step.id);
     }
+    if (profileName && profile) checkSignedHeaders(step, profileName, profile, report);
 
     // §10.3: the opt-out alone allows any status at all, including the 500 it did not mean.
     if (!step.flags.failOnStatusCode && !step.assert.some((assertion) => assertion.expr.startsWith('res.status'))) {
@@ -400,17 +505,19 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
     }
   }
 
+  await checkPaths(flow, report, tools.scopeRoot, tools.readText);
+
   for (const step of flow.steps) {
-    if (!step.uses) continue;
-    const target = path.resolve(path.dirname(file), step.uses);
-    if (seen.has(target)) {
-      error('cyclic-dependency', `${step.id} invokes ${step.uses}, which is already on the call path`, step.id);
-      continue;
-    }
-    const child = await tools.readFlow(target);
+    const child = children.get(step.id);
+    if (!child) continue;
     for (const name of Object.keys(step.args)) {
       if (!child.params[name]) {
-        error('unknown-param', `${step.id} passes ${name}, which ${step.uses} does not declare`, step.id);
+        error(
+          'unknown-param',
+          `${step.id} passes ${name}, which ${step.uses} does not declare`
+          + suggest(name, Object.keys(child.params)),
+          step.id
+        );
       }
     }
     for (const [name, declared] of Object.entries(child.params)) {
@@ -418,7 +525,13 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, seen: Set<st
         error('missing-param', `${step.id} does not supply the required param ${name}`, step.id);
       }
     }
-    diagnostics.push(...(await validateDocument(child, tools, new Set([...seen, target]))));
+    diagnostics.push(
+      ...(await validateDocument(child, tools, {
+        seen: new Set([...visit.seen, child.file]),
+        supplied: Object.keys(step.args),
+        invoked: true
+      }))
+    );
   }
 
   return diagnostics;
@@ -456,12 +569,27 @@ export const validateFlow = async (options: ValidateOptions): Promise<Diagnostic
     signal: new AbortController().signal
   };
 
+  const specs = new SpecLoader(options.ports.readSpec, context);
+  const readText = async (file: string) => (await options.ports.readFile(file, context)).toString('utf8');
+  // §8.5's files, applied to every document read here — the entry and each sub-flow by its own
+  // location — so a reference to a connector-supplied output is as declared as one to `outputs:`.
+  const connectors = await Connectors.load(options.scope, readText, specs);
+
   const tools: Tools = {
-    specs: new SpecLoader(options.ports.readSpec, context),
-    readFlow: async (file) =>
-      normalizeFlow(parseDocument((await options.ports.readFile(file, context)).toString('utf8')), file),
-    readText: async (file) => (await options.ports.readFile(file, context)).toString('utf8')
+    specs,
+    scope: options.scope,
+    scopeRoot: options.scope.collectionRoot || options.scope.workspaceRoot,
+    readFlow: async (file) => connectors.apply(normalizeFlow(parseDocument(await readText(file)), file)),
+    readText
   };
 
-  return validateDocument(await tools.readFlow(options.entry), tools, new Set([options.entry]));
+  const diagnostics = await validateDocument(await tools.readFlow(options.entry), tools, {
+    seen: new Set([options.entry]),
+    // §12.5: a flow run directly takes its params from `--param`, exactly as an invoking `uses:`
+    // step supplies them, so the required-param lint sees what this run would actually have.
+    supplied: Object.keys(options.params || {}),
+    invoked: false
+  });
+
+  return [...diagnostics, ...checkConnectors(connectors)];
 };

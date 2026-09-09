@@ -1,0 +1,9 @@
+name: Local
+variables:
+  - name: ordersBaseUrl
+    value: http://localhost:8081
+  - name: region
+    value: local
+  - name: secretToken
+    value: your_secret_token
+    secret: true

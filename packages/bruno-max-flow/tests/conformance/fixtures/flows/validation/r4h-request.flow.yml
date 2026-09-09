@@ -1,0 +1,25 @@
+# R4h — §10.1's request validation, against an operation whose `requestBody` declares
+# `count: integer`. `state` is the other half of the same table: it declares no request body at all,
+# so the check is not applicable and the step dispatches.
+version: 1
+
+meta:
+  name: R4h — request validation
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: state
+    operation: regress-api#getState
+    outputs:
+      count: data.count
+
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+      count: "{{steps.state.count}}"

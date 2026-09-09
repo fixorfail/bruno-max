@@ -55,6 +55,13 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.danger};
   }
 
+  /* §7.1's cleanup window. Not a button: there is nothing left to ask for — the cancel has been
+     accepted and 001 §11.3's grace is what is left — so it states rather than offers. */
+  .run-control.cleanup {
+    color: ${(props) => props.theme.colors.text.warning};
+    cursor: default;
+  }
+
   .run-option {
     display: inline-flex;
     align-items: center;

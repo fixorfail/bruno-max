@@ -1,0 +1,46 @@
+{
+  "stepId": "read_order",
+  "iteration": 0,
+  "attempt": 1,
+  "startedAt": "2026-09-04T18:40:46.671Z",
+  "durationMs": 1,
+  "request": {
+    "method": "GET",
+    "url": "http://localhost:8081/api/echo/headers",
+    "headers": {}
+  },
+  "response": {
+    "status": 200,
+    "statusText": "OK",
+    "headers": {
+      "x-powered-by": "Express",
+      "access-control-allow-origin": "*",
+      "content-type": "application/json; charset=utf-8",
+      "content-length": "259",
+      "etag": "W/\"103-SX/SgU4clY+61pG1q5uWGgHQHYc\"",
+      "date": "Fri, 04 Sep 2026 18:40:46 GMT",
+      "connection": "keep-alive",
+      "keep-alive": "timeout=5"
+    },
+    "body": {
+      "kind": "text",
+      "contentType": "application/json; charset=utf-8",
+      "text": "{\"method\":\"GET\",\"headers\":{\"accept\":\"application/json, text/plain, */*\",\"authorization\":\"Bearer ••••\",\"user-agent\":\"axios/1.18.0\",\"accept-encoding\":\"gzip, compress, deflate, br\",\"host\":\"localhost:8081\",\"connection\":\"keep-alive\"},\"url\":\"/headers\"}"
+    },
+    "responseTimeMs": 1
+  },
+  "assertions": [
+    {
+      "expr": "res.status eq 200",
+      "passed": true,
+      "expected": 200,
+      "actual": 200
+    }
+  ],
+  "validation": {
+    "response": {
+      "valid": true,
+      "errors": []
+    }
+  }
+}

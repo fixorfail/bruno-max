@@ -29,11 +29,16 @@ const flow = { pathname, filename: 'checkout.flow.yml', workspaceRoot: '/home/de
 
 const initialFlowsState = () => flowsReducer(undefined, { type: '@@INIT' });
 
-const renderTab = ({ type = 'flow-yaml', source }) => {
+const renderTab = ({ type = 'flow-yaml', source, run, tabName = 'checkout.flow.yml', flows = [flow] }) => {
   const store = configureStore({
     reducer: { flows: flowsReducer },
     preloadedState: {
-      flows: { ...initialFlowsState(), flows: [flow], sources: source ? { [pathname]: source } : {} }
+      flows: {
+        ...initialFlowsState(),
+        flows,
+        runs: run ? { [pathname]: run } : {},
+        sources: source ? { [pathname]: source } : {}
+      }
     }
   });
   const onClose = jest.fn();
@@ -44,7 +49,7 @@ const renderTab = ({ type = 'flow-yaml', source }) => {
     ...render(
       <Provider store={store}>
         <ThemeProvider theme={theme}>
-          <ForkSpecialTab tab={{ uid: 'tab-1', type, pathname, tabName: 'checkout.flow.yml' }} onClose={onClose} />
+          <ForkSpecialTab tab={{ uid: 'tab-1', type, pathname, tabName }} onClose={onClose} />
         </ThemeProvider>
       </Provider>
     )
@@ -140,5 +145,81 @@ describe('ForkSpecialTab', () => {
       await waitFor(() => expect(window.ipcRenderer.invoke).toHaveBeenCalled());
       expect(onClose).not.toHaveBeenCalled();
     });
+  });
+});
+
+/**
+ * 002 §4.1: *a flow's row carries its run status, and so does its tab label* — a running indicator
+ * while the run executes, and a pass/fail mark when it ends, cleared the next time the flow is
+ * opened. §4.2 keeps a run alive across a closed tab, so without this a run can be in flight with
+ * nothing in the strip saying so.
+ */
+describe('the run mark on the tab label (§4.1)', () => {
+  const mark = () => screen.queryByTestId(`flow-tab-mark-${pathname}`);
+
+  it('shows nothing for a flow that has not been run', () => {
+    renderTab({ type: 'flow' });
+
+    expect(mark()).not.toBeInTheDocument();
+  });
+
+  it('shows a running indicator while the run executes', () => {
+    renderTab({ type: 'flow', run: { runId: 'r', state: 'running', steps: {} } });
+
+    expect(mark()).toHaveAttribute('data-status', 'running');
+  });
+
+  it('shows the outcome once the run ends', () => {
+    renderTab({ type: 'flow', run: { runId: 'r', state: 'complete', status: 'failed', steps: {} } });
+
+    expect(mark()).toHaveAttribute('data-status', 'failed');
+  });
+
+  /** Cleared the next time the flow is opened, which is what `outcomeSeen` records. */
+  it('shows nothing once the flow has been opened again', () => {
+    renderTab({
+      type: 'flow',
+      run: { runId: 'r', state: 'complete', status: 'failed', steps: {}, outcomeSeen: true }
+    });
+
+    expect(mark()).not.toBeInTheDocument();
+  });
+
+  /** §4.3's editor, §4.5's script and §4.6's fixture are views of a file; none can start a run. */
+  it('marks no tab but the run view', () => {
+    renderTab({ type: 'flow-yaml', run: { runId: 'r', state: 'running', steps: {} } });
+
+    expect(mark()).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * §4.2's tab survives a restart, and `tabName` does not: `addTab` destructures the fields it keeps
+ * and upstream's serializer records a tab's `name`, so a restored flow tab arrives with neither.
+ * The label is derived from the flow rather than carried, which also keeps the strip agreeing with
+ * §4.1's sidebar row about what a flow is called.
+ */
+describe('the label of a restored tab (§4.2)', () => {
+  const named = { ...flow, name: 'Checkout, end to end' };
+
+  // `ForkTabLabel` is lazily loaded (the registry keeps the component tree out of its own eager
+  // graph), so the label arrives a tick after the render.
+  it('reads by meta.name when the tab came back without one', async () => {
+    renderTab({ type: 'flow', tabName: null, flows: [named] });
+
+    expect(await screen.findByText('Checkout, end to end')).toBeInTheDocument();
+  });
+
+  /** §4.3's editor is a view of the *file*, so it keeps the filename whatever the flow is called. */
+  it('reads by filename for the raw editor', async () => {
+    renderTab({ type: 'flow-yaml', tabName: null, flows: [named] });
+
+    expect(await screen.findByText('checkout.flow.yml')).toBeInTheDocument();
+  });
+
+  it('leaves a tab that has its own name alone', async () => {
+    renderTab({ type: 'flow', tabName: 'as opened', flows: [named] });
+
+    expect(await screen.findByText('as opened')).toBeInTheDocument();
   });
 });

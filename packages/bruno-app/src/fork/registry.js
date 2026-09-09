@@ -1,7 +1,8 @@
 import React, { Suspense, lazy } from 'react';
 import flowsReducer from './flows/slice';
 import { registerFlowIpcEvents } from './flows/ipcEvents';
-import { isForkTab } from './tabTypes';
+import { serializeFlowsSnapshot } from './snapshot';
+import { FORK_TAB_TYPES, isForkTab } from './tabTypes';
 
 /**
  * The single delegation surface upstream files call into — 001 §13.3.
@@ -96,3 +97,39 @@ export const ForkSpecialTab = ({ tab, onClose }) =>
  * it a listener leaks across hot reloads and re-mounts.
  */
 export const registerForkIpcEvents = (dispatch) => registerFlowIpcEvents(dispatch);
+
+/**
+ * §4.2's workspace-scoped flow tabs, reopened at the point the workspace they belong to has one.
+ *
+ * **A known point rather than a retry.** These tabs live in the workspace's *scratch* collection, so
+ * restoring one needs that collection's uid — and the fork learns of a workspace by watching its flow
+ * scope, which runs alongside the workspace switch rather than after it. So the restore used to fire
+ * whenever a scope was watched, skip every workspace whose scratch collection had not been mounted
+ * yet, and depend on another scope being watched later to try again: a tab that came back or did not
+ * according to which of two unordered paths finished first. `switchWorkspace` mounts the scratch
+ * collection and then hydrates its tabs, and this is one line in that sequence.
+ *
+ * The snapshot is the one the caller already read — a second `renderer:snapshot:get` for the same
+ * file would be a second answer to a question with one.
+ */
+export const restoreForkWorkspaceTabs = (snapshot) => async (dispatch) => {
+  const { restoreFlowTabs } = await import('./flows/restoreSession');
+  dispatch(restoreFlowTabs(snapshot));
+};
+
+/**
+ * What the fork adds to the app's snapshot — 002 §7.2's run configuration and §4.2's workspace-scoped
+ * flow tabs, under `extras.flows`.
+ *
+ * One line in upstream's serializer, for the reason every other touchpoint is one: the shape is the
+ * fork's and stays in `fork/snapshot.js`, so a second fork feature persisting something costs no new
+ * upstream edit. The snapshot already on disk is merged in there rather than replaced — the store
+ * holds only the scopes this session opened.
+ */
+export const serializeForkSnapshot = (state, existingSnapshot) =>
+  serializeFlowsSnapshot({
+    state: state.flows,
+    tabs: state.tabs?.tabs,
+    forkTabTypes: FORK_TAB_TYPES,
+    existing: existingSnapshot?.extras?.flows
+  });

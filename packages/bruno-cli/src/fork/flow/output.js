@@ -16,13 +16,47 @@ const ASCII_MARKS = { success: '+', failed: 'x', skipped: '-', cancelled: '!' };
 
 const LEVELS = { silent: 0, quiet: 1, normal: 2, verbose: 3 };
 
+// The width every step-line column is padded to, including the in-flight placeholder that a TTY
+// row is later rewritten into — the two must line up or the rewrite reads as a layout shift.
+const COLUMN = 24;
+
+// §8.5's three origins, padded to the widest of them so the file paths beside them line up.
+const ORIGIN_COLUMN = 'collection'.length;
+
+const CURSOR_UP = (n) => `\u001b[${n}A`;
+const CURSOR_DOWN = (n) => `\u001b[${n}B`;
+const CLEAR_LINE = '\u001b[2K';
+
 const duration = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`);
 
 /**
- * `NO_COLOR` is honoured as a convention rather than as one more flag, and a non-TTY never gets
- * escapes at all: a colour code in an archived CI log is corruption.
+ * `NO_COLOR` and `FORCE_COLOR` are honoured as conventions rather than as one more flag, and a
+ * non-TTY never gets escapes at all: a colour code in an archived CI log is corruption, and no
+ * environment variable is allowed to put one there (§14.7's TTY/CI table).
+ *
+ * `--no-color` is the strongest signal — it is the user asking this run, right now — so it wins
+ * over `FORCE_COLOR` rather than the other way round. `FORCE_COLOR` otherwise outranks `NO_COLOR`,
+ * matching the convention both variables come from.
  */
-const wantsColour = ({ tty, noColor, env = process.env }) => Boolean(tty) && !noColor && !env.NO_COLOR;
+const wantsColour = ({ tty, noColor, env = process.env }) => {
+  if (!tty || noColor) return false;
+  const forced = env.FORCE_COLOR;
+  if (forced === '0' || forced === 'false') return false;
+  if (forced !== undefined) return true;
+  return !env.NO_COLOR;
+};
+
+/**
+ * §14.7's operation column for a step that names no operation, which is a `uses:` step — §5.3 has a
+ * step declare `operation:` or `uses:` and never neither. Repeating the id there would print the
+ * same word twice in adjacent columns; what a reader wants instead is that this one line stands for
+ * a whole flow, and how much of the run is behind it.
+ *
+ * `steps` is absent from a `step:start` an engine older than the field emitted, which still leaves
+ * the kind worth naming.
+ */
+const subFlowLabel = (steps) =>
+  steps === undefined ? 'sub-flow' : `sub-flow (${steps} ${steps === 1 ? 'step' : 'steps'})`;
 
 const stemOf = (segments, depth) => segments.slice(-depth).join('/');
 
@@ -70,11 +104,21 @@ const createReporter = ({
     if (level > LEVELS.silent) write(text);
   };
 
-  const stepLine = (step) => {
-    if (level < LEVELS.normal) return;
-    // A sub-flow is one step to its caller (§12); --verbose expands it to its internal steps.
-    if (level < LEVELS.verbose && step.id.includes('/')) return;
+  const rowKey = (event) => `${event.index}:${event.id}`;
 
+  // §14.7's TTY column: `step:start` registers the row a later rewrite targets, and every row
+  // stays counted forever once printed — a rewrite replaces its content in place rather than
+  // removing it, so the next placeholder's position is always `order.length`.
+  const operations = new Map();
+  const liveRows = new Map();
+  const order = [];
+
+  // A sub-flow is one step to its caller (§12); --verbose expands it to its internal steps. Applies
+  // equally to the in-flight placeholder, or a collapsed sub-flow's internals would flash on screen
+  // before being overwritten.
+  const stepVisible = (id) => level >= LEVELS.normal && (level >= LEVELS.verbose || !id.includes('/'));
+
+  const renderStepLine = (step, column) => {
     const mark = marks[step.status];
     const painted
       = step.status === 'failed' ? paint(31, mark) : step.status === 'success' ? paint(32, mark) : paint(90, mark);
@@ -87,7 +131,65 @@ const createReporter = ({
     // `unresolved-dependency` on its own names nothing to go and fix (§14.6). A failure's message is
     // in the block below, where the assertions and schema errors that go with it already are.
     const note = step.status === 'skipped' && step.message ? `  ${paint(90, step.message)}` : '';
-    line(`  ${painted} ${step.id.padEnd(24)} ${detail}${attempts}${why}${note}`);
+    // The operation, not a resolved URL, identifies a step (§14.7) — what the flow file names, not
+    // what interpolation made of it. A step the reporter never saw start falls back to its id.
+    const label = column || step.id;
+    return `  ${painted} ${step.id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} ${detail}${attempts}${why}${note}`;
+  };
+
+  const inFlightLine = (id, label) => {
+    const mark = paint(90, unicode ? '⋯' : '.');
+    return `  ${mark} ${id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} running`;
+  };
+
+  /**
+   * §14.7's `--verbose`: previews are otherwise never inlined, and only a step's *passing*
+   * assertions appear here — a failing one is already in its failure block below, and a block that
+   * said everything twice would stop being read.
+   */
+  const verboseLines = (step, preview) => {
+    const extra = [];
+    for (const assertion of step.assertions.filter((entry) => entry.passed)) {
+      extra.push(`      ${paint(32, marks.success)} ${assertion.expr}`);
+    }
+    // Arrives pre-truncated to `capturePreviewBytes` and pre-masked (§14.4, §14.5) — printed as
+    // given, never cut or redacted again here.
+    if (preview?.request) {
+      for (const row of preview.request.split('\n')) extra.push(`    ${unicode ? '→' : '>'} ${row}`);
+    }
+    if (preview?.response) {
+      for (const row of preview.response.split('\n')) extra.push(`    ${unicode ? '←' : '<'} ${row}`);
+    }
+    return extra;
+  };
+
+  /**
+   * On a TTY, an in-flight row is rewritten where it stands rather than appended a second time
+   * (§14.7's TTY column): cursor up to it, clear it, print, cursor back down by one less than it
+   * went up — the trailing newline every `write` appends supplies the last row, landing back on the
+   * fresh line below the bottom-most row exactly as if nothing above had moved.
+   */
+  const rewriteRow = (position, text) => {
+    const up = order.length - position;
+    const down = up - 1;
+    write(`${CURSOR_UP(up)}\r${CLEAR_LINE}${text}${down > 0 ? CURSOR_DOWN(down) : ''}`);
+  };
+
+  const stepLine = (event) => {
+    const step = event.result;
+    if (!stepVisible(step.id)) return;
+
+    const key = rowKey(event);
+    const text = renderStepLine(step, operations.get(key));
+    const extra = level >= LEVELS.verbose ? verboseLines(step, event.preview) : [];
+
+    const position = liveRows.get(key);
+    if (tty && position !== undefined) {
+      rewriteRow(position, text);
+    } else {
+      line(text);
+    }
+    for (const row of extra) line(row);
   };
 
   const failureBlock = (step) => {
@@ -115,7 +217,20 @@ const createReporter = ({
       if (event.type === 'iteration:start' && event.row) {
         line(`  iteration ${event.index + 1} · ${Object.values(event.row).join(' · ')}`);
       }
-      if (event.type === 'step:end') stepLine(event.result);
+      if (event.type === 'step:start') {
+        const label = event.operation || subFlowLabel(event.steps);
+        operations.set(rowKey(event), label);
+        // Only a TTY gets a placeholder row: off one, a step that never settles still shows nothing
+        // until it does, and §14.7's CI column asks for append-only lines rather than one that would
+        // sit unfinished in an archived log forever.
+        if (tty && stepVisible(event.id)) {
+          const key = rowKey(event);
+          liveRows.set(key, order.length);
+          order.push(key);
+          write(inFlightLine(event.id, label));
+        }
+      }
+      if (event.type === 'step:end') stepLine(event);
     },
 
     flowStarted: (file) => {
@@ -181,6 +296,30 @@ const createReporter = ({
         // find out — so it is listed as the file it is rather than as names it might not have.
         const name = entry.name || paint(90, '(source)');
         line(`  ${name.padEnd(24)} ${paint(90, entry.from)}`);
+      }
+    },
+
+    /**
+     * 001 §8.5's outputs, listed under `bru flow validate` beside the script library and paying for
+     * the same thing: a connector file declares an operation's outputs for every flow that targets
+     * it, so what a step publishes is no longer visible by reading the step. Each name is printed
+     * with the layer that had the last say over it and the file that layer is — which is what keeps
+     * a shared declaration findable without opening every file the flow binds.
+     *
+     * A step that resolved nothing is left out rather than printed empty: a `uses:` step publishes
+     * its sub-flow's exports and declares no outputs of its own (§12), and rows saying so would be
+     * most of the listing in a flow that composes sub-flows.
+     */
+    outputs: (file, steps) => {
+      const declaring = steps.filter((step) => step.outputs.length);
+      if (!declaring.length || level < LEVELS.normal) return;
+      line();
+      line(`${paint(1, file)}`);
+      for (const step of declaring) {
+        line(`  ${step.id}`);
+        for (const output of step.outputs) {
+          line(`    ${output.name.padEnd(24)} ${paint(90, `${output.origin.padEnd(ORIGIN_COLUMN)}  ${output.file}`)}`);
+        }
       }
     },
 

@@ -21,6 +21,7 @@ import * as YAML from 'yaml';
 const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
 
 import { parseDataset } from './dataset';
+import type { Scope } from './types/options';
 import type { FlowContext, ReadFile } from './types/ports';
 
 export class FileAccessError extends Error {
@@ -30,17 +31,36 @@ export class FileAccessError extends Error {
 }
 
 /**
- * Resolves against the flow that named the path, then refuses anything outside the scope root.
  * `path.relative` is what decides containment: a result that climbs out starts with `..`, and one
  * that is absolute means a different volume.
  */
-export const resolveWithin = (source: string, flowFile: string, scopeRoot: string): string => {
-  const resolved = path.resolve(path.dirname(flowFile), source);
-  const relative = path.relative(scopeRoot, resolved);
+export const assertContained = (resolved: string, root: string, source: string): string => {
+  const relative = path.relative(root, resolved);
   if (relative.startsWith('..') || path.isAbsolute(relative)) {
     throw new FileAccessError('path-outside-scope', `${source} resolves outside the scope root`);
   }
   return resolved;
+};
+
+/** Resolves against the flow that named the path, then refuses anything outside the scope root. */
+export const resolveWithin = (source: string, flowFile: string, scopeRoot: string): string =>
+  assertContained(path.resolve(path.dirname(flowFile), source), scopeRoot, source);
+
+const WORKSPACE_PREFIX = 'workspace:';
+
+/**
+ * A `uses:` target — 001 §12.2. A bare path resolves like any other file source (§7.4): relative
+ * to the invoking flow, and refused if it climbs out of the run's own scope root. A `workspace:`
+ * prefix resolves from the workspace root instead, so a collection flow can reach a shared library
+ * without a `../../../` chain — and that resolution stays contained within the workspace root,
+ * the same rule one level up.
+ */
+export const resolveSubflowTarget = (source: string, flowFile: string, scope: Scope): string => {
+  if (source.startsWith(WORKSPACE_PREFIX)) {
+    const target = source.slice(WORKSPACE_PREFIX.length);
+    return assertContained(path.resolve(scope.workspaceRoot, target), scope.workspaceRoot, source);
+  }
+  return resolveWithin(source, flowFile, scope.collectionRoot || scope.workspaceRoot);
 };
 
 export type FileReader = (source: string) => Promise<Buffer>;

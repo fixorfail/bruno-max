@@ -1,0 +1,28 @@
+version: 1
+
+meta:
+  name: Three orders
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+dataset:
+  source: ./fixtures/orders.csv
+  parallel: 3
+
+steps:
+  # Holds all three rows in flight together, so the iteration strip is read while more than one of
+  # them is running rather than after they have all settled.
+  - id: hold_open
+    operation: orders#awaitOrder
+    query:
+      time: 2500
+
+  - id: create_order
+    operation: orders#createOrder
+    body:
+      id: "ord_{{row.qty}}"
+      sku: "{{row.sku}}"
+    assert:
+      # Row 2 carries the sku this rejects, so exactly one of the three iterations ends red.
+      - res.body.sku neq BAD-SKU

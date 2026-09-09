@@ -683,9 +683,27 @@ all. Bruno's own save fires the same event as an external edit and the two are i
 here, which is why these cases are told apart by comparing the draft against what was last written
 rather than by knowing who wrote.
 
-One limit, stated rather than discovered: diagnostics are on the graph's nodes and **not anchored
-into the editor's gutter**. §6's line anchors exist and this view is where they would pay off most;
-using them here is future work.
+**The diagnostics are marked in the editor's gutter**, in a fork-owned column left of the line
+numbers — which is where §6's line anchors pay off: a diagnostic is read while looking at the text it
+is about, rather than as an entry in a list that names a number. The mark carries the severity as its
+colour and every code and message on that line in its tooltip. A line with more than one diagnostic
+gets **one** mark — two would overlap in a gutter cell, and a line with two problems is still one
+place to go and look — and it takes the louder severity, because severity is what decides whether the
+run is blocked (§6). **Clicking a mark does exactly what §6's `line N` control does**, through the
+same anchor: two paths to the same place that computed it separately would eventually disagree about
+where a diagnostic is.
+
+**A diagnostic naming another file is not marked.** Its line is a line in *that* file — a
+`connectors.yml` entry (001 §8.5, §6) — and a gutter can only address the document it is drawn on, so
+a mark at that number would put an authoritative statement on unrelated text. §6's list can at least
+name the file it means; the gutter cannot say anything but *here*, so it says nothing.
+
+The marks follow the engine rather than the keystroke: they are redrawn when a describe comes back
+(§11.1), and in between CodeMirror carries each one along with the line it is attached to. Upstream's
+`CodeEditor` owns the `gutters` option and rewrites it whole when it swaps editor profiles for a
+long-line file, so the fork's column is re-asserted on every pass rather than only on mount — which
+is what keeps this out of §12.1's manifest: the gutter is added to the instance, not to the
+component.
 
 ### 4.4 Flow properties
 
@@ -970,10 +988,22 @@ thing they mark:
 | `uses` | A sub-flow (`uses:`) | §12 |
 | `!` | `failOnStatusCode: false` — a negative test | §10.3 |
 | `⌸` | Reads or writes a shared slot | §9.1 |
+| `⧉` | At least one of the step's outputs came from a connector file, not from the step | §8.5 |
 
 The negative-test marker exists because a step that passes on a 403 is otherwise indistinguishable
 from one that passes on a 200, and mistaking the first for the second is how a broken authorization
 check reads as green.
+
+**The connector marker is 001 §8.5's locality cost, answered on the surface an author is looking
+at.** §8.5 lets a connector file declare an operation's outputs once for every flow that targets it,
+and names the price: the step's available outputs are no longer visible by reading the step. A reader
+of the graph is one step further away again — `paymentId` is drawn leaving a box whose own `outputs:`
+block does not mention it. `bru flow validate` answers this by printing each output's origin (001
+§14.3); this is the same answer, drawn. **Its hover names the outputs and the layer each came from** —
+`paymentId, state from the collection connector file` — in 001 §8.5's resolution order, workspace
+before collection. Which file goes in the tooltip rather than into the glyph because a step can
+inherit from both layers at once, and a mark per origin would be two marks on the busiest line of the
+box saying one thing. `FlowNode.outputOrigins` (§11.1) is what carries it.
 
 **A marker that names a key spells the key.** `when` and `uses` are words because that is what the
 file says and what an author greps for; a symbol would have to be learned from a tooltip and then
@@ -1318,11 +1348,34 @@ attempt's, and a step that ends without producing its declared output leaves the
 reference rather than blanking it. A stored run written before either panel existed carries neither
 list, and the panel is then simply absent — which is the truth about that run.
 
+**A `shared.<slot>` export (001 §12.1) resolves the same way, from the slot rather than from a
+step.** It has no producing step, so its value is read off `slots[].writes` — each writer paired with
+the output it publishes, in declaration order — by 001 §9.1's rule: the last write whose step ran.
+The walk stops at the first writer that has not settled, because a later-declared write takes the
+slot whenever it lands, so until then the value is undecided and the row must claim nothing. A slot
+every branch skipped stays on its reference, which is the same thing the row does for a step that
+ended without producing its output.
+
 ## 6. Diagnostics
 
 `validateFlow` (001 §13.2) runs when a flow is opened and again on every watcher change. Its
 `Diagnostic[]` is the only source of correctness feedback in the UI — the renderer performs no
 validation of its own, so the app and `bru flow validate` cannot disagree.
+
+**A watcher change drops every stored description, not the one for the file that changed.** A flow's
+diagnostics are not derived from its own file alone: a sub-flow decides its callers' `unknown-param`
+and their reads of its exports (001 §12.2), an OpenAPI document decides every `unknown-operation` and
+`unknown-field` in every flow that binds it (001 §6.2), and `flows/scripts/` and `flows/fixtures/`
+decide whether a `functions.use:` or a `!file` resolves. Invalidating by path left each of those
+reporting the file as it *was* until the flow that read it happened to be edited — a validator that
+contradicts work already done, and the worst kind, because the reader's next move is to undo the fix.
+
+Dropping all of them costs one `describeFlow` per **open tab**, since only a mounted pane re-describes.
+Precision would mean recording which files each description was built from, which is a `describeFlow`
+contract change; the blunt rule is the whole of what correctness needs, and the accounting can follow
+if a describe ever becomes expensive. §4.3's draft is invalidated with them: the raw editor keys its
+answer on the text it asked about, so a document changing underneath it leaves the question unchanged
+and the answer stale.
 
 **Errors block the run control; warnings do not.** This follows 001 §5.4's posture directly: an
 unknown property is a warning so an older Bruno opens a newer file, and the same reasoning applies to
@@ -1330,14 +1383,18 @@ an app that must stay usable against a flow written by a newer version.
 
 Diagnostics surface in three places, each carrying the stable `code` (001 §14.6):
 
-- **The document view** — anchored at `line`/`column`, which is why `describeFlow` returns positions
-  (§11.1). This is the primary surface: a diagnostic about `depends` is most useful next to the
-  `depends` that caused it.
+- **The document view** — §4.3's tab, anchored at `line`/`column`, which is why `describeFlow` returns
+  positions (§11.1). This is the primary surface: a diagnostic about `depends` is most useful next to
+  the `depends` that caused it. §6's own list is what gets you there — a diagnostic naming a line is
+  clickable, and opens the document on it (002-C U6.8). **In that document the diagnostics are marked
+  in the editor's gutter** (§4.3), on the lines themselves: the list is how a reader gets to the line,
+  the gutter is what makes the diagnostic visible while they are reading the file.
 - **The graph** — a badge on the node whose `stepId` the diagnostic names. A cyclic dependency or a
   non-ancestor reference is a statement about structure, and the structure is what is drawn.
-- **A list in the tab header** — errors, listed. Diagnostics with no `stepId` and no position — a bad
-  `apis:` binding, a scope-root escape — have nowhere else to go, and an error is the answer to why
-  the run control is disabled, so it belongs where it cannot be missed.
+- **A list in the tab header** — errors, listed. Every error is listed here whether or not it also
+  anchors, because an error is the answer to why the run control is disabled and that answer has to
+  be somewhere it cannot be missed; a diagnostic that anchors nowhere would otherwise have no surface
+  at all.
 - **The run's own diagnostics (001 §13.2), listed with the errors.** These are a different thing
   wearing the same word: §14.3's describe the file, a run's describe what happened while it executed —
   a capture that could not be written, or the failure a run that died on its own could not attach to
@@ -1358,6 +1415,19 @@ Diagnostics surface in three places, each carrying the stable `code` (001 §14.6
   is showing, and what it has to say about it. Over the graph it was the one control that moved with
   the drawing, and it occupied a corner of the drawing to do it.
 
+**A diagnostic can name a file that is not the flow, and the app cannot open that file.** Every
+`Diagnostic` carries a `file` (001 §13.2), and for a connector-file check (001 §8.5, §14.3) that
+file is the `connectors.yml` the entry is written in, with a line in *that* file — the thing to fix
+is where the diagnostic says it is. The list here renders the code and the message for such a
+diagnostic exactly as for any other, but its line is **stated, not offered**: `connectors.yml, line 3`,
+with the full path in the tooltip, and no control — where a diagnostic in the flow itself gets the
+`line N` button that opens §4.3's tab. **Opening the named file is not built**, and it is three
+things rather than one: an electron read guard that will hand out a `connectors.yml` under the scope
+root, a watcher on it so a fix re-validates the flows it serves, and a tab type for a file that is
+not a `.flow.yml`. Until those exist the line is a fact the reader carries to their editor. The
+control was withheld rather than pointed at the flow's own YAML at that number, because a control
+that goes to the wrong place is worse than one that goes nowhere; the fix is a §15 item.
+
 **A flow that does not parse still opens.** The tab shows the document view with the parse error
 anchored, an empty graph, and a disabled run control. The failure mode to avoid is a file that cannot
 be opened *because* it is broken, which is when you most want to look at it.
@@ -1374,6 +1444,14 @@ Cancel maps to the `AbortSignal` of 001 §13.2. While cleanup steps run under `c
 (001 §11.3) the control shows that state explicitly rather than appearing hung — a flow with
 `depends: [{ status: [cancelled] }]` steps keeps working for up to 30 seconds after cancel by design,
 and a UI that showed nothing would look broken at exactly that moment.
+
+**The state is read from the engine's `run:cleanup` event (001 §13.2), not inferred from the cancel
+click.** A cancel that the scheduler has not reached yet is not the same thing as a run in its
+cleanup window, and the two look identical from the renderer: only the engine knows when it stopped
+scheduling ordinary steps. The control shows the state from the event's arrival until `run:end`,
+which is the event that ends every other run too. The `deadline` the event carries is absolute rather
+than a remaining duration, so a view that wanted to show time left could — the control does not, and
+a bounded wait with no number on it is what a 30-second grace window honestly is.
 
 
 **Capture hangs off that control rather than sitting beside it as a setting.** `Run` runs and
@@ -1400,8 +1478,30 @@ A panel beside the run control, following `RunnerResults/RunConfigurationPanel`'
 | Variable overrides | `envVarOverrides` — the app's `--env-var` |
 | Dataset | `overrides.dataset` (001 §9.4) |
 | Concurrency | `overrides.concurrency` (001 §9.2) |
-| Parameters | `params`, shown only for a library flow (001 §12.5) |
+| Parameters | `params`, for any flow that declares them (001 §12.5) |
 | Capture | **Not in this panel** — it is a kind of run, chosen on §7.1's control. §9 states what the step pane shows when a run captured nothing |
+
+**Parameters are shown for any flow that declares them, not only a library flow.** `library: true`
+says a flow is meant to be *called* by another one (001 §12.5); it does not decide whether the flow
+takes params. A flow with a `params:` block is run with values for them whichever it is, the engine
+refuses a run missing a required one either way, and §5.6's inputs node has always drawn the block as
+the document declares it — so gating this control on the flag put the one surface that can *supply* a
+value behind a property that has nothing to do with taking one. It edits the same
+`configuration.params` §5.6's inputs node edits, so the two are one value with two views rather than
+two values to keep in step.
+
+**Configuration is per flow and remembered across restarts — for two of its fields.** Concurrency and
+dataset are written into the existing snapshot under `extras.flows`, keyed by the flow's path, and
+merged over whatever the file already held so a flow whose scope was not opened this session keeps
+its settings. **Params and variable overrides are deliberately not written.** The snapshot is a
+plaintext file under `userData`; a library flow's params routinely hold a password — 001 §12.5 marks
+them `secret:` for exactly that reason — and a variable override is the app's equivalent of typing
+one on a command line. Everything Bruno persists that can hold a secret goes through the `secrets`
+electron-store instead, and this file is not that. What is left is what a run configuration is
+otherwise made of, and neither field can carry a credential: how many steps run at once, and which
+dataset file to read. Both halves are held in the slice for the life of the session either way, keyed
+by path rather than in the pane, because `RequestTabPanel` renders only the focused tab and a
+configuration in the pane's own state is discarded by every tab switch.
 
 **The renderer never merges the variable tiers.** It sends each tier's variables *separately and
 unmerged*, and `bruno-electron` flattens each one and hands `RunOptions.variables` to the engine.
@@ -1494,6 +1594,39 @@ Configuration is per flow and remembered across app restarts through the existin
 middleware, not written to the flow file. A run configuration is a property of who is running, not of
 the flow — writing it back would make `.flow.yml` differ between two people running the same test.
 
+**Two of the four controls are what persist: `Concurrency` and `Dataset`.** `Parameters` and
+`Variable overrides` are held in the slice for as long as the app runs and are not written to the
+snapshot. The snapshot is plaintext under the app's `userData`, and both of those are places a person
+types a value themselves — a token, a tenant id, a password a library flow declares as a secret param
+— where the two that persist are a number and a path to a file already on disk. Bruno keeps typed
+secrets in the encrypted `secrets` store rather than in this file, and a run configuration is not a
+reason to make it the second place they live.
+
+What that costs is real and is not decided here: a per-flow override someone sets every morning is
+one they retype every morning, and nothing in the panel says the two halves behave differently.
+
+### 7.2b The `collection` auth profile the app supplies
+
+001 §6.4's implicit `collection` profile is the host's to supply, and the app supplies it for every
+collection-scoped run: `RunOptions.authProfiles.collection`, carrying the collection's own configured
+auth. A workspace-scoped run supplies nothing, and `auth: collection` there is
+`unknown-auth-profile` — the truthful answer rather than an empty profile that would send a step out
+unauthenticated in silence.
+
+**Read off disk, and flattened by the engine's helper.** The block lives in `collection.bru` or
+`opencollection.yml` depending on the collection's format, and the main process reads whichever is
+there. It does *not* build the collection tree the renderer holds: the request path is handed its
+collection by the renderer, and main's one cache is keyed by the `collectionUid` the renderer mints
+with `uuid()` — which a flow host, handed a path (§7.2), has no way to derive. Turning the stored
+block into a profile is the engine's `collectionAuthProfile` (001 §13.1) rather than a flattening of
+the app's own, because the CLI reads the same two files and a copy each is a copy that can drift.
+
+**It is always supplied for a collection-scoped run, `mode: none` included.** A collection whose auth
+is `none`, is `inherit`, is absent, or whose root file will not parse all yield the `none` profile —
+never an exception. 001 §6.4 promises a collection flow "authenticates exactly as the collection
+does", and a collection that authenticates with nothing is still one of those; a flow that never says
+`auth: collection` must not start caring whether `collection.bru` parses.
+
 ### 7.3 What the app supplies that the CLI does not
 
 The `ExecuteRequest` port (001 §13.2) is `bruno-electron`'s existing `ipc/network` path, so a flow
@@ -1507,8 +1640,26 @@ turns every one of 001 §8.2's script positions — an `outputs` script, a `when
 `shouldRetry` — into a `script-error` on the step, blaming the author's script for something the host
 did. A workspace-scoped flow has no collection by construction (§7.2), so this is not an edge case
 there; `bru` already falls back the same way, which is what keeps a script's behaviour identical in
-both hosts. The safe-mode refusal above stays keyed to a real collection, since that setting is a
-collection's.
+both hosts.
+
+**Which sandbox that script runs in is keyed on the collection's own setting, and its absence means
+`safe`.** `jsSandboxMode` is a collection's, so a workspace-scoped flow has no answer to read — and
+the absent answer has to mean something. It means QuickJS: the default `bru run` already takes, the
+default a collection gets when nobody has chosen, and the default `bru flow run --sandbox` carries
+(001 §8.2). Keying the gate on whether a collection root exists made the absence mean `developer`
+instead, which handed `node:vm` to precisely the flow the app can least attribute to a collection's
+own decision. **Only a collection that chose `developer` reaches `node:vm`**; the scope-root fallback
+above is then the path that VM is given, not a second gate.
+
+**A flow step's proxy and client-certificate configuration is the collection's, and the app
+interpolates it with the run's own variables.** `configureRequest` is what applies both, and it
+interpolates a certificate's `domain`, `certFilePath`, `keyFilePath`, `pfxFilePath` and `passphrase`
+and a proxy's `protocol`, `hostname`, `port` and `auth` out of the maps it is handed. The flow host
+hands it `StepContext.variables` (001 §13.2) as `runtimeVariables` — that map is already 001 §7.3's
+chain resolved for this step, so re-splitting it across the slots whose only purpose is precedence
+would invent a precedence the flow does not have. The result is that a `{{variable}}` in a
+collection's proxy or certificate config resolves for a flow exactly as it does for a request beside
+it, with no second implementation of the interpolation here.
 
 ## 8. Watching a run
 
@@ -1636,9 +1787,11 @@ through `configureRequest` directly rather than through that handler, so a flow'
 collection and the panel has no source for them. The dispatch port therefore reports each request
 it sends, on `main:flow-request-log-batch`, and the panel selects over both sources.
 
-**The port reports, not the engine.** 001 §13.2 keeps bodies out of `FlowEvent` so a large response
-is not serialized twice per step, and adding a request event would undo that for every host
-including `bru`, which has no panel to feed. The port is the app's own request path and already
+**The port reports, not the engine.** 001 §13.2 bounds what a `FlowEvent` carries rather than
+forbidding bodies outright: a `step:end` carries a `preview` of the request as sent and the response
+body, each cut at `config.capturePreviewBytes` and masked before the cut (001-C R9.4), and the whole
+body lives in the capture. Adding a *request* event carrying an unbounded body would break that bound
+for every host including `bru`, which has no panel to feed. The port is the app's own request path and already
 holds the request and the response; reporting from there costs the engine nothing and leaves the CLI
 unchanged.
 
@@ -2014,7 +2167,12 @@ type FlowDescription = {
   dataset?: { source: string; parallel: number };
   nodes: FlowNode[];
   edges: FlowEdge[];
-  slots: { name: string; writers: string[]; readers: string[] }[];
+  slots: {
+    name: string;
+    writers: string[];                                 // §5.4's lane: who participates
+    writes: { step: string; output: string }[];        // §5.6: declaration order, for a slot's value
+    readers: string[];
+  }[];
   stages: { name: string; from: string; rank: number }[];   // §5.5; the drawable ones (001 §5.5)
   diagnostics: Diagnostic[];           // the same set validateFlow returns
 };
@@ -2022,17 +2180,30 @@ type FlowDescription = {
 type FlowNode = {
   id: string;                          // sub-flow internals namespaced: "auth/login"
   name?: string;
+  meta?: Record<string, unknown>;      // 001 §5.3's step `meta:`, verbatim — what a report keys the
+                                       // step by. Absent when the step declares none
   kind: 'operation' | 'subflow';
   operation?: { api: string; method: string; path: string; operationId?: string };
   uses?: string;                       // sub-flow path, when kind is 'subflow'
   parent?: string;                     // the uses: node this internal step belongs to
   rank: number;                        // longest path from a root — see below
   outputs: string[];                   // declared output names (001 §8.1, §8.5)
+  outputOrigins?: Record<string, 'inline' | 'collection' | 'workspace'>;
+                                       // where each of `outputs` was declared — the step's own
+                                       // block, or 001 §8.5's collection or workspace connector
+                                       // file. Present only when at least one came from a connector
+                                       // file, so §5.1's `⧉` marker has something to key on and the
+                                       // common all-inline node carries nothing extra
+  pre: string[];                       // 001 §8.7's computed names. Their own list rather than part
+                                       // of `outputs`: those are what other steps can read, and
+                                       // these are readable by nobody. A value promoted with
+                                       // `from: pre` is in both
   markers: {
     conditional: boolean;              // when: (001 §9.3)
     retryMaxAttempts?: number;         // retry: (001 §11.1)
     allowsErrorStatus: boolean;        // failOnStatusCode: false (001 §10.3)
     usesSharedSlot: boolean;           // (001 §9.1)
+    computesValues: boolean;           // pre: (001 §8.7) — §5.1's strip down the node's left edge
   };
   position: { line: number; column: number };
 };
@@ -2103,6 +2274,7 @@ type RunIndexEntry = {
 
 type ReadRunOptions = {
   dir: string;                         // a run directory, from `listRuns`
+  scopeRoot: string;                   // where .bruno-runs/ lives; `dir` must sit inside it — see below
   stepIds?: string[];                  // which ids to ask about — see below
   iteration?: number;                  // which iteration's captures, for a dataset flow
   ports: { readFile: ReadFile; listDirectory: ListDirectory };
@@ -2119,6 +2291,7 @@ type StoredRun = RunIndexEntry & {
 
 type ReadCaptureOptions = {
   dir: string;
+  scopeRoot: string;                   // as on ReadRunOptions
   stepId: string;
   iteration?: number;
   attempt: number;
@@ -2248,6 +2421,19 @@ also what lets 001 §7.4's scope-root containment be enforced by the engine for 
 as it is for fixture reads — a run directory outside the scope root is refused before the port is
 called.
 
+**Both history reads carry `scopeRoot` beside `dir`, and the engine refuses a `dir` outside
+`<scopeRoot>/.bruno-runs` before any port is called.** The field is required rather than optional
+because an optional root is a check a caller can decline, and the caller being guarded against is
+this renderer: it names `dir` across IPC, and nothing on main's side can tell a value copied from
+`listRuns` from one a compromised page assembled. The bound is the capture root rather than the
+scope root — tighter than the sentence above — because `readCapture` reads
+`<dir>/<step>/attempt-N.json`, and a `dir` pointing anywhere else inside the scope would read
+whatever JSON sits there. The check is containment, not membership (§12.1's rule for suites): it
+says the directory resolves inside the root it was sent with, and cannot say the root is one the
+app has open. `readSuite` is deliberately outside this rule: its `dir` is one the CLI's own user
+typed after `--retry-failed`, and 001 §14.1's `--capture-dir` can legitimately put a suite outside
+the scope entirely — the renderer never names a suite directory.
+
 **`readRun` is the index/detail split.** `listRuns` answers "which runs are there" and must stay
 cheap enough to build a selector from — it reads two small files per directory and reports counts.
 Opening one run needs every step's outcome, which is the `iterations[].steps[]` that `summary.json`
@@ -2345,7 +2531,7 @@ the four `main:` pushes follow.
 | `renderer:flow-read-run` | invoke | One stored run's results |
 | `renderer:flow-read-capture` | invoke | One step attempt's capture |
 | `renderer:flow-folder` | invoke | A scope's `flows/` path, joined main-side — the location §4.1c's form opens on |
-| `renderer:flow-create` | invoke | Write a new flow, refusing a name already taken (§4.1c) |
+| `renderer:flow-create` | invoke | Write a new flow from `{ directory, filename, properties, apis }`, refusing a name already taken (§4.1c). The renderer sends the form's answers; main calls the engine's `writeNewFlowDocument` (001 §13.2) and writes what it returns — the format has one author, and a host assembling the document out of strings would be a second |
 | `renderer:flow-duplicate` | invoke | Copy one flow's document under a new `meta:` and name (§4.7) |
 | `renderer:flow-read-properties` | invoke | One flow's `meta:` and filename, for §4.4's dialog |
 | `renderer:flow-update-properties` | invoke | Write that `meta:` back, renaming the file if its name changed (§4.4) |
@@ -2356,6 +2542,7 @@ the four `main:` pushes follow.
 | `main:flow-suite-event` | send | One suite-level event: the roster, a flow starting or ending in it, the suite ending |
 | `main:flow-request-log-batch` | send | A batch of requests the dispatch port sent (§8.5) |
 | `main:flow-tree-updated` | send | Watcher: a flow, script or fixture added, changed or removed |
+| `main:flow-dependency-changed` | send | Watcher: a file no row stands for, that a flow's diagnostics may come from |
 
 **The five channels that write are separate calls rather than one `renderer:flow-write`.** Each
 carries a guard the others do not: `flow-write-source` a path that is a flow, a script under
@@ -2411,7 +2598,13 @@ structured-clone-safe, per the same rule §8.1 puts on events.
 type FlowScope = { workspaceRoot: string; collectionRoot?: string };
 
 // renderer:flow-describe  ->  FlowDescription (§11.1)
-type DescribeRequest = { entry: string; scope: FlowScope };
+type DescribeRequest = {
+  entry: string;
+  scope: FlowScope;
+  /** §4.3's draft. Given, the `readFile` port is overlaid so the entry is answered from memory and
+   *  everything else — sub-flows, OpenAPI documents — from disk exactly as before. */
+  content?: string;
+};
 
 // renderer:flow-run  ->  { runId: string }
 type RunRequest = {
@@ -2467,10 +2660,17 @@ type ListSuitesRequest = { scopeRoot: string };
 type WatchScopeRequest = FlowScope;
 
 // renderer:flow-read-run  ->  StoredRun (§11.2)
-type ReadRunRequest = { dir: string };
+type ReadRunRequest = {
+  dir: string;
+  scopeRoot: string;                   // the scope that owns the flow — §11.2's containment
+  /** Which ids to ask about (§11.2). 001 §14.5's directory name is a lossy encoding of a step id and
+   *  cannot be inverted, so the caller names the ids it holds and the engine answers which of them
+   *  have a capture. A run that recorded a snapshot answers from its own ids instead. */
+  stepIds?: string[];
+};
 
 // renderer:flow-read-capture  ->  StepCapture (§11.2)
-type ReadCaptureRequest = { dir: string; stepId: string; iteration?: number; attempt: number };
+type ReadCaptureRequest = { dir: string; scopeRoot: string; stepId: string; iteration?: number; attempt: number };
 
 // main:flow-run-event
 type RunEventBatch = { runId: string; events: FlowEvent[] };
@@ -2525,6 +2725,10 @@ type FlowTreeEntry = {
   script?: true; fixture?: true;
   workspaceRoot: string; collectionRoot?: string
 };
+
+// main:flow-dependency-changed — the path alone. There is no entry to carry: this is a file the
+// sidebar has no row for, and §6 does the same thing whichever one it was.
+type FlowDependencyChanged = string;
 ```
 
 **A scope is a `FlowScope` on every channel that takes one**, so the sidebar, the describe call and
@@ -2558,6 +2762,17 @@ is not nothing: indexing roughly **triples** the watcher's parse cost, at 0.3–
 made, deliberately and unoptimised: a scope opens tens of milliseconds later once, in exchange for a
 search that never reads a file. Collapsing the two parses `flowSearchTerms` performs (001 §13.2's
 identity read, then the steps) is where the saving is if that ever stops being true.
+
+**`main:flow-dependency-changed` is the second channel because the tree cannot carry these.** A
+`flows/connectors.yml` (001 §8.5) and an OpenAPI document watched by path are files a flow's
+diagnostics are derived from and that no row of the sidebar stands for; sending them as entries would
+put files in a list of flows. The watcher also **follows the documents each flow's `apis:` binds**
+(001 §6.2, read with `flowSpecSources`), because those normally sit outside the `flows/` directory it
+watches — without that a flow reports the operations and fields of a document that has since been
+fixed, and goes on doing so until the flow itself is touched. Remote documents are not followed:
+`readSpec` fetches those and there is no file to watch. Paths are added to the watcher and never
+removed until the scope closes — a binding disappears for as long as its `apis:` block is mid-edit,
+and dropping the watch there would make it flicker exactly while the author is working.
 
 **`main:flow-tree-updated` reports `unlinkFile`, which `apiSpecsWatcher` does not.** §4.1 requires a
 flow to leave the sidebar when the file is deleted or a branch is switched, and the API-spec watcher
@@ -2656,6 +2871,7 @@ packages/bruno-app/src/fork/
   registry.js                          # the delegation surface upstream calls into
   tabTypes.js                          # leaf: the fork's tab types, imported by upstream's strip
   tabGroup.js                          # leaf: §4.2's grouping rule
+  snapshot.js                          # §7.2's persisted run configuration and §4.2's workspace tabs
   jest.setup.js                        # the fork's own test environment — see §12.1
   hooks/
     useVerticalSplit/index.js          # §9's draggable graph/detail split
@@ -2663,13 +2879,13 @@ packages/bruno-app/src/fork/
   flows/
     slice.js                           # flows, describe results, run state keyed by flow path
     actions.js                         # the invokes of §11.3, as thunks
+    restoreSession.js                  # what `snapshot.js` wrote, read back on the first scope watch
     ipcEvents.js                       # registers the listeners in the table above
     collectionScope.js                 # which collection a flow's tab and rows belong to
     networkRequests.js                 # §8.5's merged devtools list
     flowTree.js                        # §4.1a's folder derivation, shared by every bucket
     flowFileName.js                    # what a flow file may be called — §4.1c and §4.4, one rule
     retargetTabs.js                    # §4.4's rename, followed to every tab keyed on the old path
-    yamlSchema.js                      # 001 §5.4's tags, taught to the renderer's own parser (§4.3)
     FlowSidebarSection/index.js
     CreateFlow/
       index.js                         # §4.1c's form, and §4.7's duplicate over a source
@@ -2696,6 +2912,8 @@ packages/bruno-app/src/fork/
         subflowColors.js               # §5.4's colour per expanded sub-flow
       StepDetail/index.js
       RunControls/index.js
+      RunConfiguration/index.js        # §7.2's panel, opened from the run control
+      IterationStrip/index.js          # §8.3's per-iteration status chips
       RunSelector/index.js
     FlowYamlTabPane/index.js           # §4.3's raw editor
     FlowSourceTabPane/index.js         # §4.5's script and §4.6's fixture, one editing pane
@@ -2715,6 +2933,8 @@ packages/bruno-electron/src/
     index.js                           # registerFlowIpc — the channels in §11.3
     ports.js                           # the seven ports of 001 §13.2
     variables.js                       # §7.2's tiers, flattened
+    collectionConfig.js                # §7.2b's auth profile and §7.3's proxy/certificate config,
+                                       # read off the collection root the flow's scope names
   app/flowsWatcher.js
 ```
 
@@ -2727,8 +2947,8 @@ The watcher starts from inside `registerFlowIpc`, so it rides 001's existing ent
 
 ### 12.1 The manifest delta
 
-001 §13.4's table is the contract for the whole feature. Run & observe adds **six files** to it, and
-grows one row that was already there:
+001 §13.4's table is the contract for the whole feature. Run & observe adds **eleven files** to it,
+and grows one row that was already there:
 
 | Upstream file | Edit | Lines |
 |---|---|---|
@@ -2739,6 +2959,11 @@ grows one row that was already there:
 | `packages/bruno-app/…/RequestTabs/RequestTab/index.js` | §4.4's close guard: one import, and a branch handing a fork tab to the registry | +3 |
 | `packages/bruno-app/package.json` | the `@dagrejs/dagre` dependency the graph's layout needs (§5.2) | 1 |
 | `packages/bruno-app/jest.config.js` | a second `setupFiles` entry, pointing at the fork's own test setup | 1 |
+| `packages/bruno-app/src/providers/ReduxStore/middlewares/snapshot/serializeSnapshot.js` | import, and write the fork's own section into the snapshot's `extras` (§7.2) | 2 |
+| `packages/bruno-app/src/providers/ReduxStore/slices/workspaces/actions.js` | import, and the restore of workspace-scoped flow tabs after the scratch collection mounts | 2 |
+| `packages/bruno-tests/src/index.js` | require and mount the `/api/settle` router — the stateful endpoint [002-C](./002-api-flows-ui-conformance.md) §2 needs for a polling scenario | 2 |
+| `tests/utils/page/index.ts` | re-export the flows page module | 1 |
+| `tests/utils/page/locators.ts` | import, and add `flows` to the common locator tree | 2 |
 
 **The two new rows are the cost of §5.2's layout engine, and the second one is a registry again.**
 A dependency has to be declared by the package that imports it (`.claude/rules/architecture.md`), so
@@ -2747,6 +2972,38 @@ file whose conflicts are already routine. The `jest.config.js` line buys the sam
 registry does: jsdom ships no `structuredClone`, which dagre calls, and the shim lives in
 `src/fork/jest.setup.js` rather than in upstream's `jest.setup.js` — so the fork's *next* test-environment
 gap costs no upstream edit at all.
+
+**The last three rows are the e2e harness, and they are counted for the reason 001 §13.4 counts its
+two readme rows** — the manifest is a merge checklist, not a code inventory. Upstream owns
+`tests/utils/page/`'s barrel and its locator tree, and a merge that dropped either line takes
+[002-C](./002-api-flows-ui-conformance.md)'s whole suite with it: every scenario reaches the UI
+through `common.flows`. Each is one line at the end of a list, and the flows page module they point
+at is a new file upstream does not have. `bruno-tests` is the same trade one layer down — a router
+file of its own, mounted by two lines beside the routers already there, rather than a stateful branch
+added to an existing one.
+
+**The snapshot row is a registry again, and it is the reason §7.2's "existing snapshot middleware" is
+one line rather than a fork of it.** Upstream's `serializeSnapshot` builds the whole persisted shape,
+and there is no seam in it: a fork that wanted its own state remembered across restarts either edits
+that function or writes a second middleware over the same store. The edit is an import and one
+assignment handing a whole section to `serializeForkSnapshot`, which decides what goes in it —
+so the *next* thing the fork persists costs no upstream edit, exactly as the reducer map and the IPC
+disposer do. It writes under `extras.flows` rather than adding a top-level key, which is the one
+place upstream's shape already tolerates a stranger.
+
+**The `workspaces/actions.js` row is one line at a known point, and that is the whole of why it
+exists.** §4.2's workspace-scoped flow tab is the one tab upstream's snapshot cannot restore: it
+belongs to the workspace's *scratch* collection, which the serializer skips and the workspace's own
+hydration excludes by uid. Restoring one needs that collection's uid, and the fork learns of a
+workspace by watching its flow scope — which runs *alongside* the workspace switch rather than after
+it. So the restore used to fire whenever a scope was watched, skip every workspace whose scratch
+collection had not mounted yet, and rely on a later scope being watched to try again: a tab that came
+back or did not according to which of two unordered paths finished first. `switchWorkspace` mounts
+the scratch collection and then hydrates its tabs, and this is one line in that sequence, handed the
+snapshot the caller has already read. It needs no new fork file — `restoreForkWorkspaceTabs` is a
+function on the registry, beside the reducers and the IPC disposer, and it defers to
+`flows/restoreSession.js` through a dynamic import so the registry's eager graph stays clear of
+upstream modules.
 
 **Re-running failed flows adds nothing to this table either**, and it is the widest feature yet to
 manage it: §11.3's three invoke channels and its suite stream ride `preload.js`'s pass-through and
@@ -2928,12 +3185,10 @@ way this spec needed:
 - **`describeFlow` resolves remote `apis:`** through the `ReadSpec` port added in 001 §13.2, now in
   §11.1's signature. A flow binding an `https://` document returns a graph, not diagnostics.
 
-One remains, and it is this spec's own:
-
-**Can `readCapture` enforce scope-root containment?** §11.2 claims containment is enforced "before
-the port is called" for history reads, but `ReadCaptureOptions` carries `dir` with no `scopeRoot`
-to check it against — unlike `ListRunsOptions`. Either the option grows a scope root, or containment
-holds only for `listRuns` and a `dir` handed in from the renderer is trusted.
+One was this spec's own and is now settled: **`readRun` and `readCapture` enforce containment**
+because their options grew a required `scopeRoot` (§11.2). The alternative — trusting a `dir` from
+the renderer — was the state of the code for as long as the question stood, which is the reason the
+question was worth writing down.
 
 Details left to implementation, as they do not change a contract:
 
@@ -2965,4 +3220,5 @@ app so that a UI deferral is recorded once rather than in two tables that would 
 | **Running one step or a subgraph** | 001 defines execution for a whole flow; a subset needs semantics for what its dependencies resolve to | A definition of partial-run state — probably seeding `steps.*` from a previous run's capture, which is a format question, not a UI one |
 | **Diffing two runs** | §10 makes both runs readable, which is the prerequisite; what to diff (bodies? outputs? timings?) is unclear without watching people use it | A diff model over `StepCapture`, and evidence about which comparison people reach for first |
 | **OS-level run notifications** | §4.1 covers the ambient case; an OS notification is a third surface needing a preference, and no Electron `Notification` usage exists in the app to build on | Evidence that flows run long enough for people to leave the app during one |
+| **Opening a `connectors.yml` from its diagnostic** | §6 lists a connector-file diagnostic with its file and line named and no control, because the app has no tab that can open a file that is not a `.flow.yml` | Three things, not one: an electron read guard for a `connectors.yml` under the scope root, a watcher on it so a fix re-validates the flows it serves, and a tab type for a file that is not a `.flow.yml` |
 | **Cross-run trends** | §3 excludes analytics; `.bruno-runs/` retention (default 10) is too short a window to trend over anyway | A durable run store, which is a different feature from reading artifacts |

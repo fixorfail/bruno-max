@@ -1,0 +1,24 @@
+# R12.2's caller: a slot-sourced export read as the invoking step's own output, with no
+# re-declaration here and nothing in this file naming a slot (§12.2).
+version: 1
+
+meta:
+  name: R12 — a caller reading a slot-sourced export
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: charge
+    uses: ./charge.flow.yml
+    with:
+      method: "{{chargeMethod}}"
+
+  - id: receipt
+    operation: regress-api#createThing
+    body:
+      name: receipt
+      ref: "{{steps.charge.chargeId}}"

@@ -1,0 +1,27 @@
+# R12.1's workspace-level shared flow — reached from a collection through the `workspace:` prefix
+# (§12.2), rather than a `../../` chain climbing back out of the collection's own scope root.
+version: 1
+
+meta:
+  name: R12 — shared login
+  library: true
+
+apis:
+  regress-api: ../../../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+params:
+  email: { required: true }
+
+exports:
+  token: steps.login.token
+
+steps:
+  - id: login
+    operation: regress-api#signIn
+    body:
+      email: "{{params.email}}"
+    outputs:
+      token: data.token
