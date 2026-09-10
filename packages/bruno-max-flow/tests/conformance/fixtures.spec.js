@@ -17,17 +17,35 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const FLOWS = path.join(FIXTURES, 'flows');
 const SPECS = path.join(FIXTURES, 'specs');
 
-const operationIds = (spec) => {
-  const ids = new Set();
-  for (const item of Object.values(spec.paths || {})) {
-    for (const [method, op] of Object.entries(item)) {
-      if (method !== 'parameters' && op && op.operationId) {
-        ids.add(op.operationId);
-      }
+/**
+ * A path item's keys are not all operations: OpenAPI puts `parameters`, `summary` and any number of
+ * `x-` extensions beside the methods, and a real document uses them. Reading the methods by name is
+ * what keeps an extension from being taken for an operation that declares no `operationId`.
+ */
+const METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
+
+/**
+ * Both of §6.1's identities, since a step addresses whichever the document offers: the `operationId`
+ * where there is one, and the `METHOD /path` that is all an unnamed operation has.
+ */
+const operationKeys = (spec) => {
+  const keys = new Set();
+  for (const [route, item] of Object.entries(spec.paths || {})) {
+    for (const method of METHODS) {
+      if (!item[method]) continue;
+      keys.add(`${method.toUpperCase()} ${route}`);
+      if (item[method].operationId) keys.add(item[method].operationId);
     }
   }
-  return ids;
+  return keys;
 };
+
+/**
+ * The one document that names none of its operations, so §6.1's fallback has something to resolve
+ * against. Every other one names all of them, and the harness's stub index depends on it — a
+ * request to an unnamed operation is attributable to nothing.
+ */
+const UNNAMED_OPERATIONS = ['r19-no-operation-id-v1.yml'];
 
 /** Paths relative to `flows/`, so the checks below cover `regressions/` too. */
 const flowFilesUnder = (dir) =>
@@ -55,13 +73,15 @@ describe('fixture corpus', () => {
   });
 
   describe.each(specFiles)('%s', (file) => {
-    it('parses and declares an operationId for every operation', () => {
+    it('parses and names its operations, or names none of them', () => {
       const spec = load(path.join(SPECS, file));
+      const named = !UNNAMED_OPERATIONS.includes(file);
       expect(spec.openapi).toMatch(/^3\./);
       for (const [route, item] of Object.entries(spec.paths || {})) {
-        for (const [method, op] of Object.entries(item)) {
-          if (method === 'parameters') continue;
-          expect(`${method} ${route}: ${op.operationId}`).toEqual(expect.stringMatching(/: \w+$/));
+        for (const method of METHODS) {
+          if (!item[method]) continue;
+          const where = `${method} ${route}`;
+          expect({ where, named: Boolean(item[method].operationId) }).toEqual({ where, named });
         }
       }
     });
@@ -94,13 +114,13 @@ describe('fixture corpus', () => {
       const specs = {};
       for (const [alias, binding] of Object.entries(flow.apis || {})) {
         const source = typeof binding === 'string' ? binding : binding.source;
-        specs[alias] = operationIds(load(path.resolve(dir, source)));
+        specs[alias] = operationKeys(load(path.resolve(dir, source)));
       }
       for (const step of flow.steps || []) {
         if (!step.operation) continue;
-        const [alias, operationId] = String(step.operation).split('#');
+        const [alias, reference] = String(step.operation).split('#');
         expect(Object.keys(specs)).toContain(alias);
-        expect([...specs[alias]]).toContain(operationId);
+        expect([...specs[alias]]).toContain(reference);
       }
     });
 

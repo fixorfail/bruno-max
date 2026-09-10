@@ -213,6 +213,33 @@ export const requestMediaTypes = (operation: Record<string, any>): string[] =>
   Object.keys(operation.requestBody?.content || {});
 
 /**
+ * A `$ref` followed to the definition section it names, and `undefined` where it names nothing this
+ * document can answer for — a chain that closes on itself, or one naming another file, which is
+ * outside what a binding reads (§6.2).
+ *
+ * A schema lifted out of an OpenAPI document is a fragment of it and nearly every real one refers to
+ * the rest, so a reader that followed only inline schemas would quietly do nothing for the shape
+ * almost every document takes.
+ */
+export const deref = (
+  schema: Record<string, any> | undefined,
+  definitions: Record<string, any>
+): Record<string, any> | undefined => {
+  const seen = new Set<string>();
+  let current = schema;
+
+  while (current && typeof current.$ref === 'string') {
+    if (seen.has(current.$ref) || !current.$ref.startsWith('#/')) return undefined;
+    seen.add(current.$ref);
+    current = current.$ref
+      .slice(2)
+      .split('/')
+      .reduce<any>((node, segment) => (node ? node[segment.replace(/~1/g, '/').replace(/~0/g, '~')] : undefined), definitions);
+  }
+  return current;
+};
+
+/**
  * A schema fragment rooted in its own document, so the `$ref`s it is written with resolve. Ajv reads
  * `#/...` against the root of the schema it was handed, so the definition sections travel with it.
  */

@@ -37,6 +37,13 @@ Three of these are not in 001-C verbatim. `f2-login.flow.yml` is fixed by what i
 (`steps.<id>.token`, `steps.<id>.userId`) and by F2.4, which stubs its internal step and requires
 the failure to name `auth/login`. The two tenant flows come from 001 §6.3's worked example.
 
+### Real-world OpenAPI
+
+`flows/openapi/` holds one minimal flow per R19 construct: `r19-ref-body` (a body that is entirely
+§7.1's seed), `r19-cycles` and `r19-multipart-ref` — both `validateRequest: false`, so the only rule
+left to refuse the step is the one under test — `r19-external-ref`, `r19-composed-body`, and `r19-endpoint-fallback`, the
+only flow in the corpus whose steps are written `alias#METHOD /path`.
+
 ### Regressions
 
 `flows/regressions/` holds one minimal flow per row of 001-C §7, named for the row it serves.
@@ -51,6 +58,7 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r4-slot-nondescendant.flow.yml` | R4 — a slot read off the writer's branch |
 | `r4-slot-unwritten.flow.yml` | R4 and R5 — an unwritten slot resolves empty and reaches the wire as `""` |
 | `r4-slot-unwritten-typed.flow.yml` | §11.2 — the same slot in a typed field, where `""` and omission stop being interchangeable |
+| `r4d2-typing.flow.yml` | R4d2 — one row of `typing.csv` read through `when:` and `assert:`; the two conditions after the assertions each name a type a cell is *not*, so a step that ran would say the inference had gone the other way |
 | `r9-flow-iteration-nodataset.flow.yml` | §9.4 — `{{flow.iteration}}` resolving to `0` outside a dataset |
 | `r4g-cleanup-bare-cancelled.flow.yml` | §11.3 — a bare `status: [cancelled]` after a successful parent, beside the four-way list that works |
 | `r4-output-unproduced.flow.yml` | R4 and R4b — an unproduced output skips its consumer |
@@ -156,9 +164,16 @@ whose three files happened to agree on a name would pass whichever rule the code
 
 ## Specs
 
-Minimal by design (001-C §8): real-world OpenAPI robustness — `$ref` cycles, vendor extensions,
-missing `operationId`, multi-document specs — is separate ground from execution semantics and is
-tracked in 001 §19.
+Minimal by design — with one deliberate exception. `$ref` cycles, vendor extensions and a missing
+`operationId` are no longer separate ground: the `r19-*` documents below carry them, because the
+engine had never met a document that did and seeded nothing when it finally met one (001-C R19).
+Multi-document resolution is still outside the corpus; R19.5 pins the silence rather than a fix.
+
+| File | What it carries |
+|---|---|
+| `r19-real-world-v1.yml` | Schemas named rather than written out, `x-` extensions at document, path-item, operation, parameter and schema level, a self-referential `Tree` and a mutually cyclic `Ledger`/`Entry`, and a multipart part whose `format: binary` sits behind a `$ref` | Also an `allOf` body over two named schemas and an inline branch, and a `oneOf` over two — R19.6's intersection and choice.
+| `r19-no-operation-id-v1.yml` | **The only document naming none of its operations.** §6.1's method+path fallback has nothing else to resolve against, and `fixtures.spec.js` exempts this one file by name — the harness's stub index keys on `operationId`, so a second such document would have requests attributable to no operation |
+| `r19-external-ref-v1.yml` · `r19-external-schemas-v1.yml` | One `$ref` across a file boundary, and the components-only document on the far side. Kept apart from `r19-real-world-v1.yml` so the fixture about one boundary is not entangled with the rest of the schemas |
 
 Three details are load-bearing rather than decorative:
 
@@ -180,6 +195,11 @@ Three details are load-bearing rather than decorative:
 | `things.csv` | R4's per-iteration slots, at `parallel: 3` |
 | `pair.csv` | R4c — two iterations, which is what makes "different across them" assertable |
 | `operand-row.csv` | R4c2 — the single row `row.role` and the `when:` row resolve against |
+
+R4d2's native-typing row has no file here. `{ "canCreate": "true" }` exists to show a JSON value is
+not re-inferred the way a CSV cell is, and a committed dataset nothing else reads would look like a
+fixture with a scenario of its own — so it is supplied in memory through the harness's `files`
+overlay, as R4d's `!file` fixtures are.
 
 R4g2 and R4o need no fixture of their own: §14.5's layout is a property of *every* run, so
 `capture.spec.js` and `history.spec.js` assert it over the flows above — the retry one for a file

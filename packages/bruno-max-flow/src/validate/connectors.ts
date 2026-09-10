@@ -11,9 +11,9 @@
  * thing to fix is in the file the diagnostic names.
  */
 import type { Connectors, ConnectorEntry, ConnectorFile } from '../connectors';
-import type { ResolvedOperation } from '../openapi';
+import { deref, type ResolvedOperation } from '../openapi';
 import type { Diagnostic } from '../types/result';
-import { deref, propertiesOf, type Schema } from './operation';
+import { propertiesOf, type Schema } from './operation';
 import { suggest } from './report';
 
 /**

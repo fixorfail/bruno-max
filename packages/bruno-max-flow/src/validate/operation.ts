@@ -12,33 +12,13 @@
  * that fails a review and one that fails a nightly.
  */
 import { FileRef, type NormalizedStep } from '../document';
-import { requestMediaTypes, type ResolvedOperation } from '../openapi';
+import { deref, requestMediaTypes, type ResolvedOperation } from '../openapi';
 import { suggest, type Report } from './report';
 
 export type Schema = Record<string, any>;
 
 const isMapping = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof FileRef);
-
-/**
- * A `$ref` followed to the definition section it names. A schema lifted out of an OpenAPI document
- * is a fragment of it, and nearly every real one refers to the rest (R4r) — a check that read only
- * inline schemas would silently skip every spec written the other way.
- */
-export const deref = (schema: Schema | undefined, definitions: Schema): Schema | undefined => {
-  const seen = new Set<string>();
-  let current = schema;
-
-  while (current && typeof current.$ref === 'string') {
-    if (seen.has(current.$ref) || !current.$ref.startsWith('#/')) return undefined;
-    seen.add(current.$ref);
-    current = current.$ref
-      .slice(2)
-      .split('/')
-      .reduce<any>((node, segment) => (node ? node[segment.replace(/~1/g, '/').replace(/~0/g, '~')] : undefined), definitions);
-  }
-  return current;
-};
 
 /**
  * The properties a schema names, or `undefined` where it names none it can be held to — a free-form
@@ -260,8 +240,61 @@ const checkStructuredBody = (
 const isStructured = (mediaType: string) =>
   mediaType.includes('json') || mediaType.includes('x-www-form-urlencoded');
 
+/**
+ * §6.2: only the bound document is read, so a `$ref` naming another file resolves to nothing.
+ *
+ * Every field check above is written to fall silent when it cannot see a schema — which is right for
+ * an operation that genuinely declares a free-form body, and wrong here. The two are
+ * indistinguishable from `propertiesOf`'s `undefined`, so the difference has to be found before it:
+ * a step whose body is checked against nothing looks validated, and the failure surfaces one
+ * dispatch later as a schema the validator could not compile, blaming the schema rather than the
+ * file boundary.
+ *
+ * A warning, not an error: the flow is well-formed and the document is legal OpenAPI. What is
+ * missing is the engine's ability to follow it, and saying so is worth more than refusing to run.
+ */
+const checkExternalRefs = (step: NormalizedStep, resolved: ResolvedOperation, mediaType: string, report: Report) => {
+  const seen = new Set<string>();
+  let named: string | undefined;
+
+  const walk = (node: unknown) => {
+    if (named || !isMapping(node)) return;
+
+    const reference = typeof node.$ref === 'string' ? node.$ref : undefined;
+    if (reference) {
+      if (!reference.startsWith('#/')) {
+        named = reference;
+        return;
+      }
+      // An internal reference can still lead out of the document, so it is followed — once.
+      if (seen.has(reference)) return;
+      seen.add(reference);
+      walk(deref(node, resolved.definitions));
+      return;
+    }
+
+    for (const branch of ['allOf', 'oneOf', 'anyOf'] as const) {
+      for (const entry of (node[branch] || []) as unknown[]) walk(entry);
+    }
+    for (const property of Object.values(node.properties || {})) walk(property);
+    walk(node.items);
+  };
+
+  walk(requestContent(resolved, mediaType).schema);
+  if (named === undefined) return;
+
+  report.warn(
+    'external-schema-ref',
+    `${step.id}: the operation's schema reaches ${named}, which is in another document — only the `
+    + 'bound one is read (§6.2), so this step\'s body is checked against nothing and the run will '
+    + 'fail it when the validator cannot compile the reference',
+    step.id
+  );
+};
+
 export const checkOperation = (step: NormalizedStep, resolved: ResolvedOperation, report: Report) => {
   const mediaType = selectMediaType(step, resolved, report);
+  if (mediaType) checkExternalRefs(step, resolved, mediaType, report);
 
   if (mediaType === 'multipart/form-data') checkMultipart(step, resolved, report);
   else if (mediaType && !isStructured(mediaType)) checkBinaryBody(step, mediaType, report);

@@ -1,0 +1,19 @@
+# R19.6 — a request body composed with `allOf` and one composed with `oneOf`. Neither step declares
+# a `body:`, so what reaches the wire is entirely §7.1's seed.
+version: 1
+
+meta:
+  name: R19 — composed request bodies
+
+apis:
+  real: ../../specs/r19-real-world-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: intersection
+    operation: real#r19CreatePayment
+
+  - id: alternatives
+    operation: real#r19CreateRefund

@@ -1,0 +1,13 @@
+openapi: 3.0.3
+# The far side of `r19-real-world-v1.yml`'s cross-document `$ref` — a components-only document,
+# which is how a real corpus shares one schema between several APIs. It declares no `paths:`, so
+# nothing binds it directly.
+info: { title: Shared schemas, version: 1.0.0 }
+components:
+  schemas:
+    Webhook:
+      type: object
+      required: [url, event]
+      properties:
+        url: { type: string }
+        event: { type: string, enum: [invoice.created] }

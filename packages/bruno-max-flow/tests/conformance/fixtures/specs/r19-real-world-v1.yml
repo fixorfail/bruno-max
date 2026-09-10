@@ -1,0 +1,193 @@
+openapi: 3.0.3
+# 001 §19.2's document: the constructs a real OpenAPI file carries and the minimal fixtures beside
+# it do not — schemas reached through `$ref` rather than written inline, `x-` extensions at every
+# level a tool emits them, and schemas that refer back to themselves. The one construct kept out is
+# a reference into another file, which `r19-external-ref-v1.yml` owns.
+x-api-id: r19-real-world
+x-tagGroups:
+  - name: Billing
+    tags: [invoices]
+info: { title: Real-world API, version: 1.0.0 }
+servers:
+  - url: https://r19.example.com
+paths:
+  /r19/invoices:
+    # A path-item extension sits beside the methods, so anything reading the item by key rather
+    # than by method meets it first.
+    x-owner: billing
+    parameters:
+      - name: tenant
+        in: query
+        required: false
+        x-internal: true
+        schema: { type: string }
+    post:
+      operationId: r19CreateInvoice
+      x-codegen-request-body-name: invoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvoiceRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvoiceResponse'
+  /r19/trees:
+    post:
+      operationId: r19CreateTree
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Tree'
+      responses:
+        '201': { description: Created }
+  /r19/ledgers:
+    post:
+      operationId: r19CreateLedger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Ledger'
+      responses:
+        '201': { description: Created }
+  /r19/payments:
+    post:
+      operationId: r19CreatePayment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Money'
+                - $ref: '#/components/schemas/Payer'
+                - type: object
+                  required: [reference]
+                  properties:
+                    reference: { type: string }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { type: object }
+  /r19/refunds:
+    post:
+      operationId: r19CreateRefund
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/Money'
+                - $ref: '#/components/schemas/Voucher'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { type: object }
+  /r19/uploads:
+    post:
+      operationId: r19UploadDocument
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Upload'
+      responses:
+        '201': { description: Created }
+components:
+  schemas:
+    InvoiceRequest:
+      type: object
+      x-nullable: false
+      required: [reference, amount, customer]
+      properties:
+        reference: { type: string, example: INV-1 }
+        amount: { type: integer }
+        currency: { type: string, default: USD }
+        note: { type: string }
+        customer:
+          $ref: '#/components/schemas/Customer'
+    Customer:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        tier: { type: string, enum: [standard, premium] }
+    InvoiceResponse:
+      type: object
+      required: [invoice]
+      properties:
+        invoice:
+          $ref: '#/components/schemas/Invoice'
+    Invoice:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status: { type: string }
+    # Required and self-referential, so no finite payload satisfies it. Documents are written this
+    # way all the same, and the seed has to stop rather than descend forever.
+    Tree:
+      type: object
+      required: [label, parent]
+      properties:
+        label: { type: string }
+        parent:
+          $ref: '#/components/schemas/Tree'
+    # The same cycle closed through a second schema, which a `seen` set covering only the schema it
+    # started from would not catch.
+    Ledger:
+      type: object
+      required: [id, entry]
+      properties:
+        id: { type: string }
+        entry:
+          $ref: '#/components/schemas/Entry'
+    Entry:
+      type: object
+      required: [amount, ledger]
+      properties:
+        amount: { type: integer }
+        ledger:
+          $ref: '#/components/schemas/Ledger'
+    Upload:
+      type: object
+      required: [label, document]
+      properties:
+        label: { type: string }
+        document:
+          $ref: '#/components/schemas/BinaryDocument'
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount: { type: integer }
+        currency: { type: string }
+    Payer:
+      type: object
+      required: [payerId]
+      properties:
+        payerId: { type: string }
+        note: { type: string }
+    Voucher:
+      type: object
+      required: [voucherCode]
+      properties:
+        voucherCode: { type: string }
+    BinaryDocument:
+      type: string
+      format: binary

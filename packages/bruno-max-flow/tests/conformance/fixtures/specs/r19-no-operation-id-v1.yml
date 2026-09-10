@@ -1,0 +1,38 @@
+openapi: 3.0.3
+# A document that names none of its operations, which §6.1's method+path identity exists for. Every
+# other spec fixture declares an `operationId` for every operation — `fixtures.spec.js` asserts it —
+# so this is the only one a step has to address by endpoint.
+info: { title: Legacy API, version: 1.0.0 }
+servers:
+  - url: https://r19-legacy.example.com
+paths:
+  /r19/things:
+    get:
+      summary: List things
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer }
+      responses:
+        '200':
+          description: The things
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { type: string } }
+    post:
+      summary: Create a thing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        '201': { description: Created }

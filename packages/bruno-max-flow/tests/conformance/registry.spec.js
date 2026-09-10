@@ -38,7 +38,7 @@ const TESTED_ELSEWHERE = [
 ];
 
 /** Registered in 001-C with no test anywhere. Removing one from this list is the point of it. */
-const NOT_YET_PINNED = ['R4d2'];
+const NOT_YET_PINNED = [];
 
 const specIds = () => {
   const text = fs.readFileSync(SPEC, 'utf8');

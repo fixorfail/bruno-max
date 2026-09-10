@@ -12,7 +12,7 @@
 import { DROP, FileRef, type ApiBinding, type FlowConfig, type NormalizedStep } from './document';
 import { basenameOf, contentTypeFor, parseStructured, type FileReader } from './files';
 import { interpolateScalar, interpolateValue, type Scope } from './interpolate';
-import { requestExample, requestMediaTypes, requestSchema, type ResolvedOperation } from './openapi';
+import { deref, requestExample, requestMediaTypes, requestSchema, type ResolvedOperation } from './openapi';
 import type { Auth, AuthMode } from '@usebruno/schema-types/common/auth';
 import type { MaterializedRequest, MultipartPart, RequestBody } from './types/request';
 
@@ -28,27 +28,93 @@ const isMapping = (value: unknown): value is Record<string, unknown> =>
 /**
  * §7.1. Required properties are always seeded; optional ones only when they carry an `example` or
  * `default`, or an optional field with no meaningful value would be sent on every request.
+ *
+ * Every schema is followed through its `$ref` first, since that is how a real document writes one —
+ * `expanding` carries the references followed to reach this one, so a schema that refers back to
+ * itself seeds nothing at the point the cycle closes instead of descending forever. No finite
+ * payload satisfies such a schema anyway; terminating is what matters.
  */
-const seedFromSchema = (schema: Record<string, any> | undefined): unknown => {
-  if (!schema) return undefined;
-  if (schema.example !== undefined) return schema.example;
-  if (schema.default !== undefined) return schema.default;
-  if (schema.enum) return schema.enum[0];
+/**
+ * §7.1 over a composed schema — the properties and `required` names in force once `allOf`, `oneOf`
+ * and `anyOf` are accounted for.
+ *
+ * **`allOf` is an intersection and `oneOf` / `anyOf` are a choice, so they are seeded differently.**
+ * Every `allOf` branch contributes; alternatives contribute only their **first** branch, for the
+ * same reason `enum` seeds its first member — a body merged from alternatives satisfies none of
+ * them, and §10.1 would then reject a request the engine had built itself.
+ *
+ * `validate/operation.ts`'s `propertiesOf` merges all three instead, and the difference is
+ * deliberate: it asks whether a field name is known *anywhere*, which is the permissive question a
+ * warning should ask, while this has to produce a payload that is actually valid.
+ *
+ * A schema's own `properties` are applied last, so a composed schema that also narrows a branch's
+ * property wins — the same order `propertiesOf` uses.
+ */
+const objectShape = (
+  schema: Record<string, any>,
+  definitions: Record<string, any>,
+  expanding: ReadonlySet<string>
+): { properties: Record<string, any>; required: string[] } => {
+  const properties: Record<string, any> = {};
+  const required = new Set<string>();
 
-  switch (schema.type) {
-    case 'object': {
-      const required: string[] = schema.required || [];
+  const branches: Record<string, any>[] = schema.allOf || (schema.oneOf || schema.anyOf || []).slice(0, 1);
+  for (const branch of branches) {
+    const reference = typeof branch.$ref === 'string' ? branch.$ref : undefined;
+    if (reference && expanding.has(reference)) continue;
+    const resolved = reference ? deref(branch, definitions) : branch;
+    if (!resolved) continue;
+    const inner = objectShape(resolved, definitions, reference ? new Set([...expanding, reference]) : expanding);
+    Object.assign(properties, inner.properties);
+    for (const name of inner.required) required.add(name);
+  }
+
+  Object.assign(properties, schema.properties || {});
+  for (const name of (schema.required || []) as string[]) required.add(name);
+
+  return { properties, required: [...required] };
+};
+
+const seedFromSchema = (
+  schema: Record<string, any> | undefined,
+  definitions: Record<string, any>,
+  expanding: ReadonlySet<string> = new Set()
+): unknown => {
+  if (!schema) return undefined;
+  const reference = typeof schema.$ref === 'string' ? schema.$ref : undefined;
+  if (reference && expanding.has(reference)) return undefined;
+
+  const resolved = reference ? deref(schema, definitions) : schema;
+  if (!resolved) return undefined;
+  const followed = reference ? new Set([...expanding, reference]) : expanding;
+
+  if (resolved.example !== undefined) return resolved.example;
+  if (resolved.default !== undefined) return resolved.default;
+  if (resolved.enum) return resolved.enum[0];
+
+  // A composed schema usually declares no `type` of its own, so composition is what says this is an
+  // object rather than the keyword being there to switch on.
+  const composed = Boolean(resolved.allOf || resolved.oneOf || resolved.anyOf);
+  if (resolved.type === 'object' || (composed && resolved.type === undefined)) {
+    {
+      const { properties, required } = objectShape(resolved, definitions, followed);
       const seeded: Record<string, unknown> = {};
-      for (const [name, property] of Object.entries<Record<string, any>>(schema.properties || {})) {
+      for (const [name, property] of Object.entries<Record<string, any>>(properties)) {
+        // Read through the reference, because what decides both of these is the schema the property
+        // resolves to and a document is as free to name it as to write it out.
+        const declared = deref(property, definitions) || property;
         // There is no useful placeholder for a file, and an empty string would upload zero bytes
         // while looking intentional (§7.5).
-        if (property.format === 'binary') continue;
-        const carries = property.example !== undefined || property.default !== undefined;
+        if (declared.format === 'binary') continue;
+        const carries = declared.example !== undefined || declared.default !== undefined;
         if (!required.includes(name) && !carries) continue;
-        seeded[name] = seedFromSchema(property);
+        seeded[name] = seedFromSchema(property, definitions, followed);
       }
       return seeded;
     }
+  }
+
+  switch (resolved.type) {
     case 'array':
       return [];
     case 'integer':
@@ -131,13 +197,13 @@ const asStructuredBody = (mediaType: string, value: unknown): RequestBody => {
  */
 const assembleMultipart = async (
   step: NormalizedStep,
-  operation: Record<string, any>,
+  resolved: ResolvedOperation,
   merged: unknown,
   read: FileReader
 ): Promise<RequestBody> => {
-  const content = operation.requestBody?.content?.['multipart/form-data'] || {};
+  const content = resolved.operation.requestBody?.content?.['multipart/form-data'] || {};
   const encoding: Record<string, { contentType?: string }> = content.encoding || {};
-  const schema: Record<string, any> = content.schema || {};
+  const schema: Record<string, any> = deref(content.schema, resolved.definitions) || {};
   const parts: MultipartPart[] = [];
 
   for (const [name, value] of Object.entries(isMapping(merged) ? merged : {})) {
@@ -171,7 +237,7 @@ const assembleMultipart = async (
   // validation error naming the part — a better failure than a request the server rejects for
   // reasons the flow cannot explain.
   for (const required of schema.required || []) {
-    const declared = schema.properties?.[required];
+    const declared = deref(schema.properties?.[required], resolved.definitions);
     if (declared?.format === 'binary' && !parts.some((part) => part.name === required)) {
       throw new MaterializationError('missing-binary-part', `${step.id}: the required part ${required} has no file`);
     }
@@ -408,7 +474,10 @@ export const materialize = async (
   const raw = mediaType !== undefined && !isStructured(mediaType) && mediaType !== 'multipart/form-data';
 
   const seed = mediaType && !raw
-    ? merge(seedFromSchema(requestSchema(resolved, mediaType)), requestExample(resolved.operation, mediaType))
+    ? merge(
+        seedFromSchema(requestSchema(resolved, mediaType), resolved.definitions),
+        requestExample(resolved.operation, mediaType)
+      )
     : undefined;
 
   const authored = {
@@ -434,7 +503,7 @@ export const materialize = async (
     }
     body = await assembleBinary(step, reference, scope, read);
   } else if (mediaType === 'multipart/form-data') {
-    body = await assembleMultipart(step, resolved.operation, value.body, read);
+    body = await assembleMultipart(step, resolved, value.body, read);
     validatableBody = withoutFileParts(value.body);
   } else if (mediaType !== undefined) {
     if (containsFile(value.body)) {

@@ -1,0 +1,20 @@
+# §19.2 — a multipart operation whose parts are reached through `$ref`. §7.1 seeds no placeholder
+# for a `format: binary` property, and the property is only recognizable as one once the reference
+# is followed.
+#
+# §10.1's request check is off so that the only thing left to refuse the step is §7.5's own rule
+# about a required part with no file — the check the reference would otherwise hide.
+version: 1
+
+meta:
+  name: A binary part behind a ref
+
+apis:
+  real: ../../specs/r19-real-world-v1.yml
+
+steps:
+  - id: upload
+    operation: real#r19UploadDocument
+    validateRequest: false
+    body:
+      label: contract

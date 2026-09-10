@@ -1,0 +1,19 @@
+openapi: 3.0.3
+# A document whose request schema lives in another file, which is how a corpus of several APIs
+# shares one definition. Its own components section is empty for a reason: what a binding reads is
+# this file, so the schema the operation names is not in what the engine has.
+info: { title: Webhook API, version: 1.0.0 }
+servers:
+  - url: https://r19-hooks.example.com
+paths:
+  /r19/webhooks:
+    post:
+      operationId: r19RegisterWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './r19-external-schemas-v1.yml#/components/schemas/Webhook'
+      responses:
+        '201': { description: Created }

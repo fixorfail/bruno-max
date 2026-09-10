@@ -897,6 +897,25 @@ every request.
 **`format: binary` properties are never seeded**, required or not: there is no useful placeholder
 for a file, and an empty string would upload zero bytes while looking intentional (§7.5).
 
+**A schema is followed through its `$ref` before it is seeded.** A real document names its schemas
+far more often than it writes them out, and a seed that stopped at the reference would send an empty
+body from a step that looks complete — silently, since the step declares nothing and appears
+finished. The rules above read the schema a property *resolves to*, so a `format: binary` behind a
+reference is still not seeded. Only references within the bound document resolve (§6.2); one naming
+another file seeds nothing, and §14.3's `external-schema-ref` warning is what says so rather than
+leaving the step to fail one dispatch later.
+
+**A composed schema is seeded by kind.** `allOf` is an intersection, so every branch contributes and
+their `required` names union. `oneOf` and `anyOf` are a choice, so the seed takes the **first**
+branch — a body merged from alternatives satisfies none of them, and §10.1 would reject a request
+the engine had assembled itself. §14.3's field checks merge all three instead, because the question
+there is whether a name is known anywhere; that asymmetry is deliberate and R19.6 pins both halves.
+
+**A schema that refers back to itself has no finite seed**, directly or through a second schema, so
+the seed stops at the reference that closes the cycle and the property it would have produced is
+absent. The guard carries the references followed to reach a node rather than every reference seen —
+a schema named twice on different branches is expanded twice, which is not a cycle.
+
 This is what makes a step terse: a five-field payload where one field matters is three lines, not
 eight. It also means **a step's effective payload changes when the spec's examples change.**
 
@@ -4630,6 +4649,8 @@ ever tell the author.
 | `subflow-dataset` | A sub-flow declares `dataset:`; only a top-level flow iterates (§12.4) |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry is named for one of §7.3's namespaces, which shadows it everywhere — or is named `env` or `vars`, which shadow it inside every script while `{{...}}` still reads it (§7.3, §8.2) |
 | `bru-unavailable` *(warning)* | A `script:` references `bru`, which is not in a flow script's scope in either sandbox — it throws at run time. Data a later step needs moves through `outputs:` or a `shared:` slot, which the graph and §9.1's ordering can see (§8.2) |
+| `unknown-dataset-format` | `dataset:` names a file whose extension is not one of §9.4's three. The loader refuses it by throwing, which rejects the run rather than failing a step — so validation is the only place it can be reported against the flow that caused it |
+| `external-schema-ref` *(warning)* | The operation's schema reaches a `$ref` in another document. Only the bound one is read (§6.2), so the step's body and parameters are checked against nothing and the run fails it when the validator cannot compile the reference (§14.3) |
 | `required-param-without-library` *(warning)* | A flow declares a `required` param with no `default` and is not marked `meta.library: true` (§12.5) |
 | `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
 | `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
@@ -6262,7 +6283,7 @@ in two tables is a UI deferral that will drift.
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
 | **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which `bru flow run` leaves empty by design (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
-| **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
+| **Real-world OpenAPI robustness** | The engine had never met a document that names its schemas rather than writing them out; R19.1–R19.6 closed `$ref` bodies, cycles, vendor extensions, composed bodies and the missing-`operationId` fallback, and `external-schema-ref` now names the one boundary left | **Reading the second document.** The warning says a `$ref` leaves the file; following it needs a second `readSpec` per binding, path resolution relative to the referrer, a cache, cross-file cycle detection, and an answer for what `rooted()` means with two sources. Worth doing when a real document forces it, not before. **Swagger 2** is the other gap: the machinery is there and no fixture is |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an
 oversight to rediscover. A row moves from §19.2 to §19.1 when someone commits to a release for it,

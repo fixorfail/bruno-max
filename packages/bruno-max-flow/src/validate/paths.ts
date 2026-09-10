@@ -12,6 +12,8 @@
  * a fixture can be selected by something an earlier step produced, and there is nothing to look up
  * until then. Containment is still enforced at run time, where the value exists.
  */
+import path from 'node:path';
+
 import { FileRef, type NormalizedFlow } from '../document';
 import { resolveWithin } from '../files';
 import type { Report } from './report';
@@ -57,6 +59,9 @@ const sourcesIn = (flow: NormalizedFlow): Located[] => {
   return found;
 };
 
+/** §9.4's three, spelled as `path.extname` reports them. `.yaml` is the same loader as `.yml`. */
+const DATASET_FORMATS = ['.csv', '.json', '.yml', '.yaml'];
+
 export const checkPaths = async (
   flow: NormalizedFlow,
   report: Report,
@@ -84,6 +89,19 @@ export const checkPaths = async (
       await read(resolved);
     } catch {
       report.error('missing-file', `${where} does not resolve to a file that exists`, stepId, node);
+      continue;
+    }
+
+    // §9.4's three formats, checked here rather than left to the loader: `parseDataset` refuses an
+    // extension it does not know by *throwing*, which rejects the run rather than failing a step —
+    // so without this a flow validates clean and then dies with no step to attribute it to.
+    if (where === 'dataset' && !DATASET_FORMATS.includes(path.extname(source).toLowerCase())) {
+      report.error(
+        'unknown-dataset-format',
+        `dataset ${source} is not one of the formats §9.4 supports — ${DATASET_FORMATS.join(', ')}`,
+        stepId,
+        node
+      );
     }
   }
 };

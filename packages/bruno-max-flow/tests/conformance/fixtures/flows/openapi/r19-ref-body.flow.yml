@@ -1,0 +1,14 @@
+# §19.2 — a request body seeded from a schema the operation reaches through `$ref`, which is how
+# nearly every real document writes one. The step supplies nothing, so the body it sends is §7.1's
+# seed and nothing else.
+version: 1
+
+meta:
+  name: A body seeded through a ref
+
+apis:
+  real: ../../specs/r19-real-world-v1.yml
+
+steps:
+  - id: create_invoice
+    operation: real#r19CreateInvoice

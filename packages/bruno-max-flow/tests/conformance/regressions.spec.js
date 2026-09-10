@@ -710,6 +710,183 @@ describe('R4d — file sources', () => {
   });
 });
 
+/**
+ * §9.4's remaining row — a `dataset:` inside a sub-flow — is R8.7's `subflow-dataset` diagnostic in
+ * `validation.spec.js`, where the rest of what a `uses:` step may carry is checked.
+ */
+describe('R4d2 — dataset formats and row typing', () => {
+  const F1 = 'f1-role-matrix.flow.yml';
+  const dataset = (name) => path.join(FLOWS, '..', 'datasets', name);
+  const typing = (mutate) => variant(flow('r4d2-typing.flow.yml'), mutate);
+
+  /**
+   * The stubs answer from the request alone. F1's own spec keys its responses on the iteration
+   * index, which is the one thing that must not decide anything here: a stub told which row it is
+   * serving would answer three formats identically however differently they had been read.
+   */
+  const roleOf = (request) => String(request.auth.bearer.token).replace('tok-', '');
+
+  const responses = {
+    login: (request) => ({
+      status: 200,
+      body: { data: { access_token: `tok-${request.body.value.email.split('@')[0]}` } }
+    }),
+    getMe: (request) => ({ status: 200, body: { data: { id: 'u-1', role: roleOf(request) } } }),
+    addProduct: (request) =>
+      roleOf(request) === 'viewer'
+        ? { status: 403, body: { error: { message: 'insufficient role' } } }
+        : { status: 201, body: { data: { id: 'prod-1' } } },
+    getProduct: { status: 200, body: { data: { id: 'prod-1', name: 'Widget', price: 1299 } } },
+    deleteProduct: { status: 204 }
+  };
+
+  /** F1 with its `dataset:` pointed at the same rows in another format, and nothing else changed. */
+  const runAs = (extension) => {
+    const { entry, files } = variant(F1, (document) => {
+      document.dataset = `../datasets/roles.${extension}`;
+    });
+    return runFlow(entry, { responses, files });
+  };
+
+  const tables = (run) => run.iterations.map((_, index) => run.table(index));
+  const rows = (run) => run.iterations.map((iteration) => iteration.row);
+
+  describe('the three formats are interchangeable', () => {
+    let csv;
+    let json;
+    let yaml;
+
+    beforeAll(async () => {
+      [csv, json, yaml] = await Promise.all([runFlow(F1, { responses }), runAs('json'), runAs('yml')]);
+    });
+
+    // Equality is worth something only against a run that did something: three datasets that read
+    // as empty agree as readily as three that iterated.
+    it('runs the three rows of the CSV F1 declares', () => {
+      expect(csv.status).toBe('passed');
+      expect(rows(csv)).toEqual([
+        { email: 'admin@example.com', role: 'admin', canCreate: true },
+        { email: 'editor@example.com', role: 'editor', canCreate: true },
+        { email: 'viewer@example.com', role: 'viewer', canCreate: false }
+      ]);
+    });
+
+    // Each run has to have read the file its own format names: three runs over the same CSV would
+    // agree for the wrong reason.
+    it('reads the file each format names, and no other', () => {
+      const datasets = (run) => [...new Set(run.reads.filter((read) => read.includes(`${path.sep}datasets${path.sep}`)))];
+
+      expect(datasets(csv)).toEqual([dataset('roles.csv')]);
+      expect(datasets(json)).toEqual([dataset('roles.json')]);
+      expect(datasets(yaml)).toEqual([dataset('roles.yml')]);
+    });
+
+    // The three formats exist to be interchangeable, so the assertion is between them. Three
+    // separate green runs would leave an implementation that typed CSV by its own rule passing.
+    it('gives the JSON and YAML datasets the same iteration outcomes', () => {
+      expect(tables(json)).toEqual(tables(csv));
+      expect(tables(yaml)).toEqual(tables(csv));
+    });
+
+    it('gives them the same rows, typed the same way', () => {
+      expect(rows(json)).toEqual(rows(csv));
+      expect(rows(yaml)).toEqual(rows(csv));
+    });
+  });
+
+  describe('a CSV cell', () => {
+    let run;
+
+    beforeAll(async () => {
+      run = await runFlow(flow('r4d2-typing.flow.yml'), { responses: { getState: STATE } });
+    });
+
+    it('carries the type §10.2 gives its literal', () => {
+      expect(run.iterations[0].row).toEqual({
+        canCreate: true,
+        tier: 'premium',
+        zip: 2134,
+        note: '007',
+        price: 1299,
+        empty: '',
+        nulled: null
+      });
+    });
+
+    it('compares as that type wherever the flow reads it', () => {
+      expect(run.outcome('typed')).toBe('success');
+      expect(run.step('typed').assertions.filter((assertion) => !assertion.passed)).toEqual([]);
+    });
+
+    // `02134` losing its leading zero is the cost of inferring a cell's type, decided in §9.4 and
+    // asserted here so it stays a decision: a cell that has to keep its digits is quoted, as
+    // `note` is, and quoting is the only thing that makes a cell of digits a string.
+    it('drops a leading zero, and keeps one that was quoted', () => {
+      expect(run.outcome('zip_as_written')).toBe('skipped:condition-false');
+      expect(run.step('typed').assertions).toContainEqual({
+        expr: 'row.note eq "007"',
+        passed: true,
+        expected: '007',
+        actual: '007'
+      });
+    });
+
+    it('reads an empty cell as an empty string, and only the literal as null', () => {
+      expect(run.outcome('empty_as_null')).toBe('skipped:condition-false');
+    });
+  });
+
+  // §10.2's rule types a *cell*. A JSON or YAML row arrives typed already, so a string that spells
+  // a literal stays a string — the format converted from is what decides, not the loader.
+  it('does not re-infer a native value that spells a literal', async () => {
+    const { entry, files } = typing((document) => {
+      document.dataset = '../../datasets/typing-native.json';
+    });
+    const run = await runFlow(entry, {
+      responses: { getState: STATE },
+      files: { ...files, [dataset('typing-native.json')]: JSON.stringify([{ canCreate: 'true' }]) }
+    });
+
+    expect(run.iterations[0].row.canCreate).toBe('true');
+    expect(run.outcome('typed')).toBe('skipped:condition-false');
+  });
+
+  /**
+   * §9.4's last row. `parseDataset` refuses an unknown extension by *throwing*, which rejects the
+   * run rather than failing a step — so the only thing that can report this usefully is `validate`,
+   * before anything is dispatched. The file has to exist, or `missing-file` would be what answered.
+   */
+  it.each([['.tsv'], ['.xml']])('reports a %s dataset as a validation error naming the three formats', async (extension) => {
+    const source = `../../datasets/roles${extension}`;
+    const { entry, files } = variant(flow('r4d2-typing.flow.yml'), (document) => {
+      document.dataset = source;
+    });
+    const diagnostics = await validate(entry, {
+      files: { ...files, [dataset(`roles${extension}`)]: 'email\trole\n' }
+    });
+
+    const [complaint] = diagnostics.filter((entry) => entry.code === 'unknown-dataset-format');
+    expect(complaint.severity).toBe('error');
+    expect(complaint.message).toContain('.csv');
+    expect(complaint.message).toContain('.json');
+    expect(complaint.message).toContain('.yml');
+    // The file is there; the format is what is wrong, and saying otherwise sends the author looking
+    // for a missing file.
+    expect(diagnostics.map((entry) => entry.code)).not.toContain('missing-file');
+  });
+
+  it('says nothing about the three it does support', async () => {
+    for (const name of ['roles.csv', 'roles.json', 'roles.yml']) {
+      const { entry, files } = variant(flow('r4d2-typing.flow.yml'), (document) => {
+        document.dataset = `../../datasets/${name}`;
+      });
+      const diagnostics = await validate(entry, { files });
+
+      expect({ name, codes: diagnostics.map((issue) => issue.code) }).toEqual({ name, codes: [] });
+    }
+  });
+});
+
 describe('R4e — multipart and binary bodies', () => {
   const at = (name) => path.join(FLOWS, 'regressions', 'fixtures', name);
   const INVOICE = Buffer.from('%PDF-1.4 invoice {{not interpolated}}');

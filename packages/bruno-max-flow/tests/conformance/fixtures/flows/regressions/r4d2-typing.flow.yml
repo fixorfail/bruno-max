@@ -1,0 +1,40 @@
+# R4d2 — a CSV cell carries the type §10.2's operand rule gives it, which is what lets the same
+# flow behave identically whether its rows came from CSV, JSON or YAML (§9.4). The two conditions
+# at the end are the negative half: each names the type the cell is *not*, and a step that ran
+# would say the inference had gone the other way.
+version: 1
+
+meta:
+  name: R4d2 — CSV cell typing
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+dataset: ../../datasets/typing.csv
+
+steps:
+  - id: typed
+    operation: regress-api#getState
+    when: row.canCreate eq true
+    assert:
+      - row.canCreate isBoolean
+      - row.tier eq premium
+      - row.price gt 1000
+      - row.price isNumber
+      - row.zip eq 2134           # a leading zero does not survive inference — decided, not a defect
+      - row.note eq "007"         # quoting is how a cell of digits stays a string
+      - row.note isString
+      - row.empty eq ""
+      - row.nulled isNull
+
+  - id: zip_as_written
+    operation: regress-api#getState
+    when: row.zip eq "02134"
+
+  - id: empty_as_null
+    operation: regress-api#getState
+    depends: [typed]                # not on the step above, which the implicit sequence would make
+    when: row.empty isNull

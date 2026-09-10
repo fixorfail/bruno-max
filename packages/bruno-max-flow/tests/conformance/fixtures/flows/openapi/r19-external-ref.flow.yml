@@ -1,0 +1,16 @@
+# §19.2 — a request body whose schema lives in another document. Nothing in the engine reads a
+# second file, so the reference resolves to nothing and the step sends whatever it was given.
+version: 1
+
+meta:
+  name: A body schema in another document
+
+apis:
+  hooks: ../../specs/r19-external-ref-v1.yml
+
+steps:
+  - id: register
+    operation: hooks#r19RegisterWebhook
+    body:
+      url: https://hooks.example.com/inbound
+      event: invoice.created

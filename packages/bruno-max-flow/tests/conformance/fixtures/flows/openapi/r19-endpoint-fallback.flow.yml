@@ -1,0 +1,20 @@
+# §19.2 — §6.1's method+path identity against a document that names none of its operations, which
+# is the only identity such a document offers.
+version: 1
+
+meta:
+  name: Steps addressed by method and path
+
+apis:
+  legacy: ../../specs/r19-no-operation-id-v1.yml
+
+steps:
+  - id: list
+    operation: legacy#GET /r19/things
+    query:
+      limit: 10
+
+  - id: create
+    operation: legacy#POST /r19/things
+    body:
+      name: widget

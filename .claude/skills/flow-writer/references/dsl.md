@@ -733,6 +733,8 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `subflow-dataset` | `dataset:` in a sub-flow; only a top-level flow iterates |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry named for one of the reserved namespaces, or named `env` or `vars`, which every script reads as `ctx.env` and `ctx.vars` |
 | `bru-unavailable` *(warning)* | A script mentions `bru`, which flow scripts do not have — read through `ctx`, and hand a value to a later step with `outputs:` or a `shared:` slot |
+| `unknown-dataset-format` | `dataset:` names something that is not `.csv`, `.json` or `.yml`/`.yaml` |
+| `external-schema-ref` *(warning)* | The operation's schema `$ref`s another file; only the bound document is read, so the body is unchecked and the run will fail the step |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
 | `unused-output` *(warning)* | An output nothing in the flow reads |
 | `unused-slot` *(warning)* | A declared slot nothing reads |

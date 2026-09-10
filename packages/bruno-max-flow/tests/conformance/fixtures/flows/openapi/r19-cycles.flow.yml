@@ -1,0 +1,19 @@
+# §19.2 — seeding a schema that refers back to itself, directly and through a second schema. No
+# finite payload satisfies either, so §10.1's request check is off: what is under test is that the
+# seed terminates and where it stops, not that the document can be satisfied.
+version: 1
+
+meta:
+  name: Schemas that refer to themselves
+
+apis:
+  real: ../../specs/r19-real-world-v1.yml
+
+steps:
+  - id: create_tree
+    operation: real#r19CreateTree
+    validateRequest: false
+
+  - id: create_ledger
+    operation: real#r19CreateLedger
+    validateRequest: false

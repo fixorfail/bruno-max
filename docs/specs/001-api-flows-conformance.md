@@ -121,10 +121,14 @@ The exceptions are listed rather than allowed to accumulate silently:
 | R13.3 | `bruno-cli/tests/fork/flow/schema.spec.js`, and `schema.integration.spec.js` for the command line itself | The engine owns the schema and pins its contents in `schema.spec.js`; which version an invocation emits and where it lands are §14's, and only the CLI has them |
 | R4k | Asserted throughout, by every scenario that names an outcome | §14.6's vocabulary is a property of every reason string in the suite; a dedicated scenario would restate what forty assertions already pin |
 
-**R4d2 is the one requirement with no test anywhere.** R4m was the wider gap and is closed: §5.4's
-schema is built (`src/schema/`), and `schema.spec.js` runs it over every fixture flow in this file.
-One *row* is still open beside it — R4h's `--dry-run` case, registered as an `it.todo` because 001
-§19.1 schedules the flag for v2 and there is nothing yet to run it against.
+**Every requirement registered here now has a test.** R4d2 was the last without one and is closed:
+`regressions.spec.js` asserts the three dataset formats against F1 as an equality *between* the runs
+rather than three green runs, and pins each CSV cell's inferred type. R4m, the wider gap before it,
+is closed too — §5.4's schema is built (`src/schema/`) and `schema.spec.js` runs it over every
+fixture flow in this file.
+
+One *row* is still open, and only one: R4h's `--dry-run` case, registered as an `it.todo` because
+001 §19.1 schedules the flag for v2 and there is nothing yet to run it against.
 
 ## 3. F1 — Role matrix
 
@@ -2529,6 +2533,95 @@ invalid file, `2` again for warnings under `--strict`, `3` usage error, `4` canc
 
 ---
 
+### R19.1 — A request body seeded through a `$ref`
+
+**Pins:** §7.1, §6.2. **Finding:** `seedFromSchema` switched on `type` and returned nothing for
+`{ $ref: … }`, so §7.1 seeded nothing at all for the commonest shape a real document takes — a step
+naming an operation and supplying no `body:` looked complete and sent an empty request.
+
+Bind `r19-real-world-v1.yml` and run a step naming `r19CreateInvoice` with no `body:`.
+
+| Case | Expected |
+|---|---|
+| a body schema written as `{ $ref: … }` | seeded from the referenced schema, nested `$ref`s followed |
+| a `format: binary` property reached through a `$ref` | still not seeded — §7.5's rule reads the schema the property resolves to, not the reference |
+| a required binary part with no file supplied | the step fails `invalid-request` naming the part |
+
+The binary rows are what the fix put at risk: the "no useful placeholder for a file" skip read
+`property.format`, which is `undefined` on a reference, so a working seeder would have invented an
+empty *field* where a file part belongs.
+
+### R19.2 — A step addressed by method and path
+
+**Pins:** §6.1's second identity. Bind `r19-no-operation-id-v1.yml`, the one document in the corpus
+naming none of its operations.
+
+| Case | Expected |
+|---|---|
+| `validateFlow` over a flow written `legacy#GET /r19/things` | no diagnostics |
+| `describeFlow` | each node resolves to its method and path, with no `operationId` |
+| a body field the operation does not declare | still `unknown-field` — the fallback identity does not cost the schema check |
+| `legacy#DELETE /r19/things`, undeclared | `unknown-operation`, naming `DELETE /r19/things` |
+
+### R19.3 — Vendor extensions
+
+`x-` keys at document, path-item, operation, parameter and schema level are ignored rather than
+tripped over. Assert the path item's extension is not indexed as an operation, that no extension
+reaches the materialized request, and that a parameter declared beside one is still enforced.
+
+Path-item level is safe twice over: `indexDocument` reads the eight methods by name, and
+`asEndpoint`'s `^([a-zA-Z]+)\s+` cannot match a hyphenated key, so no reference could address one
+even if it were indexed.
+
+### R19.4 — A schema that refers to itself
+
+**Finding:** following `$ref` without a guard overflows the stack — `Maximum call stack size
+exceeded`, not a diagnostic.
+
+| Case | Expected |
+|---|---|
+| a directly self-referential schema | terminates; the seed stops at the reference closing the cycle |
+| a cycle closing through a second schema | the same |
+
+No finite payload satisfies such a schema, so terminating is the whole of what is being asserted.
+The guard carries the references followed *to reach this node*, not every reference seen, so a
+schema named twice on different branches is still expanded twice.
+
+### R19.6 — A composed request body
+
+**Pins:** §7.1. **Finding:** the same silence R19.1 closed, one construct along — `seedFromSchema`
+switched on `type`, a composed schema declares none, and so `allOf` and `oneOf` bodies seeded
+nothing while the step looked complete. `validate/operation.ts` composed them all along, so
+validation and seeding disagreed about what such an operation's body was.
+
+| Case | Expected |
+|---|---|
+| an `allOf` of two named schemas and an inline branch | every branch's properties seeded, their `required` names unioned; an optional property carrying no example is still left out |
+| a `oneOf` of two named schemas | the **first** branch only — a merge would carry both and satisfy neither |
+| either body, against §10.1 | accepted — the seed the engine built has to pass the schema the engine chose |
+
+The third row is the one that decides the second. Merging alternatives is the obvious
+implementation and it fails that row: the body satisfies no branch of the `oneOf`, so a step the
+author wrote correctly is refused by a request the engine assembled. `enum` already sets the
+precedent for taking the first member.
+
+### R19.5 — A `$ref` into another document
+
+Only the bound document is read (§6.2).
+
+| Case | Expected |
+|---|---|
+| validation of a body whose schema is in another file | one `external-schema-ref` **warning**, naming the reference — one per step, not one per unreadable field |
+| a misspelled field in that body | still undetectable, and the warning is the only thing reporting anything |
+| a document that resolves its own references | no such warning |
+| the same step at run time | fails `invalid-request` — the validator could not compile the reference |
+
+The warning exists because every field check falls silent here in exactly the way it does for an
+operation that genuinely declares a free-form body. Without it a step checked against nothing looks
+validated, and the failure arrives one dispatch later blaming a schema rather than the file boundary
+that caused it. It is a warning and not an error: the flow is well-formed and the document is legal
+OpenAPI — what is missing is the engine's ability to follow it (§6.2).
+
 ## 8. Not covered here
 
 Items deferred as *features* live in the spec's §19; this section lists what these scenarios do not
@@ -2547,9 +2640,13 @@ it belongs in another test suite.
   properties that are contractual — no ANSI off a TTY, redaction, deterministic summary ordering.
 - **Performance under large graphs.** Concurrency *correctness* is covered by F2.2 and R4;
   throughput is not a conformance question.
-- **Real OpenAPI documents.** Fixtures are minimal by design. Parsing real-world specs — vendor
-  extensions, `$ref` cycles, missing `operationId` — is separate ground and should not be entangled
-  with execution semantics.
+- **Real OpenAPI documents, beyond R19.** Fixtures are minimal by design, and R19.1–R19.5 are the
+  deliberate exception: the engine had never met a document that names its schemas rather than
+  writing them out, and seeded nothing when it did. What is still outside these scenarios is
+  **multi-document resolution** — R19.5 now names the boundary with a warning rather than
+  failing silently, but the second document is still not read — and **Swagger 2 documents**, for
+  which the machinery exists (`indexDocument` carries `definitions`, `deref` resolves
+  `#/definitions/…`) but no fixture does, since `fixtures.spec.js` asserts `openapi: /^3\./`.
 
 ## 9. Finding traceability
 

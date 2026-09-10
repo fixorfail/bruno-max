@@ -2000,6 +2000,8 @@ What it reports:
 | `subflow-dataset` | `dataset:` in a sub-flow; only a top-level flow iterates |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry named `steps`, `row`, `params`, `shared`, `flow`, `pre` or `process` — the namespace shadows it. Also `env` or `vars`, which a script reaches as `ctx.env` and `ctx.vars`, so only `{{...}}` can read a variable of either name |
 | `bru-unavailable` *(warning)* | A script mentions `bru`. There is no `bru` in a flow script — reading is `ctx`, and writing a value for a later step is `outputs:` or a `shared:` slot |
+| `unknown-dataset-format` | Your `dataset:` is not a `.csv`, `.json` or `.yml`. Convert it, or rename it if it is really one of those |
+| `external-schema-ref` *(warning)* | The operation's schema lives in a second OpenAPI file. Bruno reads only the document you bound, so nothing here checks your body and the run will fail the step. Inline the schema, or bind the document that holds it |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow that is not marked `meta.library: true`, so a directory run fires it |
 | `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Connector-supplied outputs are never warned about |
 | `unused-slot` *(warning)* | A declared slot nothing reads |
