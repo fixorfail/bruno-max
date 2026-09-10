@@ -719,24 +719,57 @@ const runSuiteFlow = async (win, suite, { suiteId, entry, params, identity, scop
  * which of those flows are still broken, and a suite that halted on the first would answer that
  * question one flow at a time.
  */
-const runSuiteFlows = async (win, suite, { suiteId, roster, scope, tiers, overrides, retryOf, dir, startedAt, ports }) => {
+const runSuiteFlows = async (
+  win,
+  suite,
+  { suiteId, roster, scope, tiers, overrides, retryOf, dir, startedAt, ports, parallel = 1 }
+) => {
   sendSuiteEvent(win, suiteId, {
     type: 'suite:start',
     startedAt,
-    flows: roster.map(({ entry, identity }) => ({ entry, id: identity.id, name: identity.name }))
+    // The scope travels with each flow (003 §4): a selection can span a workspace and the
+    // collections inside it, so the strip that offers to open one cannot assume the suite's.
+    flows: roster.map(({ entry, identity, scope: flowScope }) => ({
+      entry,
+      id: identity.id,
+      name: identity.name,
+      scope: { collectionRoot: flowScope.collectionRoot, workspaceRoot: flowScope.workspaceRoot }
+    }))
   });
 
-  const records = [];
-  for (const flow of roster) {
-    if (suite.cancelled) {
-      // Recorded rather than dropped. A roster that quietly omits the flows the cancel never
-      // reached tells its next reader the suite was smaller than it was — and those are exactly the
-      // flows a rerun of this suite has to include.
-      records.push({ ...flow.identity, outcome: 'cancelled' });
-      continue;
+  /**
+   * 003 §2: up to `flows` at once, one worker per slot, each claiming the next unclaimed index.
+   * `parallel` defaults to 1, so a suite the renderer says nothing about runs exactly as it did.
+   *
+   * **Indexed rather than pushed**, because these are read back in order: `suite.json`'s roster is
+   * what a rerun selects from, and a manifest that reordered itself by whichever flow finished first
+   * would hand the next invocation a different suite each time (003 §1).
+   */
+  const outcome = new Array(roster.length);
+  let next = 0;
+
+  const worker = async () => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= roster.length) return;
+
+      const flow = roster[index];
+      if (suite.cancelled) {
+        // Recorded rather than dropped. A roster that quietly omits the flows the cancel never
+        // reached tells its next reader the suite was smaller than it was — and those are exactly
+        // the flows a rerun of this suite has to include.
+        outcome[index] = { ...flow.identity, outcome: 'cancelled' };
+        continue;
+      }
+      outcome[index] = await runSuiteFlow(win, suite, { suiteId, tiers, overrides, dir, ...flow });
     }
-    records.push(await runSuiteFlow(win, suite, { suiteId, tiers, overrides, dir, ...flow }));
-  }
+  };
+
+  const slots = Math.max(1, Math.min(Math.floor(parallel) || 1, roster.length));
+  await Promise.all(Array.from({ length: slots }, worker));
+
+  const records = outcome.filter(Boolean);
 
   const finishedAt = new Date().toISOString();
   const exitCode = records.reduce((worst, record) => Math.max(worst, SUITE_EXIT[record.outcome]), SUITE_EXIT.passed);
@@ -783,7 +816,7 @@ const runSuiteFlows = async (win, suite, { suiteId, roster, scope, tiers, overri
  * even when the flows come from several — the CLI's rule, where the first selected flow's scope owns
  * the invocation's directory, so a cross-scope selection is still one suite with one `suite.json`.
  */
-const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryOf }) => {
+const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryOf, parallel }) => {
   requireScope(scope);
   if (typeof suiteId !== 'string' || !suiteId) {
     throw new Error('a suite needs a suiteId');
@@ -832,6 +865,9 @@ const startSuite = async (win, { suiteId, scope, flows, tiers, overrides, retryO
     tiers,
     overrides,
     retryOf,
+    // 003 §2's flow count. Absent means 1, so a renderer that has not been taught about it runs the
+    // suite the way it always did.
+    parallel,
     dir,
     startedAt,
     ports

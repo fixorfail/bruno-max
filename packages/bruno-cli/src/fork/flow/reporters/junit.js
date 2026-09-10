@@ -71,10 +71,15 @@ const metaProperties = (meta) =>
  * *skipped*, so a report that trusted the step's own status would carry a failing suite whose every
  * testcase reads green — the one shape of this a CI dashboard cannot show.
  */
-const testcaseFor = (step, flowId, decidedBy) => {
+const testcaseFor = (step, flowId, decidedBy, file) => {
   const testcase = {
     '@name': clean(step.id),
     '@classname': clean(flowId),
+    // The *flow's* path, on every one of its steps: a runner that narrows a file list from this
+    // report reruns the flow, which is the only unit `bru flow run` takes. `junit-flows` is the
+    // better report to point one at — one case per flow rather than per step — but a runner given
+    // this one should still reconstruct something runnable rather than nothing.
+    ...(file ? { '@file': clean(file) } : {}),
     '@time': seconds(step.durationMs)
   };
 
@@ -133,7 +138,7 @@ const systemOut = (record, result) => {
 const iterationSuite = (record, iteration, result, { cwd, hostname }) => {
   const decidedBy = result.decidedBy || [];
   const steps = reportedSteps(iteration.steps);
-  const cases = steps.map((step) => testcaseFor(step, record.id, decidedBy));
+  const cases = steps.map((step) => testcaseFor(step, record.id, decidedBy, forDisplay(record.file, cwd)));
   const counts = { failures: 0, errors: 0, skipped: 0 };
   for (const { counted } of cases) if (counted) counts[counted] += 1;
 
@@ -216,6 +221,9 @@ const invalidSuite = (record, { cwd, hostname }) => {
       {
         '@name': clean(record.id),
         '@classname': clean(record.id),
+        // A flow that never ran is exactly what a rerun should pick up, so it carries the same
+        // attribute the steps of a flow that did carry.
+        '@file': clean(forDisplay(record.file, cwd)),
         '@time': seconds(record.durationMs),
         ...outcomeElement('error', diagnosticsError(diagnostics))
       }

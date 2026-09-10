@@ -934,14 +934,29 @@ describe('FlowSidebarSection', () => {
       });
 
       /**
-       * They are the overflow menu's only items, so with no folders to fold there is nothing behind
-       * the control and it is not drawn — rather than opening onto an empty list.
+       * The menu is absent when there is nothing behind it, rather than opening onto an empty list —
+       * which now takes both of its possible contents being empty. 003 §2's flow count is the other,
+       * and it is offered only where it could change something (more than one flow to run), so a
+       * section with one flow and no folders still has no menu at all.
        */
-      it('take the menu with them when the section holds no folders', () => {
-        renderSection({ flows, workspaces, activeWorkspaceUid: 'one' });
+      it('take the menu with them when the section holds no folders and one flow', () => {
+        renderSection({ flows: [flows[0]], workspaces, activeWorkspaceUid: 'one' });
 
         expect(screen.queryByTestId('flows-header-actions')).not.toBeInTheDocument();
         expect(screen.getByTestId('flows-header-add')).toBeInTheDocument();
+      });
+
+      /**
+       * With more than one flow the menu carries 003 §2's count even without folders — the rule is
+       * that it is never *empty*, not that folders are the only thing that can fill it.
+       */
+      it('leave the menu holding the flow count when there is more than one flow to run', () => {
+        renderSection({ flows, workspaces, activeWorkspaceUid: 'one' });
+
+        openHeaderMenu();
+
+        expect(screen.getByTestId('flow-parallel-4')).toBeInTheDocument();
+        expect(screen.queryByTestId('flows-header-actions-menu-expand-folders')).not.toBeInTheDocument();
       });
 
       /** The `+` creates; folding lives next to it rather than inside it. */
@@ -1558,6 +1573,60 @@ describe('FlowSidebarSection', () => {
         }
       ]);
       expect(request.suiteId).toEqual(expect.any(String));
+    });
+
+    /**
+     * 003 §2's flow count. It is set in the overflow menu because the header is a row of icon
+     * buttons, and read off the play button because a setting behind a menu with nothing saying its
+     * current value is one nobody trusts.
+     */
+    describe('how many flows at once', () => {
+      const chooseCount = (count) => {
+        fireEvent.click(screen.getByTestId('flows-header-actions'));
+        fireEvent.click(screen.getByTestId(`flow-parallel-${count}`));
+      };
+
+      beforeEach(() => localStorage.clear());
+
+      it('sends nothing when it is one, which is what the host already defaults to', async () => {
+        renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+
+        const request = await runRequest();
+
+        expect(request).not.toHaveProperty('parallel');
+      });
+
+      it('sends the chosen count, and says it on the button that uses it', async () => {
+        renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+        expect(screen.getByTestId('flows-header-run')).toHaveAttribute('title', 'Run 2 flows');
+
+        chooseCount(4);
+
+        // The label is the only place the value is visible without opening the menu again.
+        expect(screen.getByTestId('flows-header-run')).toHaveAttribute('title', 'Run 2 flows, 4 at a time');
+        expect(await runRequest()).toMatchObject({ parallel: 4 });
+      });
+
+      /** A throughput fact about this machine, not about a project — so it outlives the section. */
+      it('is remembered across a remount', async () => {
+        const { unmount } = renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+        chooseCount(2);
+        unmount();
+
+        renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+
+        expect(screen.getByTestId('flows-header-run')).toHaveAttribute('title', 'Run 2 flows, 2 at a time');
+      });
+
+      it('marks the count in force rather than dropping it from the list', () => {
+        renderSection({ flows: spanning, workspaces, activeWorkspaceUid: 'one' });
+
+        fireEvent.click(screen.getByTestId('flows-header-actions'));
+
+        // Dropping the chosen row would renumber the list under the cursor every time it was used.
+        expect(screen.getByTestId('flow-parallel-1').closest('[data-testid]')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-parallel-8')).toBeInTheDocument();
+      });
     });
 
     /** 001 §12.5 keeps a library out of a glob run: it runs only once its params have been typed. */

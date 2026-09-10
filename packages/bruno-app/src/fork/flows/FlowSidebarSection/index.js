@@ -15,6 +15,7 @@ import {
   IconPlayerStop,
   IconPlus,
   IconRefresh,
+  IconStack2,
   IconSearch,
   IconSettings,
   IconSitemap,
@@ -29,6 +30,7 @@ import MenuDropdown from 'ui/MenuDropdown';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
+import { usePersistedState } from 'hooks/usePersistedState';
 import { collectionUidForScope } from '../collectionScope';
 import {
   cancelSuiteRun,
@@ -429,6 +431,20 @@ const FlowSidebarSection = () => {
   const flows = useSelector((state) => state.flows.flows);
   const runs = useSelector((state) => state.flows.runs);
   const suiteRun = useSelector((state) => state.flows.suiteRun);
+
+  /**
+   * 003 §2's flow count, for a suite started from here.
+   *
+   * **Persisted, and not per scope.** How many flows a machine should have in flight at once is a
+   * fact about that machine and the API it is pointed at, not about a project — a value that reset
+   * with every workspace would be set again and again to the same number.
+   *
+   * **Offered as a few choices rather than typed.** §2's cost is that this multiplies with a flow's
+   * own `config.concurrency`: four flows of five is twenty requests in flight. A short list keeps the
+   * worst case somewhere a person has thought about, and `runLabel` says what it currently is.
+   */
+  const [flowsAtOnce, setFlowsAtOnce] = usePersistedState({ key: 'flows.suite.parallel', default: 1 });
+
   const sources = useSelector((state) => state.flows.sources);
   const folderExpansion = useSelector((state) => state.flows.folderExpansion);
   const collections = useSelector((state) => state.collections.collections);
@@ -644,6 +660,33 @@ const FlowSidebarSection = () => {
   };
 
   /**
+   * 003 §2's flow count — a value rather than an action, which is why it is a row of choices and not
+   * an item that does something when clicked.
+   *
+   * It sits in this menu because the header is a row of icon buttons and a number input is not one:
+   * §4.1b's arrangement is one control, one job. What keeps it from being a setting nobody can find
+   * is `runLabel` — the play button beside the menu says what the count currently is.
+   *
+   * **Offered while a suite runs, and it takes effect on the next one.** Hiding it would make the
+   * menu change shape mid-suite for a value nothing in flight reads, which §4.1a's folder actions
+   * already argue against.
+   */
+  const parallelActions = () =>
+    [1, 2, 4, 8].map((count) => ({
+      id: `flows-at-once-${count}`,
+      leftSection: IconStack2,
+      label: (
+        <span data-testid={`flow-parallel-${count}`}>
+          {count === 1 ? 'Run one flow at a time' : `Run ${count} flows at a time`}
+        </span>
+      ),
+      // The current value is marked rather than removed: a list that dropped the chosen row would
+      // renumber itself under the cursor every time it was used.
+      disabled: count === flowsAtOnce,
+      onClick: () => setFlowsAtOnce(count)
+    }));
+
+  /**
    * Both actions are offered whenever there are folders at all, rather than one of them switching to
    * the other once everything is open.
    *
@@ -669,12 +712,22 @@ const FlowSidebarSection = () => {
       ]
     : [];
 
-  const menuActions = [...suiteActions(), ...folderActions];
   const suiteProgress = suiteRunning
     ? `${suiteRun.flows.filter((flow) => flow.state === 'done').length} / ${suiteRun.flows.length}`
     : undefined;
 
   const runnable = useMemo(() => runnableFlowsOf(groups), [groups]);
+
+  /**
+   * The count is offered only where it can change something. With one flow to run, or none, every
+   * choice means the same thing — and offering it in an otherwise empty section would put a menu
+   * back where §4.1a took one away, opening onto a setting about flows that are not there.
+   */
+  const menuActions = [
+    ...suiteActions(),
+    ...(runnable.length > 1 ? parallelActions() : []),
+    ...folderActions
+  ];
 
   /**
    * §4.1b's play button says what it would run, and when it would run nothing it says why instead.
@@ -688,7 +741,11 @@ const FlowSidebarSection = () => {
     if (!runnable.length) {
       return filter.trim() ? 'No flows match the search' : 'No flows to run';
     }
-    return `Run ${runnable.length} flow${runnable.length === 1 ? '' : 's'}`;
+    const label = `Run ${runnable.length} flow${runnable.length === 1 ? '' : 's'}`;
+    // The count is set in the overflow menu, so the control that *uses* it is where its current
+    // value is legible — a setting behind a menu with nothing saying what it is now is a setting
+    // nobody trusts. One at a time is the default and needs no saying.
+    return flowsAtOnce > 1 ? `${label}, ${flowsAtOnce} at a time` : label;
   };
 
   /**
@@ -725,7 +782,7 @@ const FlowSidebarSection = () => {
         <ActionIcon
           label={runLabel()}
           disabled={runnable.length === 0}
-          onClick={() => dispatch(runFlowSelection(runnable))}
+          onClick={() => dispatch(runFlowSelection(runnable, flowsAtOnce))}
           data-testid="flows-header-run"
         >
           <IconPlayerPlay size={14} stroke={1.5} aria-hidden="true" />

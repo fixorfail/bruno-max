@@ -380,3 +380,53 @@ describe('--retries and --retry-failed', () => {
     expect(xml).toMatch(/<system-out>[^<]*flaky[^<]*attempt 2[^<]*<\/system-out>/);
   });
 });
+
+/**
+ * The attribute a CI runner reconstructs a command from — 003 §1, and the half of the CircleCI
+ * rerun story that lives in the report rather than in the pipeline.
+ *
+ * CircleCI's rerun-failed reads the previous run's JUnit, narrows the file list to the cases that
+ * failed, and runs the same command over what is left. That only works if what it reads back is a
+ * path the command accepts, which `id` is not: §5.2 strips `.flow.yml` and is relative to the scope
+ * root rather than to where the command was typed.
+ */
+describe('the file a runner reruns', () => {
+  // The opening tag only: a testcase's nested `<property name=…>` elements would otherwise overwrite
+  // the attribute of the same name.
+  const attributes = (xml) =>
+    Object.fromEntries(
+      [...casesOf(xml)[0].match(/^<testcase[^>]*>/)[0].matchAll(/([\w-]+)="([^"]*)"/g)].map(([, key, value]) => [
+        key,
+        value
+      ])
+    );
+
+  it('carries the flow path as `file`, relative to where the command ran', () => {
+    const xml = formatJUnitFlows({ flows: [record()], summary: { flows: {}, steps: {} } }, ENVIRONMENT);
+
+    expect(attributes(xml).file).toBe(path.join('flows', 'checkout.flow.yml'));
+  });
+
+  it('keeps the identity in `name` and `classname`, which are not paths', () => {
+    const xml = formatJUnitFlows({ flows: [record()], summary: { flows: {}, steps: {} } }, ENVIRONMENT);
+    const found = attributes(xml);
+
+    // The two answer different questions, and a runner asking for a path must not get the identity:
+    // `flows/checkout` selects nothing.
+    expect(found.name).toBe('flows/checkout');
+    expect(found.classname).toBe('flows/checkout');
+    expect(found.file).not.toBe(found.name);
+  });
+
+  it('falls back to the absolute path when the flow is outside the working directory', () => {
+    const outside = path.resolve('/elsewhere/flows/remote.flow.yml');
+    const xml = formatJUnitFlows(
+      { flows: [record({ file: outside })], summary: { flows: {}, steps: {} } },
+      ENVIRONMENT
+    );
+
+    // A relative path that climbs out of cwd is not something a globber would have produced, so the
+    // absolute one is the only form that still resolves.
+    expect(attributes(xml).file).toBe(outside);
+  });
+});

@@ -1115,6 +1115,59 @@ describe('a suite of flows', () => {
     fs.rmSync(scopeRoot, { recursive: true, force: true });
   });
 
+  /**
+   * 003 §2 in the app. The renderer says how many flows may be in flight; absent means one, so a
+   * suite from a renderer that knows nothing about this runs exactly as it did.
+   */
+  describe('parallel', () => {
+    /** A run that reports when it starts and finishes only when told, so overlap is observable. */
+    const heldRun = (runId, held) => (options) => {
+      options.onEvent({ type: 'run:start', runId, flow: options.entry, iterationCount: 1 });
+      held.started.push(options.entry);
+      return new Promise((resolve) => {
+        held.release.push(() => {
+          const result = { runId, status: 'passed', captureDir: `/runs/${runId}` };
+          options.onEvent({ type: 'run:end', result });
+          resolve(result);
+        });
+      });
+    };
+
+    /** `startSuite` resolves once the suite is launched; the workers start a few microtasks later. */
+    const settle = async () => {
+      for (let tick = 0; tick < 12; tick += 1) await Promise.resolve();
+    };
+
+    it('runs one flow at a time when the renderer asks for nothing', async () => {
+      const held = { started: [], release: [] };
+      runFlow.mockImplementation(heldRun('run-a', held));
+      const { win, ended } = windowWatchingForTheEnd();
+
+      await startSuite(win, request({ suiteId: 'suite-solo' }));
+      await settle();
+
+      // The second flow has not been taken off the roster while the first is unfinished.
+      expect(held.started).toEqual([checkout]);
+      held.release.forEach((release) => release());
+      await settle();
+      held.release.forEach((release) => release());
+      await ended;
+    });
+
+    it('overlaps flows when the renderer asks for two', async () => {
+      const held = { started: [], release: [] };
+      runFlow.mockImplementation(heldRun('run-a', held));
+      const { win, ended } = windowWatchingForTheEnd();
+
+      await startSuite(win, request({ suiteId: 'suite-pair', parallel: 2 }));
+      await settle();
+
+      expect([...held.started].sort()).toEqual([checkout, refund].sort());
+      held.release.forEach((release) => release());
+      await ended;
+    });
+  });
+
   /** The defect this exists to prevent: a suite of one per flow, five flows deep in the capture root. */
   it('opens one suite directory and runs every flow into it', async () => {
     runFlow.mockImplementationOnce(finishedRun('run-a', 'passed', '/runs/a'));
@@ -1180,9 +1233,11 @@ describe('a suite of flows', () => {
       'suite:flow-end',
       'suite:end'
     ]);
+    // 003 §4: each flow carries its own scope, because a selection can span a workspace and the
+    // collections inside it and the strip that offers to open one cannot assume the suite's.
     expect(events[0].flows).toEqual([
-      { entry: checkout, id: 'flows/checkout', name: 'Checkout' },
-      { entry: refund, id: 'flows/refund', name: 'Refund' }
+      { entry: checkout, id: 'flows/checkout', name: 'Checkout', scope: { workspaceRoot: scopeRoot } },
+      { entry: refund, id: 'flows/refund', name: 'Refund', scope: { workspaceRoot: scopeRoot } }
     ]);
     expect(events[1]).toEqual({ type: 'suite:flow-start', entry: checkout, runId: 'run-a' });
     expect(events[2]).toEqual({ type: 'suite:flow-end', entry: checkout, outcome: 'passed', runId: 'run-a' });

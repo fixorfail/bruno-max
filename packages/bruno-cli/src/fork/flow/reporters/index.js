@@ -90,10 +90,13 @@ const summarize = (records) => {
 const createSuite = ({ now = () => new Date() } = {}) => {
   const records = [];
   let startedAt;
+  /** The selection as §14.1 ordered it, kept so a report can be written in that order. */
+  let roster = [];
 
   return {
     start: (flows) => {
       startedAt = now().toISOString();
+      roster = flows.map((flow) => flow.id);
       return { startedAt, flows };
     },
     flowStarted: (identity) => ({ ...identity, startedAt: now().toISOString() }),
@@ -121,12 +124,28 @@ const createSuite = ({ now = () => new Date() } = {}) => {
     },
     end: ({ exitCode, retryOf }) => {
       const finishedAt = now().toISOString();
+      /**
+       * Roster order, not the order flows finished in (003 §1, R4l).
+       *
+       * These arrive as each flow ends, which under `--flows 1` is the roster order and under
+       * anything higher is whichever finished first — so a report written from them directly would
+       * reorder itself between two identical invocations. A record whose flow is not in the roster
+       * keeps its arrival position at the end rather than being dropped.
+       */
+      const ordered = [...records].sort((left, right) => {
+        const at = (record) => {
+          const index = roster.indexOf(record.id);
+          return index === -1 ? roster.length + records.indexOf(record) : index;
+        };
+        return at(left) - at(right);
+      });
+
       return {
         startedAt,
         finishedAt,
         durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
-        flows: records,
-        summary: summarize(records),
+        flows: ordered,
+        summary: summarize(ordered),
         // The only thing tying a retry to what it re-ran: it opened a suite directory and a report
         // of its own, being a new invocation rather than an edit of the old one.
         ...(retryOf ? { retryOf } : {}),

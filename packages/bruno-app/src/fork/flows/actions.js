@@ -471,7 +471,7 @@ const scopeOf = (flow) => ({ workspaceRoot: flow.workspaceRoot, collectionRoot: 
  * invocation resolves one set of tiers, and a suite that resolved a table per flow would be several
  * invocations wearing one record.
  */
-export const runFlowSelection = (flows) => async (dispatch, getState) => {
+export const runFlowSelection = (flows, parallel) => async (dispatch, getState) => {
   const state = getState();
   const [first] = flows;
   const collection = first.collectionRoot
@@ -488,7 +488,10 @@ export const runFlowSelection = (flows) => async (dispatch, getState) => {
       // panel is holding — the same values a retry of that flow would give it.
       params: suppliedParams(get(state.flows.configurations, [flow.pathname, 'params']))
     })),
-    tiers: tiersFor({ collection, globalEnvironments: state.globalEnvironments })
+    tiers: tiersFor({ collection, globalEnvironments: state.globalEnvironments }),
+    // 003 §2's flow count. Absent means one, which is what the host defaults to — so a caller that
+    // does not care sends nothing rather than a number it had to invent.
+    ...(parallel && parallel > 1 ? { parallel } : {})
   });
 };
 

@@ -95,11 +95,23 @@ const flowProperties = (record, cwd) => {
   ]);
 };
 
-/** A flow as a testcase, plus which count it lands in. */
+/**
+ * A flow as a testcase, plus which count it lands in.
+ *
+ * **`file` is the attribute a CI runner reconstructs a command from**, and it is the flow's path as
+ * typed rather than its §5.2 identity: `id` strips `.flow.yml` and is relative to the *scope* root,
+ * so it round-trips to nothing a globber emits or `bru flow run` accepts. CircleCI's rerun-failed
+ * reads this attribute out of the report, narrows the file list to the cases that failed, and runs
+ * the same command over what is left — which only works if what it reads back is a path.
+ *
+ * It is also still a `<property>`, because the two are read by different things: a dashboard shows
+ * properties, and a runner reads attributes. Dropping either would break one of them.
+ */
 const testcaseFor = (record, cwd) => {
   const testcase = {
     '@name': clean(record.id),
     '@classname': clean(record.id),
+    '@file': clean(forDisplay(record.file, cwd)),
     '@time': seconds(record.durationMs)
   };
 

@@ -7,8 +7,10 @@ import { uuid } from 'utils/common';
 import { useVerticalSplit } from 'fork/hooks/useVerticalSplit';
 import { describeFlow, scopeRootOf } from '../actions';
 import { documentAnchored, stepSelected, iterationSelected, configurationChanged } from '../slice';
+import { collectionUidForScope } from '../collectionScope';
 import FlowGraph from './FlowGraph';
 import IterationStrip from './IterationStrip';
+import SuiteStrip from './SuiteStrip';
 import RunControls from './RunControls';
 import StepDetail from './StepDetail';
 import RunSelector from './RunSelector';
@@ -194,6 +196,30 @@ const FlowTabPane = ({ tab }) => {
   const [showSlotEdges, setShowSlotEdges] = useState(false);
 
   const flow = useSelector((state) => find(state.flows.flows, (entry) => entry.pathname === tab.pathname));
+  const suiteRun = useSelector((state) => state.flows.suiteRun);
+  const collections = useSelector((state) => state.collections.collections);
+  const workspaces = useSelector((state) => state.workspaces.workspaces);
+
+  /**
+   * 003 §4: a chip opens its flow's run view. The scope travels on the roster rather than being
+   * taken from this tab — a selection can span a workspace and the collections inside it, so the
+   * flow behind a chip need not belong to the same collection as the one on screen.
+   */
+  const openSuiteFlow = (entry) => {
+    if (entry.entry === flow?.pathname) {
+      return;
+    }
+
+    dispatch(
+      addTab({
+        uid: uuid(),
+        type: 'flow',
+        pathname: entry.entry,
+        tabName: entry.name || entry.id,
+        collectionUid: collectionUidForScope({ ...entry.scope, collections, workspaces })
+      })
+    );
+  };
   const described = useSelector((state) => state.flows.descriptions[tab.pathname]);
   const run = useSelector((state) => state.flows.runs[tab.pathname]);
   const selectedStep = useSelector((state) => state.flows.selectedStep[tab.pathname]);
@@ -335,6 +361,10 @@ const FlowTabPane = ({ tab }) => {
           <Warnings diagnostics={description.diagnostics} flowPathname={flow.pathname} onOpenDocument={openDocumentAt} />
         ) : null}
       </div>
+
+      {/* 003 §4: the tab draws one flow of a suite; this says what all of them are doing, which
+          under 003 §2 is several at once. Absent unless a suite of more than one is in play. */}
+      <SuiteStrip suite={suiteRun} selectedEntry={flow?.pathname} onSelect={openSuiteFlow} />
 
       {/* §8.3: the selector says which iteration is drawn; the strip says what all of them are
           doing. Under `parallel: > 1` several rows advance at once and the drawing shows one. */}

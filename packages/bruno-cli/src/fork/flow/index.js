@@ -507,6 +507,14 @@ const builder = (yargs) =>
     .option('env-var', { describe: 'Override a single variable (repeatable)', type: 'string' })
     .option('param', { describe: 'Supply a declared params value (repeatable)', type: 'string' })
     .option('concurrency', { describe: 'Override config.concurrency', type: 'number' })
+    // 003 §2: this bounds *flows*, and `--concurrency` bounds steps inside one. They multiply — a
+    // selection at `--flows 3 --concurrency 5` has up to fifteen requests in flight — which is the
+    // cost of leaving `config.concurrency` meaning the same thing wherever a flow is invoked.
+    .option('flows', {
+      describe: 'Run up to n flows at once; 1 (the default) runs the selection one at a time',
+      type: 'number',
+      default: 1
+    })
     .option('max-run-duration', {
       describe: 'Bound the whole run in ms; elapsing takes the cancellation path and exits 4',
       type: 'number'
@@ -854,14 +862,48 @@ const handler = async (argv) => {
     }
   };
 
-  /** The latest outcome of each flow that ran, in path order (§14.1). */
-  const outcomes = new Map();
-  for (const file of flows) {
-    outcomes.set(file, await attempt(file));
-    // Without --bail the whole selection runs, and the exit code reflects the worst outcome
-    // (§14.2) — which needs the rest to have run.
-    if (argv.bail && outcomes.get(file) !== 'passed') break;
-  }
+  /**
+   * §14.1's selection, run `--flows` at a time (003 §2).
+   *
+   * **Keyed in roster order rather than completion order**, because §14.2's exit code, §14.7's
+   * summary and `--retry-failed`'s roster all read this map, and at `--flows 1` the two orders
+   * coincide — which is exactly how a report that reorders itself under concurrency would go
+   * unnoticed until someone diffed two identical invocations.
+   *
+   * **`--bail` drains** (003 §3): it stops the scheduler taking anything new off the roster, and
+   * flows already in flight run to their own end. Cancelling them would report `cancelled` for a
+   * flow that was about to produce a real verdict, which §14.6 keeps for an interrupt rather than a
+   * decision the runner made. So `outcomes` holds the flows that *ran*, which under `--bail` is
+   * fewer than the roster — the same as the sequential loop this replaces.
+   *
+   * One worker per slot, each taking the next unclaimed index: the increment and the read are not
+   * separated by an `await`, so no two workers can claim the same flow.
+   */
+  const runSelection = async (roster) => {
+    const outcome = new Array(roster.length);
+    let next = 0;
+    let stop = false;
+
+    const worker = async () => {
+      while (!stop) {
+        const index = next;
+        next += 1;
+        if (index >= roster.length) return;
+
+        outcome[index] = await attempt(roster[index]);
+        if (argv.bail && outcome[index] !== 'passed') stop = true;
+      }
+    };
+
+    const slots = Math.max(1, Math.min(Math.floor(argv.flows) || 1, roster.length));
+    await Promise.all(Array.from({ length: slots }, worker));
+
+    return roster
+      .map((file, index) => [file, outcome[index]])
+      .filter(([, result]) => result !== undefined);
+  };
+
+  const outcomes = new Map(await runSelection(flows));
 
   /**
    * §14.8's retries. The final attempt is the flow's outcome, so a flow that passes here turns the
@@ -873,7 +915,9 @@ const handler = async (argv) => {
   for (let pass = 0; pass < retries; pass += 1) {
     const again = [...outcomes].filter(([, outcome]) => outcome !== 'passed').map(([file]) => file);
     if (!again.length) break;
-    for (const file of again) outcomes.set(file, await attempt(file));
+    // The same scheduler, so a retry pass is as parallel as the pass it repeats — and `--bail` has
+    // already narrowed `outcomes` to the flows that ran.
+    for (const [file, result] of await runSelection(again)) outcomes.set(file, result);
   }
 
   /**
