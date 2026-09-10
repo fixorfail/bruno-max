@@ -1,0 +1,20 @@
+# The sub-flow half of §12.3's override rule: it declares `failOnStatusCode: false` about itself,
+# and a caller that is strict does not take that away — a library flow means the same thing at
+# every call site.
+version: 1
+
+meta:
+  name: config inheritance — a sub-flow declaring its own
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  failOnStatusCode: false
+
+steps:
+  - id: use
+    operation: regress-api#createThing
+    body:
+      name: child

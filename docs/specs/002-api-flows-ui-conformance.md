@@ -1,6 +1,8 @@
 # 002-C — API Flows UI conformance scenarios
 
-**Status:** Draft — companion to [002-api-flows-ui.md](./002-api-flows-ui.md)
+**Status:** **Implemented** — companion to [002-api-flows-ui.md](./002-api-flows-ui.md). Scenarios
+are covered by the Playwright suite and the hosts' own specs; `ui-registry.spec.js` tracks which of
+them cite their `U…` id, and 53 are covered under a section name rather than an id
 **Owner:** Jake Campbell
 **Last revised:** 2026-09-03
 

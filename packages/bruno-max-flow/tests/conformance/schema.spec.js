@@ -192,6 +192,33 @@ describe('R4m — The document schema', () => {
     });
 
     /**
+     * §6.4: `inherit` means "whatever is above me", and a flow profile has nothing above it. It is
+     * refused rather than resolved, because the two resolutions available are both wrong — mapping
+     * it to `none` sends unauthenticated requests under a profile the author believed was
+     * authenticating, and passing it through leaves each host to answer differently.
+     *
+     * `auth: collection` is what an author reaching for it actually wants, so nothing is lost.
+     */
+    it('refuses a profile declaring inherit, which has no referent at a profile boundary', () => {
+      const { issues } = edit((document) => {
+        document.authProfiles = { user: { mode: 'inherit' } };
+      });
+
+      expect(codes(issues)).toEqual(['schema-violation']);
+      expect(issues[0].node).toEqual(['authProfiles', 'user', 'mode']);
+    });
+
+    it('accepts every other member of Bruno\'s union', () => {
+      for (const mode of ['none', 'awsv4', 'basic', 'bearer', 'digest', 'ntlm', 'oauth1', 'oauth2', 'wsse', 'apikey', 'akamai-edgegrid']) {
+        const { issues } = edit((document) => {
+          document.authProfiles = { user: { mode } };
+        });
+
+        expect({ mode, issues }).toEqual({ mode, issues: [] });
+      }
+    });
+
+    /**
      * The fields *under* a mode are `@usebruno/schema-types`' `Auth` union rather than this format's
      * (§5.4), so the schema claims the `mode` enum and stops. Copying the union here would flag a
      * valid profile the first time upstream added a field to a mode.

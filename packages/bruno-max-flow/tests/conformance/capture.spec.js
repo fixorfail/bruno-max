@@ -13,6 +13,7 @@
  */
 const path = require('path');
 
+const { stepCaptureDir } = require('../../src/capture');
 const { runFlow, variant, FLOWS } = require('./harness');
 
 const FIXTURES = path.dirname(FLOWS);
@@ -161,6 +162,9 @@ describe('R4g2 — run identity is written before the run, not after', () => {
      * §14.5: nothing under the capture root is ever removed. The directory is gitignored and grows
      * with every run, and clearing it is the user's — silently deleting from a directory that may
      * be being archived is a worse failure than the growth it would save.
+     *
+     * There is no removal port to assert was left unused (§3, §13.2), so what this asserts is the
+     * outcome: twelve runs that were already there are all still there afterwards.
      */
     it('removes nothing, however many runs are already there', async () => {
       const existing = Object.fromEntries(
@@ -174,7 +178,6 @@ describe('R4g2 — run identity is written before the run, not after', () => {
         captured: existing
       });
 
-      expect(run.files.removed).toEqual([]);
       for (const target of Object.keys(existing)) expect(run.files.has(target)).toBe(true);
     });
 
@@ -247,7 +250,7 @@ describe('R4g2 — run identity is written before the run, not after', () => {
 
     // `child` is the container and dispatches nothing; `child/use` is the internal step that does.
     expect(run.layout()).toEqual([
-      'child__use/attempt-1.json',
+      'child/use/attempt-1.json',
       'create/attempt-1.json',
       'flow.json',
       'flow.yml',
@@ -275,6 +278,10 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       'run.json',
       'summary.json'
     ]);
+
+    // §14.5's `<n>` is `IterationResult.index` and not a counter of its own, which is what lets 002
+    // §10 open a capture from a result it is already holding.
+    expect(run.result.iterations.map((iteration) => iteration.index)).toEqual([0, 1, 2]);
   });
 
   it('writes nothing at all under --no-capture, and reports the same run', async () => {
@@ -374,6 +381,64 @@ describe('R4g2 — run identity is written before the run, not after', () => {
       expect(run.files.read(path.join(run.captureDir, 'consume/attempt-1.response.pdf')).toString('utf8'))
         .toBe('%PDF-1.4 report');
     });
+  });
+});
+
+/**
+ * §14.5's path rule itself, asserted on the function rather than through a run.
+ *
+ * A run can only show the layout for the ids its fixture happens to use, and the cases that decide
+ * whether the rule is *sound* are the ones no reasonable flow contains: a step named after a Windows
+ * device, a name past the segment cap, and — the one that made this rule change — two different
+ * steps whose ids differ only in how a separator is spelled.
+ */
+describe('§14.5 the step directory', () => {
+  const RUN = path.join(CAPTURE_ROOT, 'run-1');
+
+  const dirFor = (stepId, iteration) => path.relative(RUN, stepCaptureDir(RUN, stepId, iteration));
+
+  it('gives a top-level step one directory', () => {
+    expect(dirFor('create')).toBe('create');
+  });
+
+  it('nests a sub-flow\'s namespaced id, one directory per segment', () => {
+    expect(dirFor('auth/login')).toBe(path.join('auth', 'login'));
+  });
+
+  it('nests to whatever depth a sub-flow is composed to', () => {
+    expect(dirFor('outer/inner/leaf')).toBe(path.join('outer', 'inner', 'leaf'));
+  });
+
+  it('keeps a top-level step whose id spells the separator distinct from the sub-flow step', () => {
+    // Both are legal ids (§5.3 allows `_` anywhere), and flattening `/` to `__` made them one
+    // directory that overwrote its own attempts.
+    expect(dirFor('auth__login')).not.toBe(dirFor('auth/login'));
+  });
+
+  it('escapes a Windows device name in any segment, not only in a whole id', () => {
+    expect(dirFor('con')).toBe('con_');
+    expect(dirFor('con/login')).toBe(path.join('con_', 'login'));
+    expect(dirFor('auth/nul')).toBe(path.join('auth', 'nul_'));
+  });
+
+  it('caps each segment on its own, so one long name does not truncate its siblings away', () => {
+    const long = 'a'.repeat(80);
+
+    const [parent, child] = dirFor(`${long}/${long}b`).split(path.sep);
+
+    expect(parent.length).toBeLessThanOrEqual(64);
+    expect(child.length).toBeLessThanOrEqual(64);
+    expect(parent).not.toBe(child);
+  });
+
+  it('gives one long name the same directory wherever it is nested', () => {
+    const long = 'a'.repeat(80);
+
+    expect(dirFor(`${long}`)).toBe(dirFor(`parent/${long}`).split(path.sep)[1]);
+  });
+
+  it('puts the iteration above the step, and only where there is one', () => {
+    expect(dirFor('auth/login', 2)).toBe(path.join('iteration-2', 'auth', 'login'));
   });
 });
 

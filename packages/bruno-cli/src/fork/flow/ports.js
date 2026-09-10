@@ -61,7 +61,6 @@ const createPorts = ({ collectionPath, sandbox }) => ({
     await fs.promises.writeFile(target, data);
   },
   listDirectory: async (target) => fs.promises.readdir(target),
-  removeDirectory: async (target) => fs.promises.rm(target, { recursive: true, force: true }),
   readSpec,
   runScript: createRunScript({ collectionPath, sandbox })
 });

@@ -1,0 +1,22 @@
+# §12.3 — `config:` is configuration, so it inherits. The caller turns `failOnStatusCode` off and
+# the sub-flow, which declares no `config:`, runs under that too.
+version: 1
+
+meta:
+  name: config inheritance — a caller's defaults reach its sub-flow
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  failOnStatusCode: false
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: child
+    uses: ./r4-config-inherit-child.flow.yml

@@ -14,6 +14,7 @@ import { describeFlow } from './describe';
 import {
   FileRef,
   normalizeFlow,
+  type FlowConfig,
   parseAssertion,
   parseDocument,
   type NormalizedFlow,
@@ -311,8 +312,13 @@ const flowSnapshot = async (
   }
 };
 
-const loadFlow = async (state: RunState, file: string): Promise<NormalizedFlow> => {
-  const flow = normalizeFlow(parseDocument(await readText(state, file)), file);
+const loadFlow = async (
+  state: RunState,
+  file: string,
+  /** The invoking flow's `config:`, which a sub-flow inherits as defaults (§12.3). */
+  inheritedConfig?: FlowConfig
+): Promise<NormalizedFlow> => {
+  const flow = normalizeFlow(parseDocument(await readText(state, file)), file, inheritedConfig);
   // `bru flow validate` reports these as diagnostics and exits 2 before a run is attempted (§14.3),
   // so reaching here means nobody validated. Refusing is the point: the parser recovers a partial
   // tree from a syntax error, and running it would send requests the file does not describe.
@@ -890,7 +896,7 @@ const executeFlow = async (
    * validate` first.
    */
   const loadSubflow = (step: NormalizedStep): Promise<NormalizedFlow> =>
-    loadFlow(state, resolveSubflowTarget(step.uses as string, flow.file, state.options.scope));
+    loadFlow(state, resolveSubflowTarget(step.uses as string, flow.file, state.options.scope), flow.config);
 
   const executeSubflow = async (
     step: NormalizedStep,
@@ -1127,11 +1133,17 @@ const iterationStatus = (
   verdictCauses: string[],
   cancelled: boolean
 ): { status: RunStatus; decidedBy: string[] } => {
-  // A cancelled run is decided by the interrupt, not by a step: the steps it cut short did nothing
-  // wrong, and naming them would read as blaming them.
-  if (cancelled) return { status: 'cancelled', decidedBy: [] };
-
   const failed = results.filter((result) => result.status === 'failed').map((result) => result.id);
+
+  // A cancelled run's *status* is decided by the interrupt, not by a step: the steps it cut short
+  // did nothing wrong, and naming them would read as blaming them. A step that had already failed
+  // is a different claim — it failed on its own, before the interrupt reached it — and dropping it
+  // here is how a real regression disappears behind an infrastructure outcome, the status being the
+  // only thing a reader has left. So the interrupt keeps the verdict and the failures keep their
+  // names. `verdictCauses` stays out: §11.2's rule fires on an *unresolved* dependency, which under
+  // an interrupt is as likely to be the cancellation's doing as the flow's.
+  if (cancelled) return { status: 'cancelled', decidedBy: failed };
+
   if (failed.length || verdictCauses.length) return { status: 'failed', decidedBy: [...failed, ...verdictCauses] };
   return { status: 'passed', decidedBy: [] };
 };

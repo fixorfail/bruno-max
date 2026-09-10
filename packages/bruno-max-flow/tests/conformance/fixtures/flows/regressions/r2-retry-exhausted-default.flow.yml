@@ -1,0 +1,22 @@
+# §14.6 — a step with `maxAttempts` and no `shouldRetry`, answered 502 every time. The default
+# predicate still wants to retry at the cap, so the step exhausts its retries rather than settling
+# on the last attempt's status.
+version: 1
+
+meta:
+  name: R2 — retries exhausted under the default predicate
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    retry:
+      maxAttempts: 3
+      delay: 0

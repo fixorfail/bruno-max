@@ -1,0 +1,22 @@
+# §11.2 — the same unwritten slot, in a field the operation types as an integer. Empty means an
+# empty string and nothing else, so `validateRequest` rejects it before dispatch and names the
+# field. Omitting the key instead would have produced a valid request that quietly sent no value.
+version: 1
+
+meta:
+  name: R4 — an unwritten slot in a typed field
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+shared: [amount]
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+      count: "{{shared.amount}}"

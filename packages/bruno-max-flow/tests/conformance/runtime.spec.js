@@ -107,11 +107,11 @@ describe('R9.2 — what a script\'s ctx carries', () => {
   /**
    * The set, pinned: §7.3's namespaces and `env` / `vars` beside the flat variables; `req` and
    * `res` in an output script, which runs once a request has gone out (§10.2); and for `shouldRetry`
-   * (§11.1) `failures` — with no `req` or `res`, since the response is that script's own first
-   * argument. A key added to a script's context is a change to what every script can see, so it is
-   * a spec change first.
+   * (§11.1) `failures` and `outputs`, the two things belonging to the attempt being judged — with no
+   * `req` or `res`, since the response is that script's own first argument. A key added to a
+   * script's context is a change to what every script can see, so it is a spec change first.
    */
-  it('carries exactly the namespaces, env and vars — plus req and res, or failures, where each applies', async () => {
+  it('carries exactly the namespaces, env and vars — plus req and res, or an attempt\'s own two, where each applies', async () => {
     const run = await runFlow(flow('r9-script-context-keys.flow.yml'), { responses, vars });
     const reservedIn = (context) =>
       Object.keys(context).filter((key) => !(key in context.env) && !(key in context.vars)).sort();
@@ -122,7 +122,7 @@ describe('R9.2 — what a script\'s ctx carries', () => {
     expect(contextOf('ctx.vars.nonce === \'n-1\'', 0)).toEqual(BEFORE);
     expect([...run.step('probe').outputs.keys].sort()).toEqual(BEFORE);
     expect([...run.step('probe').outputs.keysAfter].sort()).toEqual([...BEFORE, 'req', 'res'].sort());
-    expect(contextOf('(res, attempt, ctx) => false', 2)).toEqual([...BEFORE, 'failures'].sort());
+    expect(contextOf('(res, attempt, ctx) => false', 2)).toEqual([...BEFORE, 'failures', 'outputs'].sort());
   });
 });
 

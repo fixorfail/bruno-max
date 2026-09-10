@@ -403,9 +403,6 @@ const createPorts = ({ collectionRoot, workspaceRoot, onRequest }) => ({
     await fs.promises.writeFile(target, data);
   },
   listDirectory: async (target) => fs.promises.readdir(target),
-  // force only suppresses ENOENT; Windows locks aggressively enough that a retry is not optional.
-  removeDirectory: async (target) =>
-    fs.promises.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
   readSpec,
   runScript: runScript({ collectionRoot, workspaceRoot })
 });

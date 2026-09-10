@@ -23,8 +23,18 @@ export type JsonSchema = Record<string, unknown>;
  * §6.4: a profile carries the fields of Bruno's existing auth modes — the `mode` union in
  * `@usebruno/schema-types`' `common/auth.ts`.
  */
+/**
+ * Eleven of `AuthMode`'s twelve. **`inherit` is not one a profile may declare**: it means "whatever
+ * is above me", and a flow profile has nothing above it — the same argument §6.4 makes for a
+ * collection root. `auth: collection` is the way to say "whatever the collection uses", so the
+ * mode is redundant as well as undefined, and accepting it would hand the host a value neither one
+ * resolves the same way.
+ *
+ * The union keeps `inherit` and so does `collectionAuthProfile`, which maps a *collection's* stored
+ * `inherit` to `none` (§6.4). That is a host-supplied value and is not checked here.
+ */
 const AUTH_MODES = [
-  'inherit', 'none', 'awsv4', 'basic', 'bearer', 'digest', 'ntlm', 'oauth1', 'oauth2', 'wsse',
+  'none', 'awsv4', 'basic', 'bearer', 'digest', 'ntlm', 'oauth1', 'oauth2', 'wsse',
   'apikey', 'akamai-edgegrid'
 ];
 

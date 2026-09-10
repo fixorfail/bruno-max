@@ -18,7 +18,7 @@
  * - **`runScript` is a real bruno-js runtime.** Several scenarios turn on what a script actually
  *   returns — F4's `find` predicate, F3's derived structured output, the `shouldRetry` polls — so a
  *   stub would assert the engine calls the port and nothing about the behavior they exist to pin.
- * - **`writeFile` / `listDirectory` / `removeDirectory` are an in-memory filesystem**, so §14.5's
+ * - **`writeFile` and `listDirectory` are an in-memory filesystem**, so §14.5's
  *   capture layout is observable without touching disk. `files` on the report reads it back, and
  *   the same accessor reaches a response stub through `info.files` — which is how R4g2 asserts what
  *   exists *while* a run is still going. `readFile` consults it before the fixtures, so R4o's
@@ -146,7 +146,6 @@ const createPorts = (options) => {
   let clockNow = 0;
   const callCounts = new Map();
   const written = new Map(Object.entries(options.captured || {}).map(([key, value]) => [key, Buffer.from(value)]));
-  const removed = [];
 
   /** The in-memory capture directory, read back the way `listRuns` / `readCapture` would (002 §11.2). */
   const files = {
@@ -159,8 +158,7 @@ const createPorts = (options) => {
       const found = written.get(target);
       if (!found) throw new Error(`harness: nothing was written to ${target}`);
       return JSON.parse(found.toString('utf8'));
-    },
-    removed
+    }
   };
 
   /**
@@ -311,12 +309,6 @@ const createPorts = (options) => {
         throw new Error(typeof refusal === 'string' ? refusal : `refused to write ${target}`);
       }
       written.set(target, Buffer.from(data));
-    },
-    removeDirectory: async (target) => {
-      removed.push(target);
-      for (const key of [...written.keys()]) {
-        if (key === target || key.startsWith(`${target}${path.sep}`)) written.delete(key);
-      }
     }
   };
 

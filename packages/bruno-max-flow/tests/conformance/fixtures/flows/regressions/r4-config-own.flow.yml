@@ -1,0 +1,15 @@
+# §12.3 — the caller is strict by default, and the sub-flow's own `config:` still wins.
+version: 1
+
+meta:
+  name: config inheritance — a sub-flow's own declaration wins
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: child
+    uses: ./r4-config-own-child.flow.yml

@@ -1,0 +1,37 @@
+# §9.1 and §11.3 — `depends` addresses the *parent's* outcome, in every entry and for every status
+# word. A step declaring bare `status: [cancelled]` after a parent that finished `success` therefore
+# has an unmet dependency and skips, even though the run was interrupted and the cleanup window is
+# open. `bare` is that step; `listed` is the same step written the way a cleanup step has to be,
+# naming the statuses its parent can actually reach.
+version: 1
+
+meta:
+  name: R4g — a bare status:[cancelled] after a successful parent
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+  cleanupGrace: 30000
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: bare
+    operation: regress-api#getState
+    depends:
+      - on: create
+        status: [cancelled]
+
+  - id: listed
+    operation: regress-api#getThing
+    depends:
+      - on: create
+        status: [success, failed, skipped, cancelled]
+    pathParams: { id: "{{steps.create.thingId}}" }

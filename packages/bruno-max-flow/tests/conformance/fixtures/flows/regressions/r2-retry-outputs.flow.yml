@@ -1,0 +1,34 @@
+# §11.1 — `shouldRetry` reads this attempt's own extracted outputs, so a poll tests a derived value
+# instead of repeating the path already written in `outputs:`. The surviving attempt's outputs are
+# the last one's, which is what `steps.poll.*` publishes.
+version: 1
+
+meta:
+  name: R2 — a predicate polling on a derived value
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+    outputs:
+      thingId: data.id
+
+  - id: poll
+    operation: regress-api#getThing
+    pathParams:
+      id: "{{steps.create.thingId}}"
+    outputs:
+      state: data.name
+      missing: data.nothing.here
+    retry:
+      maxAttempts: 4
+      delay: 0
+      shouldRetry: |
+        (res, attempt, ctx) => ctx.outputs.state !== 'ready' || ctx.outputs.missing !== undefined

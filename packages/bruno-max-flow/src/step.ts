@@ -437,6 +437,19 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
 export const shouldRetryByDefault = (outcome: AttemptOutcome): boolean =>
   outcome.reason === 'transport-error' || (outcome.response?.status ?? 0) >= 500;
 
+/**
+ * §11.1's predicate, given this attempt rather than the run's settled state.
+ *
+ * `failures` and `outputs` are the two things that belong to the attempt being judged and to nothing
+ * else: the assertions it failed, and the values its `outputs:` extracted. `outputs` is what lets a
+ * poll test a derived value — `ctx.outputs.state !== 'ready'` rather than repeating in the predicate
+ * the path already written in `outputs:`, which is the same path twice to keep in step with an API.
+ *
+ * An output whose path did not match is **absent** rather than `undefined`-valued (`extractOutputs`),
+ * so `ctx.outputs.x` reads as undefined exactly the way the missing path would have off `res`. These
+ * are the attempt's own values and are not `steps.<id>.*`: only the surviving attempt's are
+ * published there (§8.1), and a predicate that retries is judging one about to be discarded.
+ */
 export const wantsRetry = async (
   policy: RetryPolicy,
   outcome: AttemptOutcome,
@@ -457,7 +470,7 @@ export const wantsRetry = async (
           }
         : undefined,
       attempt,
-      { ...context, failures }
+      { ...context, failures, outputs: outcome.outputs }
     ])
   );
 };

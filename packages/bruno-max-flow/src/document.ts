@@ -532,9 +532,29 @@ const normalizeFunctions = (raw: unknown): FunctionLibrary => {
 const declaredText = (value: unknown): string | undefined =>
   value === undefined || value === null ? undefined : String(value).trim() || undefined;
 
-const normalizeConfig = (raw: unknown): FlowConfig => {
+/**
+ * §12.3: `config:` is configuration, so a sub-flow inherits its caller's — as *defaults*. A key the
+ * sub-flow declares itself still wins, which is what keeps a shared login flow that declares
+ * `failOnStatusCode: false` behaving the same way at every call site; a caller that overrode it
+ * would make a library flow mean something different depending on who invoked it, which is the
+ * hazard §12.3 rules `apis:` out for.
+ *
+ * **`baseUrl` is the exception and never inherits**, for that same reason one step further on: a
+ * sub-flow binding a different API and relying on its document's `servers[0]` (§6.3) would have its
+ * requests redirected to the caller's host — the sub-flow reading as correct while calling the
+ * wrong service.
+ *
+ * The run-wide keys — `concurrency` (§9.2), `maxRunDuration`, `cleanupGrace`, `redactHeaders`,
+ * `capturePreviewBytes` — inherit here so the object says what the run will actually do, but
+ * nothing reads them from a sub-flow: `runFlow` takes all five from the entry flow once.
+ */
+const normalizeConfig = (raw: unknown, inherited?: FlowConfig): FlowConfig => {
   const mapping = asRecord(raw);
-  const bool = (key: string, fallback: boolean) => (mapping[key] === undefined ? fallback : Boolean(mapping[key]));
+  const bool = (key: keyof StepFlags, fallback: boolean) =>
+    mapping[key] === undefined ? (inherited ? inherited[key] : fallback) : Boolean(mapping[key]);
+  const value = <T>(key: keyof FlowConfig, read: () => T, fallback: T): T =>
+    mapping[key] === undefined ? ((inherited?.[key] as T | undefined) ?? fallback) : read();
+
   return {
     baseUrl: mapping.baseUrl === undefined ? undefined : String(mapping.baseUrl),
     failOnStatusCode: bool('failOnStatusCode', true),
@@ -542,12 +562,12 @@ const normalizeConfig = (raw: unknown): FlowConfig => {
     validateRequest: bool('validateRequest', true),
     validateSchema: bool('validateSchema', true),
     strictSchema: bool('strictSchema', false),
-    concurrency: mapping.concurrency === undefined ? 5 : Number(mapping.concurrency),
-    maxRunDuration: mapping.maxRunDuration === undefined ? undefined : Number(mapping.maxRunDuration),
-    cleanupGrace: mapping.cleanupGrace === undefined ? 30000 : Number(mapping.cleanupGrace),
-    retry: mapping.retry === undefined ? undefined : (asRecord(mapping.retry) as Partial<RetryPolicy>),
-    redactHeaders: asArray<string>(mapping.redactHeaders).map(String),
-    capturePreviewBytes: mapping.capturePreviewBytes === undefined ? 8192 : Number(mapping.capturePreviewBytes)
+    concurrency: value('concurrency', () => Number(mapping.concurrency), 5),
+    maxRunDuration: value('maxRunDuration', () => Number(mapping.maxRunDuration), undefined),
+    cleanupGrace: value('cleanupGrace', () => Number(mapping.cleanupGrace), 30000),
+    retry: value('retry', () => asRecord(mapping.retry) as Partial<RetryPolicy>, undefined),
+    redactHeaders: value('redactHeaders', () => asArray<string>(mapping.redactHeaders).map(String), []),
+    capturePreviewBytes: value('capturePreviewBytes', () => Number(mapping.capturePreviewBytes), 8192)
   };
 };
 
@@ -654,9 +674,14 @@ export const parseDocument = (text: string): ParsedDocument => {
   };
 };
 
-export const normalizeFlow = (parsed: ParsedDocument, file: string): NormalizedFlow => {
+export const normalizeFlow = (
+  parsed: ParsedDocument,
+  file: string,
+  /** The invoking flow's `config:`, where this one is a sub-flow (§12.3). */
+  inheritedConfig?: FlowConfig
+): NormalizedFlow => {
   const { model: document, positions, errors } = parsed;
-  const config = normalizeConfig(document.config);
+  const config = normalizeConfig(document.config, inheritedConfig);
   const meta = asRecord(document.meta);
   const rawSteps = asArray<Record<string, unknown>>(document.steps).map(asRecord);
   const malformedMeta: string[] = [];

@@ -501,7 +501,10 @@ All three script fields take a **function expression**; the engine calls what yo
 
 `res` is `{ status, statusText, headers, body, responseTime }` — `undefined` in `shouldRetry` when
 the attempt got no response. `ctx` is variables plus the namespaces; in `shouldRetry` it also
-carries `ctx.failures`, the assertions that failed. A throw fails the step with `script-error`.
+carries `ctx.failures`, the assertions that failed, and `ctx.outputs`, this attempt's own extracted
+outputs — so a poll can test `ctx.outputs.state` rather than repeat the path its `outputs:` already
+declares. An output that matched nothing is absent from it. A throw fails the step with
+`script-error`.
 
 `ctx` also groups two of those flat variables so a script can say where a value came from:
 **`ctx.env`** is the environment tiers the run was given (global environment, collection variables,
@@ -729,6 +732,7 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `invalid-subflow-field` | A field a `uses:` step may not carry — `retry:`, `body:`, `auth:` and the rest |
 | `subflow-dataset` | `dataset:` in a sub-flow; only a top-level flow iterates |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry named for one of the reserved namespaces, or named `env` or `vars`, which every script reads as `ctx.env` and `ctx.vars` |
+| `bru-unavailable` *(warning)* | A script mentions `bru`, which flow scripts do not have — read through `ctx`, and hand a value to a later step with `outputs:` or a `shared:` slot |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
 | `unused-output` *(warning)* | An output nothing in the flow reads |
 | `unused-slot` *(warning)* | A declared slot nothing reads |
@@ -763,9 +767,6 @@ Do not write a flow that depends on these:
   listing `--dry-run` was also going to.
 - **A scope's `.env` under `bru flow run`** — the app reads it, the CLI does not. Pass `--env-var` or
   set the process environment in CI.
-- **Secret provenance under `bru flow run`** — the app tells the engine which values are secret and
-  they are masked by value everywhere; the CLI does not, so under `bru` masking is by header name
-  only (`config.redactHeaders`).
 
 And one omission that is deliberate rather than pending: **a step's `headers:` are not checked against
 the operation**, and will not be. `body:`, `query:` and `pathParams:` are. OpenAPI documents declare

@@ -1,0 +1,17 @@
+# The sub-flow half of §12.3's `baseUrl` exception: it declares no `baseUrl`, so §6.3 falls to its
+# own document's `servers[0]`. A caller's `baseUrl` reaching here would send this request to the
+# caller's host while the file still read as correct.
+version: 1
+
+meta:
+  name: config inheritance — baseUrl is the exception
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: use
+    operation: regress-api#createThing
+    body:
+      name: child

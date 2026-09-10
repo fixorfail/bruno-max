@@ -179,6 +179,27 @@ describe('R4 — slot and output resolution boundaries', () => {
     expect(run.call('createThing').json.ref).toBe('');
   });
 
+  /**
+   * §18's open row: `""` or omission. It is `""`, and the typed field is where the two stop being
+   * interchangeable — §10.1 accepts one and rejects the other.
+   *
+   * Empty wins because both of its outcomes name the field. Against a typed or required field the
+   * request never leaves, with a schema error pointing at `count`; against a permissive one the API
+   * rejects it for a reason of its own. Omission is only quiet where the field is optional, and
+   * quiet is the failure worth avoiding: a request that silently carried no value is a green step
+   * that tested nothing.
+   */
+  it('sends an unwritten slot as an empty string even where that makes the request invalid', async () => {
+    const run = await runFlow(flow('r4-slot-unwritten-typed.flow.yml'), {
+      responses: { createThing: CREATED }
+    });
+
+    expect(run.outcome('create')).toBe('failed:invalid-request');
+    expect(run.callsFor('createThing')).toHaveLength(0);
+    // The proof it was `""` rather than omitted: an omitted optional field validates and dispatches.
+    expect(run.step('create').message).toMatch(/count/);
+  });
+
   it('skips a step referencing an output that was never produced', async () => {
     const run = await runFlow(flow('r4-output-unproduced.flow.yml'), {
       responses: { createThing: { status: 201, body: { data: {} } } }
@@ -960,6 +981,35 @@ describe('R4b — failOnUnresolved fires on one reason only', () => {
     expect(run.outcome('later')).toBe('skipped:run-cancelled');
     expect(run.status).toBe('cancelled');
     expect(run.exitCode).toBe(4);
+    // Nothing had failed, so the interrupt is the whole story and there is no step to name.
+    expect(run.result.decidedBy).toEqual([]);
+  });
+
+  /**
+   * §18's "which outcome wins when a run both fails and is cancelled", settled: the interrupt keeps
+   * the status and the failure keeps its name.
+   *
+   * The status alone cannot say both, and of the two it is the one a reader sees first — so a run
+   * that reported `cancelled` and nothing else would present a genuine regression as an
+   * infrastructure outcome, which is the failure mode worth spending a field on. `decidedBy` is
+   * that field, and this is the only case where it names a step that decided nothing.
+   */
+  it('names a step that had already failed when the interrupt reached it, keeping the cancelled status', async () => {
+    const run = await runFlow(flow('r4b-cancelled.flow.yml'), {
+      responses: {
+        createThing: (request, ctx, info) => {
+          info.abort();
+          return { status: 500, body: { error: 'boom' } };
+        },
+        getState: STATE
+      }
+    });
+
+    expect(run.outcome('create')).toBe('failed:unexpected-status');
+    expect(run.outcome('later')).toBe('skipped:run-cancelled');
+    expect(run.status).toBe('cancelled');
+    expect(run.exitCode).toBe(4);
+    expect(run.result.decidedBy).toEqual(['create']);
   });
 
   describe('the two overrides', () => {
@@ -986,6 +1036,140 @@ describe('R4b — failOnUnresolved fires on one reason only', () => {
       expect(run.status).toBe('passed');
       expect(run.exitCode).toBe(0);
     });
+  });
+});
+
+/**
+ * §12.3's `config:` row, which the section's table did not cover.
+ *
+ * The rule §12.3 already states — configuration inherits, data is declared — settles the direction,
+ * and the sub-flow's own declaration winning is what the word *inherit* means: a library flow has to
+ * mean the same thing at every call site, or it is not reusable, which is §12.5's whole premise.
+ *
+ * These run the same 500 through three arrangements, because only the pairing distinguishes
+ * inheritance from its two failure modes. Not inheriting at all makes a caller's `config:` stop at
+ * its own steps; inheriting *over* the sub-flow makes a strict caller silently rewrite a shared
+ * flow's own judgement about itself.
+ */
+describe('§12.3 — a sub-flow inherits its caller\'s config:', () => {
+  // Schema-conforming (§10.1's 500 shape), so `failOnStatusCode` is the only rule under test.
+  const BOOM = { status: 500, body: { error: { message: 'boom' } } };
+
+  it('runs a sub-flow that declares no config: under the caller\'s defaults', async () => {
+    const run = await runFlow(flow('r4-config-inherit.flow.yml'), {
+      responses: { createThing: BOOM }
+    });
+
+    // The caller declared `failOnStatusCode: false`, and the sub-flow declared no `config:` at all.
+    expect(run.outcome('create')).toBe('success');
+    expect(run.outcome('child/use')).toBe('success');
+    expect(run.status).toBe('passed');
+  });
+
+  it('lets the sub-flow\'s own declaration win over the caller\'s', async () => {
+    const run = await runFlow(flow('r4-config-own.flow.yml'), {
+      responses: { createThing: BOOM }
+    });
+
+    // The caller is strict by default; the sub-flow says `failOnStatusCode: false` about itself.
+    expect(run.outcome('child/use')).toBe('success');
+    expect(run.status).toBe('passed');
+  });
+
+  it('does not carry the caller\'s baseUrl in, which would redirect the sub-flow\'s API', async () => {
+    const run = await runFlow(flow('r4-config-baseurl.flow.yml'), {
+      responses: { createThing: CREATED }
+    });
+
+    // The caller calls its own host; the sub-flow declares no `baseUrl` and falls to §6.3's
+    // `servers[0]` from its own document, rather than being sent wherever its caller points.
+    expect(run.call('createThing', 1).url).toBe('https://caller.example.com/things');
+    expect(run.call('createThing', 2).url).toBe('https://regress.example.com/things');
+  });
+});
+
+/**
+ * §11.1 and §14.6's retry rows, which §18 left open in two halves.
+ *
+ * The reason half turns on whether §14.6's "the retry predicate" means an authored one or the
+ * effective one. It means the effective one: the default is a predicate, and a step answered 502
+ * three times gave up because it ran out of attempts, not because it settled on a bad answer. The
+ * `message` is where the last attempt's occurrence survives, which is §14.6's own reason/message
+ * split doing the work.
+ *
+ * The outputs half is a capability as much as a contract: a poll that tests a derived value would
+ * otherwise repeat in its predicate the path already written in `outputs:`.
+ */
+describe('§11.1 — exhausting retries, and what the predicate can see', () => {
+  const BAD_GATEWAY = { status: 502, body: { error: { message: 'upstream' } } };
+
+  it('reports retries-exhausted with no shouldRetry at all, the default predicate being a predicate', async () => {
+    const run = await runFlow(flow('r2-retry-exhausted-default.flow.yml'), {
+      responses: { createThing: BAD_GATEWAY }
+    });
+
+    expect(run.outcome('create')).toBe('failed:retries-exhausted');
+    expect(run.step('create').attempts).toBe(3);
+    // §14.6: the reason names the rule, the message names the occurrence — so giving up does not
+    // cost the reader the 502 that caused it.
+    expect(run.step('create').message).toContain('502');
+  });
+
+  it('lets a predicate poll on a derived value, and keeps the surviving attempt\'s outputs', async () => {
+    const run = await runFlow(flow('r2-retry-outputs.flow.yml'), {
+      responses: {
+        createThing: CREATED,
+        getThing: (request, ctx, info) => ({
+          status: 200,
+          body: { data: { id: 'thing-1', name: info.call >= 3 ? 'ready' : 'pending' } }
+        })
+      }
+    });
+
+    expect(run.outcome('poll')).toBe('success');
+    expect(run.step('poll').attempts).toBe(3);
+    // The last attempt's, which is the one published to `steps.poll.*`.
+    expect(run.step('poll').outputs.state).toBe('ready');
+    // An output whose path did not match is absent, not `undefined`-valued — so the predicate reads
+    // it exactly as it would a missing path off `res`, and did not spin on it.
+    expect(run.step('poll').outputs).not.toHaveProperty('missing');
+  });
+});
+
+/**
+ * §18's other two execution rows, settled together because both are about a word meaning the same
+ * thing everywhere it appears.
+ */
+describe('§9.1 and §9.4 — two words that do not change meaning by context', () => {
+  it('resolves flow.iteration outside a dataset, where the single iteration is 0', async () => {
+    const run = await runFlow(flow('r9-flow-iteration-nodataset.flow.yml'), {
+      responses: { createThing: CREATED }
+    });
+
+    expect(run.outcome('create')).toBe('success');
+    // Resolved, not left on the wire as `{{flow.iteration}}` — and typed, per §7.3's whole-value
+    // rule, which is what lets it reach an integer field at all.
+    expect(run.call('createThing').json.count).toBe(0);
+  });
+
+  it('skips a bare status:[cancelled] whose parent succeeded, the run being interrupted or not', async () => {
+    const run = await runFlow(flow('r4g-cleanup-bare-cancelled.flow.yml'), {
+      responses: {
+        createThing: (request, ctx, info) => {
+          info.abort();
+          return CREATED;
+        },
+        getState: STATE,
+        getThing: { status: 200, body: { data: { id: 'thing-1', name: 'widget' } } }
+      }
+    });
+
+    expect(run.outcome('create')).toBe('success');
+    // §9.1: `depends` addresses the parent, and `create` did not end `cancelled`. Being eligible for
+    // the cleanup window is a separate question from having a dependency that is met.
+    expect(run.outcome('bare')).toBe('skipped:unmet-dependency');
+    // The same step written the way a cleanup step has to be: it names a status its parent reached.
+    expect(run.outcome('listed')).toBe('success');
   });
 });
 

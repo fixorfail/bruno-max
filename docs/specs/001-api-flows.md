@@ -1,10 +1,11 @@
 # 001 — API Flows
 
-**Status:** Draft — **contracts settled; implementation may start.** §18's remaining questions are
-each local to one execution path and none changes a signature; the ports, the engine boundary, the
-expression dialect and the document schema are decided.
+**Status:** **Implemented.** Every contract in this document is built and covered by
+[001-C](./001-api-flows-conformance.md); §18 holds two questions and neither is about how a flow
+runs — one waits on §19.1's scheduled `--dry-run`, and the other is about writing a flow file, which
+nothing does.
 **Owner:** Jake Campbell
-**Last revised:** 2026-09-02
+**Last revised:** 2026-09-09
 
 Sequenced, spec-driven API request execution: a flow references OpenAPI operations instead of
 copying them, declares the data that moves between steps, and runs identically in the app and the
@@ -102,6 +103,13 @@ shape instead of copying it.
   is tracked in 002 §15. That separation is the point — a UI reworked freely without touching this
   document is what the format-as-contract position buys.
 - **Replacing collections or the existing runner.** Flows are a new artifact alongside them.
+- **Managing the capture directory.** `.bruno-runs/` grows with every run and nothing prunes it, by
+  decision rather than by omission: those are the user's files, on the user's disk, and clearing them
+  is file management the app has no business doing. The directory is what a CI job archives and what
+  somebody opens a week later, and a run that vanished on a policy nobody set is indistinguishable
+  from one that was never written. It is gitignored on first write (§14.5) so it never reaches a
+  repository; beyond that it is a directory like any other. There is consequently **no removal port**
+  in §13.2 — a required one nothing calls would read as pruning half-built.
 - **Load or performance testing.** Concurrency exists to shorten flow runtime, not to generate load.
 - **Non-HTTP and non-OpenAPI protocols.** A step resolves an OpenAPI operation (§6), so flows are
   REST-only in this version — GraphQL, gRPC, WebSocket and SSE requests are not sequenceable, even
@@ -737,17 +745,27 @@ apis:
 ```
 
 A profile body carries the **fields of the existing Bruno auth modes** (the `AuthMode` union in
-`bruno-schema-types/src/common/auth.ts`). All twelve names in that union are what a profile's `mode:`
-may say — `bearer`, `basic`, `apikey`, `wsse`, `awsv4`, `oauth1`, `oauth2`, `digest`, `ntlm`,
-`akamai-edgegrid`, `none` and `inherit` — and the engine passes each one through to the host's own
-auth code unchanged. OAuth2 profiles reuse the existing token cache and `clear-oauth2-cache`
-handling. Flows introduce no new auth mechanics.
+`bruno-schema-types/src/common/auth.ts`). **Eleven of that union's twelve names are what a profile's
+`mode:` may say** — `bearer`, `basic`, `apikey`, `wsse`, `awsv4`, `oauth1`, `oauth2`, `digest`,
+`ntlm`, `akamai-edgegrid` and `none` — and the engine passes each one through to the host's own auth
+code unchanged. OAuth2 profiles reuse the existing token cache and `clear-oauth2-cache` handling.
+Flows introduce no new auth mechanics.
 
-Two of the twelve are not credentials. `none` is §6.4's opt-out and the engine short-circuits it
-before any field is read. `inherit` is in the union because Bruno's own request files use it to mean
-"whatever is above me", and a flow has nothing above it: the engine's `collectionAuthProfile`
-(§13.1) maps a collection whose stored mode is `inherit` to `mode: none`, because a collection root
-is already the top of that chain.
+`none` is the one of those eleven that is not credentials: it is §6.4's opt-out, and the engine
+short-circuits it before any field is read.
+
+**`inherit` is the twelfth, and a profile may not declare it** — §5.4's enum refuses it, so
+`bru flow validate` reports `schema-violation` at `authProfiles.<name>.mode`. Bruno's own request
+files use it to mean "whatever is above me", and a flow profile has nothing above it. Neither
+resolution available is safe: mapping it to `none` would send unauthenticated requests under a
+profile its author believed was authenticating, and passing it through leaves `inherit` for each
+host to answer its own way. `auth: collection` is what an author reaching for it wants — the
+collection's own credentials, named explicitly — so refusing costs nothing.
+
+The union keeps `inherit` because a *collection's* stored mode may be it, and the engine's
+`collectionAuthProfile` (§13.1) maps that to `mode: none` — a collection root being already the top
+of that chain. That is a host-supplied value rather than something a flow declares, and §5.4 does
+not check it.
 
 **A profile is authored flat and delivered nested.** Bruno's `Auth` puts each mode's fields under a
 key named for the mode — `{ mode: 'bearer', bearer: { token } }` — which is what a request carries
@@ -1264,7 +1282,7 @@ without editing the collection.
 **The engine does not touch `fs`.** Reads go through an injected port alongside `ExecuteRequest`
 (§13.2), so each host keeps its own path handling and conformance scenarios stub fixtures instead of
 writing them to disk. The same holds for the one thing a run *writes* — capture (§14.5) goes through
-`WriteFile` and `RemoveDirectory`, with the engine computing every path and the host writing bytes,
+`WriteFile`, with the engine computing every path and the host writing bytes,
 so the layout stays single-sourced without putting `fs` in the package.
 
 ### 7.5 Multipart and binary bodies
@@ -1578,6 +1596,48 @@ is done, the engine owns when.
 
 This is what keeps "no new security posture" true rather than aspirational: the engine never chooses
 a runtime, so it cannot choose a weaker one than the host would have.
+
+#### What every script is handed
+
+Every position gets the same base: **every variable flat, `env` and `vars` as the two named objects
+§7.3 describes, and all seven namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`,
+`process` — as keys of their own.** `row` is empty outside a dataset and `pre` is empty outside the
+step's own materialization, and neither is *absent*, so a script never has to test for a namespace
+before reading it.
+
+Two positions add to that base, and only two:
+
+| Position | Adds |
+|---|---|
+| an **output** script | `req` and `res` — §10.2's views of what went out and what came back |
+| **`shouldRetry`** | `failures` and `outputs`, the attempt's own (§11.1) — and neither `req` nor `res`, the response it is judging being its own first argument |
+| `when:` and `pre:` | nothing, for §9.3's reason: they run before the request |
+
+A key added to a script's context changes what every script can see, so it is a change to this table
+before it is a change to any code.
+
+#### `bru` is not in scope
+
+**A flow script has no `bru` object**, in either sandbox and in either host: the QuickJS runner adds
+a `console` shim and nothing else, and the `node:vm` context carries the script's arguments and
+`console`. A script naming `bru` throws `ReferenceError` and the step fails `script-error` like any
+other throw — and `bru flow validate` warns `bru-unavailable` first (§14.3), because the author most
+likely to write it is one porting a `.bru` script, where `bru.setVar` is how a value reaches the next
+request.
+
+**Reading is already served and writing is refused.** Everything `bru.getVar`, `bru.getEnvVar` and
+`bru.interpolate` would fetch is on `ctx` (above), flat and by namespace, resolved through the same
+§7.3 chain the request used. What is refused is the write. §7.3's chain ends in a runtime-variables
+tier because it mirrors Bruno's *request* chain; a flow run has no such tier, and §13.2's
+`VariableTiers` carries no field for one.
+
+That is a design choice and not an omission. A value a later step needs moves through `outputs:`
+(§8.1) or a `shared:` slot (§9.1), and both are **declared** — which is what lets §9.1 order every
+writer ahead of its readers, §14.3 refuse a read that is not downstream of one, and
+[002](./002-api-flows-ui.md) §5 draw the edge. `bru.setVar` is a side channel with none of that: the
+graph cannot show it, the validator cannot order it, and under `concurrency: 5` two steps writing one
+name is a race with no diagnostic. Adding the tier would mean adding exactly the state `shared:`
+already is, minus the declaration that makes it safe.
 
 #### When a script throws
 
@@ -2230,7 +2290,11 @@ dataset:
 ```
 
 The whole flow runs once per row, with the row available as `{{row.<column>}}` and the zero-based
-index as `{{flow.iteration}}`. **CSV, JSON and YAML are supported** — the same three formats and the
+index as `{{flow.iteration}}`. **`{{flow.iteration}}` resolves outside a dataset too**, where a flow
+runs a single iteration whose index is `0` (§7.3 lists it unconditionally for that reason). It is
+never left on the wire as a placeholder, and adding a `dataset:` to a flow that already interpolates
+it changes what it resolves to and not whether it resolves — which is the property that lets a step
+carry it before anyone decides the flow will iterate. **CSV, JSON and YAML are supported** — the same three formats and the
 same loader as `!file` (§7.4). A JSON dataset is an array of objects and a YAML dataset a sequence
 of mappings; excluding YAML from the one and not the other would be a difference authors discover
 by hitting an error that has no reason behind it.
@@ -2605,9 +2669,22 @@ reproducible, and a conformance run asserts the values passed to `Clock.sleep` a
 count — a test runner whose own timing is unpredictable by default cannot be used to find a timing
 bug. Nothing in the engine samples randomness unless a step asks for it.
 
-`shouldRetry` receives the response, the 1-based attempt number, and a context carrying
-`ctx.env`, `ctx.steps`, and `ctx.failures` (the assertion/schema failures from this attempt). It
-returns `true` to retry.
+`shouldRetry` receives the response, the 1-based attempt number, and a context carrying `ctx.env`,
+`ctx.steps`, and the two things belonging to *this* attempt: `ctx.failures`, its assertion and
+schema failures, and `ctx.outputs`, the values its `outputs:` extracted. It returns `true` to retry.
+
+**`ctx.outputs` is what lets a poll test a derived value.** Without it a predicate has to repeat the
+path already written in `outputs:` — `res.body.data.task.state` beside
+`outputs: { state: data.task.state }` — which is one API shape kept in step in two places. An output
+whose path did not match is **absent** rather than present-and-undefined, so `ctx.outputs.x` reads
+undefined exactly as the missing path would have off `res`. These are the attempt's own values and
+are not `steps.<id>.*`: only the surviving attempt's are published there (§8.1), and a predicate
+asking to retry is judging one about to be discarded.
+
+**The surviving attempt is the last one**, and its outputs, assertions, response and capture are the
+step's. Outputs are extracted on every attempt — which is what `ctx.outputs` reads — and each
+attempt's own are written to its `attempt-N.json` (§14.5), so a poll stays readable one call at a
+time even though only the last is published.
 
 **With no `shouldRetry`, retry fires only on a transport error or a 5xx** — never on an assertion
 or schema failure. Those say the server answered and the answer was wrong, which repeating will not
@@ -2628,6 +2705,13 @@ predicate is an infinite hang in CI, which is the worst possible failure mode fo
 that fails the step with reason `retries-exhausted` — the poll never reached the state it was
 waiting for. A predicate that returns `false` stops early and the step is judged normally by §10, so
 a poll that settles on attempt 3 of 10 is a plain success.
+
+**"The predicate" here means the effective one, so this covers a step that declares none.** A step
+with `maxAttempts: 3` and no `shouldRetry`, answered `502` three times, reports `retries-exhausted`
+rather than `unexpected-status`: the default predicate is still asking at the cap, and the step gave
+up because it ran out of attempts rather than because it settled on a bad answer. Nothing is lost by
+that, because §14.6's reason names the rule and `message` names the occurrence — the 502 is in the
+message either way.
 
 Assert the terminal condition as well as polling for it. The predicate decides when to *stop*; the
 assertion is what puts the awaited state in the failure message instead of a bare
@@ -2757,7 +2841,13 @@ proceeding would be meaningless. `{{shared.chargeId}}` deliberately does not nam
 that stayed empty is one of its legal outcomes, and the reader is the only thing that knows whether
 that matters. A reader that should not run without a value says so with `when:`.
 
-Empty means an **empty string**, or omission for a structured `body` field. It explicitly does not
+Empty means an **empty string**, and only that — never omission of the key, including in a
+structured `body`. The two are interchangeable until the body is schema-validated, and then they are
+opposites: §10.1 rejects `""` in a typed or required field and accepts a key that simply is not
+there. Empty is the one whose failure names the field either way — a `validateRequest` error
+pointing at it before anything is sent, or the API's own rejection where the step opted out.
+Omission is quiet exactly where the field was optional, and a request that silently carried no value
+is a green step that tested nothing. It explicitly does not
 inherit Bruno's interpolation default, which leaves an unresolved `{{var}}` in the string verbatim
 (`packages/bruno-common/src/interpolate/index.ts:121` —
 `replacement !== undefined ? replacement : match`). That behavior is right for a variable a human
@@ -2787,6 +2877,16 @@ The exception is steps whose `depends` accepts `cancelled` (§9.1): those still 
 clean up after an interrupted run. This is the only circumstance in which the engine schedules work
 after a stop signal, and it is deliberately bounded — only steps that *declared* `cancelled` are
 eligible, and a second interrupt aborts unconditionally without running anything further.
+
+**Declaring `cancelled` makes a step eligible for the window; it does not make its dependency met.**
+Those are two separate gates and a cleanup step has to pass both. `depends` addresses the *parent's*
+outcome in every entry and for every status word, `cancelled` included — so a step declaring bare
+`status: [cancelled]` after a parent that finished `success` is skipped `unmet-dependency`, even
+with the run interrupted and the window open. Reading `cancelled` as "the run was cancelled" would
+make one status word address something different from the other three, and a reader could no longer
+tell what any `depends` entry meant without knowing which words were in it. **A cleanup step
+therefore lists the statuses its parent can actually reach** — commonly all four, which is the form
+§9.1's four-way list exists for.
 
 **Cleanup runs under a grace window**, `config.cleanupGrace` (default **30000** ms). When it
 elapses the run aborts unconditionally, whatever is still pending. A second interrupt is not a
@@ -2945,6 +3045,7 @@ Ambient configuration crosses the boundary; flow data does not.
 | Its own `vars:` and `params.*` | Parent `row.*` |
 | Its own `shared:` slots | Parent `shared.*` |
 | The caller's cookie jar (§7.6) | — |
+| The caller's `config:`, as defaults (`baseUrl` excepted) | — |
 | `flow.runId`, shared across the whole run | Parent `flow.iteration` |
 
 The rule is: **anything that is configuration inherits; anything that is data must be declared.**
@@ -2960,6 +3061,21 @@ resolves against the flow that *declared* the profile. The profile is configurat
 the step state it closes over stays the parent's and never becomes addressable inside the sub-flow.
 A sub-flow may still shadow an inherited profile, and its own definition then resolves against its
 own steps.
+
+**`config:` inherits, as defaults.** Every key of §5.2's `config:` block crosses the boundary, and a
+key the sub-flow declares itself still wins — which is what the word *inherit* is doing here. The
+alternative, a caller's `config:` overriding the sub-flow's own, would make a library flow mean
+something different depending on who invoked it: a shared login flow declaring
+`failOnStatusCode: false` because its first call is expected to 401 would start failing the moment a
+strict parent used it, and §12.5's reusability is the thing that breaks. The precedence is therefore
+the step, then the sub-flow's own `config:`, then the caller's, then the built-in default.
+
+**`baseUrl` is the exception within `config:` and does not inherit.** A sub-flow that binds a
+different API and relies on its own document's `servers[0]` (§6.3) would otherwise have its requests
+redirected to the caller's host — reading as correct while calling the wrong service. The run-wide
+keys are not per-flow at all: `concurrency` (§9.2), `maxRunDuration`, `cleanupGrace`, `redactHeaders`
+and `capturePreviewBytes` are read once from the entry flow and govern the whole run, so a sub-flow
+declaring one changes nothing.
 
 **`apis:` bindings and connector files are the exceptions and do not inherit from the caller.** A
 sub-flow declares its own bindings, and its connector files (§8.5) resolve from its own scope.
@@ -3123,7 +3239,6 @@ type ExecuteRequest   = (request: MaterializedRequest, ctx: StepContext) => Prom
 type ReadFile         = (path: string, ctx: FlowContext) => Promise<Buffer>;
 type WriteFile        = (path: string, data: Buffer, ctx: FlowContext) => Promise<void>;
 type ListDirectory    = (path: string, ctx: FlowContext) => Promise<string[]>;
-type RemoveDirectory  = (path: string, ctx: FlowContext) => Promise<void>;
 type ReadSpec         = (source: string, ctx: FlowContext) => Promise<SpecDocument>;
 type RunScript        = (source: string, args: unknown[], ctx: FlowContext) => Promise<unknown>;
 type Clock            = { now(): number; sleep(ms: number, signal?: AbortSignal): Promise<void> };
@@ -3139,7 +3254,7 @@ free of `fs`, each host keeps its own path and permission handling, and conforma
 fixtures in memory rather than on disk. Scope-root containment (§7.4) is enforced by the engine
 before the port is called, so no host can forget it.
 
-`WriteFile`, `ListDirectory` and `RemoveDirectory` serve `.bruno-runs/` (§14.5) — which the engine
+`WriteFile` and `ListDirectory` serve `.bruno-runs/` (§14.5) — which the engine
 reads back as well as writes, see 002 §11.2. **The engine owns the capture layout**: it computes
 every path, decides what a run directory contains, and applies §14.5's retention by removing the
 directories that fall outside it. A host writes the bytes it is handed and nothing else.
@@ -3251,9 +3366,9 @@ host that received only the run's signal could implement none of the three.
 
 `StepContext.iteration` is **always present and is not `{{flow.iteration}}`.** It is the index the
 engine uses to scope a cookie jar and to nest a capture directory, so it exists for every run and is
-`0` when there is no dataset. Whether the *interpolated* `{{flow.iteration}}` is exposed outside a
-dataset is a separate question and still open (§18); a port context that went absent along with it
-would leave capture nesting and jar scoping undefined for the ordinary single-iteration run.
+`0` when there is no dataset — as, separately, `{{flow.iteration}}` does (§9.4). The two carry the
+same number and are kept apart because a port context that went absent outside a dataset would
+leave capture nesting and jar scoping undefined for the ordinary single-iteration run.
 
 ```ts
 type MaterializedRequest = {
@@ -3306,13 +3421,11 @@ promises flows introduce no new auth mechanics, and this is where that is cashed
 carries today, so OAuth2 token caching, AWS signing, digest challenge/response and the rest stay in
 each host's existing code.
 
-The type does raise a question §6.4 has not answered: **Bruno's `AuthMode` union has twelve members
-and §6.4 names eight.** `oauth1` and `akamai-edgegrid` go unmentioned, and both compute a signature
-across several request fields exactly as `awsv4`, `digest`, `ntlm` and `wsse` do — so §6.4's
-signing-mode override error should almost certainly cover six modes rather than four, and §5.4's
-schema enum needs the full list either way. `inherit` is the third: it means "take the parent
-folder's auth" for a request and has no referent at a flow's profile boundary, so §6.4 has to either
-resolve it before this point or reject it in validation. Recorded in §18 rather than decided here.
+**Bruno's `AuthMode` union has twelve members and a profile may declare eleven of them** (§6.4).
+`oauth1` and `akamai-edgegrid` compute a signature across several request fields exactly as `awsv4`,
+`digest`, `ntlm` and `wsse` do, so §6.4's signing-mode override warning covers six modes; `inherit`
+is the twelfth and §5.4's enum refuses it, having no referent at a flow's profile boundary. What
+reaches this type is therefore always a mode a host can act on.
 
 **Headers are a record, and repeated request headers are therefore not expressible.** That matches
 what Bruno's request object does today rather than improving on it, and going further would mean the
@@ -3415,7 +3528,6 @@ type RunOptions = {
     readFile: ReadFile;
     writeFile: WriteFile;
     listDirectory: ListDirectory;
-    removeDirectory: RemoveDirectory;
     readSpec: ReadSpec;
     runScript: RunScript;
     clock?: Clock;
@@ -3619,9 +3731,15 @@ step green or skipped, and no consumer can work out which skip it was: the flag 
 already carries the `reason` and `message` that say what it did; a run-level vocabulary would be a
 restatement that can disagree with them, and a run failed by both a 500 and an unresolved skip would
 have to choose between two of them. An iteration reports its own, the run reports theirs deduped in
-iteration order, and a cancelled run names nothing — the interrupt decided it, and the steps it cut
-short did nothing to be named for. §14.7's console output and [002](./002-api-flows-ui.md) §8.4's run
-summary both read it.
+iteration order, and **a cancelled run names the steps that had already failed when the interrupt
+reached it** — which is the one case where `decidedBy` names a step that decided nothing. The
+interrupt owns the status, because the steps it cut short did nothing to be named for; a step that
+had already failed is the opposite claim, having failed on its own and before the interrupt existed.
+Dropping it is how a genuine regression comes to be reported as an infrastructure outcome, the status
+being the only thing a reader sees first. §11.2's `failOnUnresolved` causes stay out of a cancelled
+run's list for the mirror-image reason: an *unresolved* dependency under an interrupt is as likely to
+be the cancellation's doing as the flow's. §14.7's console output and
+[002](./002-api-flows-ui.md) §8.4's run summary both read it.
 
 **`duration` is reported rather than left to a consumer to compute**, because no consumer can compute
 it correctly. `StepResult.durationMs` is per step and does not sum into a run's elapsed time under
@@ -4511,6 +4629,7 @@ ever tell the author.
 | `invalid-subflow-field` | A `uses:` step carries a field §12.4 refuses — one that addresses a single response |
 | `subflow-dataset` | A sub-flow declares `dataset:`; only a top-level flow iterates (§12.4) |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry is named for one of §7.3's namespaces, which shadows it everywhere — or is named `env` or `vars`, which shadow it inside every script while `{{...}}` still reads it (§7.3, §8.2) |
+| `bru-unavailable` *(warning)* | A `script:` references `bru`, which is not in a flow script's scope in either sandbox — it throws at run time. Data a later step needs moves through `outputs:` or a `shared:` slot, which the graph and §9.1's ordering can see (§8.2) |
 | `required-param-without-library` *(warning)* | A flow declares a `required` param with no `default` and is not marked `meta.library: true` (§12.5) |
 | `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
 | `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
@@ -4594,6 +4713,22 @@ bearer token in a header is, without anyone predicting where a secret might trav
 value into a shared slot (§9.1) for free, since promotion copies the value and tracking is by value
 rather than by the name it is currently under.
 
+**Which values reach the tracker is the host's answer, and the two hosts give different ones.** Two
+sources are the *engine's* and reach it under either: a param the flow declared `secret: true`
+(§12.5), and the credentials an auth profile resolves to — both derived here rather than declared by
+a host. The third source is `RunOptions.secrets`, the host's own `secret: true` values, and only the
+app supplies it: `bruno-electron` decrypts those entries before the renderer sees them (002 §7.2).
+
+**`bru flow run` supplies none, deliberately.** It holds no value it knows to be secret — a
+`secret: true` variable's value lives in the app's encrypted store and `parseEnvironment` zeroes it,
+so it does not arrive even when hand-written into the file. `--env-var` is not a substitute: it was
+typed on a command line the user's shell already recorded, and promoting every one to a secret would
+mask ordinary values throughout a report, which is a worse artifact than an unmasked one. An author
+who needs a value masked under `bru` declares it a `secret: true` param or puts it behind an auth
+profile, both of which the engine then tracks. This is a difference to know about rather than a gap
+to close, and `docs/writing-flows.md` states it where the person choosing between them will read
+it.
+
 **2. Header-name denylist (backstop).** `Authorization`, `Proxy-Authorization`, `Cookie`,
 `Set-Cookie`, `X-API-Key`, `X-Auth-Token`, and `API-Key` are masked regardless of origin, extended
 by `config.redactHeaders`. This catches the case provenance cannot: a credential hardcoded
@@ -4631,7 +4766,7 @@ and skip reason; no request was made, so there is nothing else to store.
 Sub-flow steps are captured under a namespaced id (`auth/login`) so a shared flow's internals are
 visible without colliding with the parent's step ids.
 
-**The engine writes this directory**, through the `WriteFile` and `RemoveDirectory` ports of §13.2.
+**The engine writes this directory**, through the `WriteFile` port of §13.2. It never removes from it (§3).
 Every path below is computed by the engine, so the layout is identical whichever host is running and
 `listRuns` / `readCapture` (002 §11.2) can read back what either one produced. A host supplies the
 two primitives and nothing more — it does not decide names, nesting, or what a run directory
@@ -4751,21 +4886,58 @@ Previews truncate at `config.capturePreviewBytes` (default 8 KB). The `preview`,
 at — that is what "storage is split" means.
 
 **A step directory exists only where a step made a call.** Skipped steps and `uses:` containers
-record their status and reason in `summary.json` and store nothing else, so listing a run directory
-yields exactly the steps that were attempted — which is the list 002 §10 renders for a run whose
-`summary.json` is missing.
+record their status and reason in `summary.json` and store nothing else, so the steps a run
+directory holds are exactly the ones that were attempted — which `capturedSteps` (002 §11.2)
+reports and 002 §10 renders for a run whose `summary.json` is missing. That reader **probes** each
+id it takes from the run's own `flow.json` rather than walking the directory, which is what lets the
+layout nest.
 
-**Each step id is one flat directory.** A sub-flow's namespaced `auth/login` becomes `auth__login`
-rather than a nested `auth/login/`: a run directory then lists as the step ids it holds instead of
-having to be walked, and a container step can never be both a directory's parent and a step
-directory itself. §5.2 already constrains ids to `^[a-zA-Z_][a-zA-Z0-9_]*$`, so the only hazards
-left are the Windows reserved device names an id may legally spell — `CON`, `PRN`, `AUX`, `NUL`,
-`COM1`–`COM9`, `LPT1`–`LPT9` — and total path length. A reserved name takes a trailing `_`, and a
-segment over 64 characters is truncated with a short hash of the full id appended, per
-`.claude/rules/cross-platform.md`.
+**A sub-flow's namespaced `auth/login` nests: one directory per segment.** The alternative —
+flattening it to `auth__login` — is unsound, because `_` is legal anywhere in an id (§5.2 constrains
+them to `^[a-zA-Z_][a-zA-Z0-9_]*$`) and so a *top-level* step may legally be called `auth__login`.
+The two would then resolve to one directory and overwrite each other's attempts, silently, with
+nothing in either id looking wrong. Nesting has no such case: the only separators in a path are the
+ones the engine put there, and an id can spell neither `/` nor `.`, so no segment can climb out of
+the run directory. The container step is then a directory's parent *and* may hold its own attempts
+where it made a call — which costs the reader nothing, since it asks for `auth` and `auth/login`
+separately and each resolves to its own path.
 
-**Dataset iterations nest under a per-iteration subdirectory** — `iteration-0/verify_ledger/…` —
-and *only* when the flow declares a `dataset:`. A flow without one runs a single iteration whose
+**Sanitizing is per segment**, that being what a directory name is. The hazards are the Windows
+reserved device names an id may legally spell — `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`,
+`LPT1`–`LPT9` — and total path length. A reserved name takes a trailing `_`, and a segment over 64
+characters is truncated with a short hash of *that segment* appended, so one long step name is the
+same directory wherever it is nested, per `.claude/rules/cross-platform.md`. Applying either rule to
+a flattened whole instead gets both wrong: `con/login` reads as the innocuous `con__login` while its
+first segment is a device name, and two long names concatenate into a single truncated hash that
+names neither.
+
+**A run directory is `<startedAt>-<id>`, and a suite directory is that with a `suite-` prefix.**
+Both halves are defined rather than illustrated, because 002 §10 parses these names and a reader
+that disagrees with the writer cannot see the run at all:
+
+- **`<startedAt>` is the run's start time made path-safe**: fractional seconds dropped (`.123Z`
+  becomes `Z`) and every `:` replaced with `-`, giving `2026-08-05T14-22-01Z`. Windows admits no `:`
+  in a path segment, and sub-second precision buys nothing a directory name needs.
+- **`<id>` is four lowercase hex characters derived from the run's or suite's id** — its first four
+  hex after any `-` is stripped, and where the id is not hex at all, the first four of its SHA-256.
+  It disambiguates two directories named for the same second; it is not a prefix of the id and
+  nothing reads it back.
+
+**The derivation matters more than it looks.** A host mints these ids in whatever alphabet it likes
+— 002 §11.3 has the renderer mint the suite id — so slicing four characters off one produces a name
+the patterns below reject roughly nineteen times in twenty. When that happened, every run of an app
+suite wrote its capture correctly and was then invisible to `listRuns` for good. Normalizing to hex
+here is what keeps a producer and its own matcher in agreement.
+
+**The two patterns are disjoint, and that is load-bearing.** A suite directory shares the capture
+root with the runs, so `listRuns` descends into `^\d{4}-\d{2}-\d{2}T[\d-]+Z-[0-9a-f]{4}$` and
+skips `^suite-…$`; anchoring the first on a digit is the whole of what keeps a suite from being
+listed as a run — and, where a host prunes, from being deleted as one.
+
+**Dataset iterations nest under `iteration-<index>`** — `iteration-0/verify_ledger/…` — where
+`<index>` is `IterationResult.index` (§13.2) exactly: zero-based, unpadded, and the same number the
+result and the events carry, so a reader holding one never has to derive the other. The level
+appears *only* when the flow declares a `dataset:`. A flow without one runs a single iteration whose
 index is always `0` (§13.2), and an `iteration-0/` level that never has a sibling is a directory
 every reader would have to know to skip.
 
@@ -4916,7 +5088,7 @@ about what it describes.
 | `schema-validation-failed` | failed | The response did not match the spec's schema for its status (§10.1) |
 | `assertion-failed` | failed | One or more `assert:` entries failed (§10.2) |
 | `transport-error` | failed | No response — connection refused, DNS failure, TLS error, request timeout (§11.2) |
-| `retries-exhausted` | failed | The retry predicate still wanted to retry at `maxAttempts` (§11.1) |
+| `retries-exhausted` | failed | The retry predicate — the default one included — still wanted to retry at `maxAttempts` (§11.1) |
 | `max-duration-exceeded` | failed | The step's own `maxDuration` elapsed (§11.1) |
 | `file-read-failed` | failed | A `!file`, `bodyFile:` or `dataset:` source could not be read (§7.4) |
 | `script-error` | failed | A `script:` output, a `when:` condition or `shouldRetry` threw (§8.2) |
@@ -4935,6 +5107,16 @@ looking at a red run asks which step made it red, and for `failOnUnresolved` the
 whose own status is `skipped` — so the verdict names it rather than leaving the reader to infer it
 from a rule they cannot see the inputs to.
 
+**A run that both failed a step and was then cancelled reports `cancelled`, and names the failure.**
+`RunResult.status` admits one value and the interrupt takes it: a run stopped mid-flight cannot be
+judged on the steps it never finished, and §14.2's exit `4` says the run did not reach a verdict
+rather than that it reached a bad one. But a step that had already failed reached its own verdict
+before the interrupt arrived, and the status is the only thing most readers see — so it is named in
+`decidedBy` (§13.2), which is what keeps a real regression from being read as an infrastructure
+outcome. The same ordering holds for the multi-flow reducer §14.1 calls "worst outcome": `4 > 3 > 2
+> 1`, an interrupted selection reporting `4` however many of its flows also failed, with each flow's
+own record carrying what it did.
+
 **A reason names the rule; `StepResult.message` (§13.2) names the occurrence.** These strings are a
 closed vocabulary precisely so they can be matched on, which is the same property that keeps them
 from saying which reference, which status or which field — so the engine reports both, and a host
@@ -4947,6 +5129,14 @@ happen.
 Request validation leads because §10.1 runs it **before dispatch**: a step that fails it never
 sends, so it has no status to be judged on and `invalid-request` and `unexpected-status` are never
 candidates for the same step.
+
+**A step that never dispatched reports `assertions[]` as empty**, not as a list of passing ones —
+whether it failed request validation or got no response at all. An assertion addresses `res.*`, and
+there is no `res` to address; a check that never ran has no verdict. The difference is invisible to
+a consumer testing "did any fail", which an empty array satisfies vacuously, and is the whole
+difference on [002](./002-api-flows-ui.md) §9's assertions tab, where a column of green ticks says
+the response was inspected and found correct. `reason` and its `message` are then the only things
+reporting on the step, which is why §14.6 makes the message carry the occurrence.
 
 A script that **throws** fails its step, in all three positions. `shouldRetry` is the one that made
 this worth stating: it runs outside the attempt it judges, against a response §11.2 may not have —
@@ -5627,7 +5817,8 @@ one layout, not a CLI-specific one:
 ```
 
 `suite-<startedAt>-<id>/` names the directory: `startedAt` made path-safe the same way a run
-directory's is (§14.5), `id` a UUID's first four characters. **Every run is a suite; the two cases
+directory's is, and `id` its four hex characters derived the same way — §14.5 defines both, and the
+derivation is not a plain slice. **Every run is a suite; the two cases
 above differ only in who opens it and how many flows land inside.** `runFlow` (§13.2) called with no
 `capture.dir` — which is what a single flow run from the app does — opens a suite of its own around
 that one run, `suite-<ts>-<id>/<ts>-<id>/…`, the outer and inner directory sharing the same `<ts>-<id>`
@@ -5923,7 +6114,7 @@ phase used to provide, expressed in the same mechanism as every other edge.
 | Letting `bodyFile:` and `body:` coexist on a step | Two sources for one merge layer with no obvious precedence, and the losing half reads as if it applied. |
 | File reads unconstrained by the scope root | Flows are committed and shared, so a flow from a teammate's branch reads and transmits arbitrary local files, with no secret provenance for §14.4 to redact. |
 | `fs` inside the engine | Breaks the §13.2 separation that keeps the CLI and app from diverging, and forces conformance fixtures onto disk. Reads *and* writes go through ports; §13.2 has the full set. |
-| A host-implemented capture writer | §14.5's directory layout is a contract, and the engine reads it back (002 §11.2) — implementing it host-side would give the CLI and app two layouts and make `listRuns` a guess. The engine computes the paths; `WriteFile` / `RemoveDirectory` only move bytes. |
+| A host-implemented capture writer | §14.5's directory layout is a contract, and the engine reads it back (002 §11.2) — implementing it host-side would give the CLI and app two layouts and make `listRuns` a guess. The engine computes the paths; `WriteFile` only moves bytes. |
 | Assertions barred from a step's own outputs | Left "this extraction had to succeed" inexpressible, so the only signal was the *consumer* skipping a step later — reporting that the flow could not proceed rather than what was not found (§10.2). |
 | `failOnUnresolved` as the only guard on an extraction that matched nothing | Fires at the consumer, one step after the cause, and depends on there *being* a consumer. An assertion on the located value fails at the step that located nothing. |
 | `failOnUnresolved` failing on any skip reason | Conditional branches, fallback branches and divergent dataset rows all skip by design, so every flow using them would be permanently red. Only `unresolved-dependency` means something went wrong (§11.2). |
@@ -5948,23 +6139,21 @@ phase used to provide, expressed in the same mechanism as every other edge.
 
 ## 18. Open questions
 
-The four design blockers and the ten gaps found in the first review are resolved into the body
-above. A subsequent audit against the conformance companion raised twenty-eight more; **seventeen of
-those are now resolved into the body too**, indexed below by where each landed. A later
-implementation-readiness review added five, each a section that turned out to be silent where an
-implementer needs an answer rather than a contradiction between two that speak. What remains here is
-**not** resolved. Each is recorded rather than answered because it is a decision with a real trade,
-and several are contradictions between two sections that both read as deliberate — picking a side
-silently would discard whichever argument was right.
+The design blockers and the review gaps that produced this section are resolved into the body above,
+indexed below by where each landed. **Every question about execution semantics is now answered**;
+what remains are three, and none of them is about how a flow runs. What is recorded here is *not*
+resolved — each is a decision with a real trade, and one is a contradiction between two sections
+that both read as deliberate, where picking a side silently would discard whichever argument was
+right.
 
-Each names what breaks while it stays open. **None of them blocks starting implementation**: the
-contracts that everything else is written against — the port set, the engine boundary's types, the
-expression dialect, the document schema — are settled. What is left below is local to one code path
-apiece, and each names the code path.
+Each names what breaks while it stays open, and each is local to one code path. **None of them
+blocks anything shipped**: two wait on work that is scheduled rather than undecided (§19.1's
+`--dry-run`), and the third is about writing a flow file, which nothing does.
 
-Three of the five newest concern sub-flows, which is worth noticing on its own: §12 is the section
-where a rule stated for a flow has to be restated for a flow inside a flow, and it is the place to
-look first when something reads as settled but has no answer for the nested case.
+A note worth keeping from when this list was long: rows went stale here faster than anywhere else in
+the document. Several described a contradiction that a later revision had already fixed, or named a
+fixture that had since been rewritten to sidestep the question — so a row is worth re-checking
+against the code before it is worth arguing about.
 
 ### Resolved in this revision
 
@@ -5974,7 +6163,7 @@ reviewed, then deleted per the convention in [README](./README.md).
 
 | Question | Answer | Where |
 |---|---|---|
-| Who writes `.bruno-runs/`? | The engine, through `WriteFile` / `RemoveDirectory` ports; it computes every path | §13.2, §14.5, §7.4, §17 |
+| Who writes `.bruno-runs/`? | The engine, through the `WriteFile` port; it computes every path, and nothing removes | §13.2, §14.5, §7.4, §3 |
 | How does a remote OpenAPI document reach the engine? | A `ReadSpec` port; hosts own caching | §13.2, §6.2 |
 | Does `StepResult` carry schema-validation outcomes? | Yes — an additive `validation` field, separate from `assertions[]` | §13.2 |
 | Do sub-flow internals appear in results and events? | Yes — flat `steps[]`, namespaced ids, events fire; `kind` marks the container | §13.2, §14.7 |
@@ -5990,66 +6179,22 @@ reviewed, then deleted per the convention in [README](./README.md).
 | Is an unknown key in `with:` an error? | Yes — `unknown-param`, with a suggestion | §14.3 |
 | Where does a flow's `id` come from? | Its path, relative to the scope root | §5.2, §14.7 |
 | What is `backoff: exponential`? | `min(delay * 2^(n-1), maxDelay)`, `maxDelay` 30 s, jitter opt-in | §11.1 |
+| How is a sub-flow's namespaced id written to a capture path? | It nests, one directory per segment, sanitized per segment | §14.5 |
+| What is the capture layout for iterations, exactly? | `iteration-<index>`, the index being `IterationResult.index`; run and suite directory names defined with them | §14.5 |
+| Does a sub-flow inherit its caller's `config:`? | Yes, as defaults its own declarations override; `baseUrl` excepted | §12.3 |
+| What reason does a step carry when retry exhausts with no `shouldRetry`? | `retries-exhausted` — "the predicate" is the effective one | §11.1, §14.6 |
+| Which attempt's outputs survive a retry, and can the predicate read them? | The last attempt's; every attempt's are extracted and reach `ctx.outputs` | §11.1 |
+| Are assertions evaluated on a step that never dispatched? | No — `assertions[]` is empty, and R4j's "all pass" was the error | §10.1, §14.6 |
+| An unwritten shared slot in a structured body: `""` or omission? | `""`, never omission — it is the answer whose failure names the field | §11.2 |
+| What is `flow.iteration` outside a dataset? | The single iteration's index, `0` | §7.3, §9.4 |
+| Does a cleanup step run when the parent completed before the interrupt? | Only if its `depends` names a status the parent reached; `cancelled` addresses the parent, not the run | §9.1, §11.3 |
+| Which auth modes does a profile accept, and which are signing modes? | Eleven — `inherit` is refused; six sign, `oauth1` and `akamai-edgegrid` among them | §6.4, §5.4 |
+| May a flow `script:` call `bru.setVar`? | No — `bru` is not in scope at all; data moves through declared `outputs:` and `shared:` | §8.2, §7.3 |
+| Which outcome wins when a run both fails and is cancelled? | `cancelled` keeps the status; `decidedBy` names the steps that had already failed | §13.2, §14.6 |
 | What happens when a `script:` throws? | The step fails with `script-error`, in all three script positions | §8.2, §14.6 |
 | Where do `processEnv` and `envVarOverrides` sit in the chain? | Neither is a rank: `--env-var` merges into `environment`, `process.env` is a namespace | §7.3, §13.2 |
 | How do `!file` and `!...` reach the schema? | Resolved to a symbol and a class instance; projected by stripping the tag | §5.4, §17 |
 | Does a `uses:` step occupy a concurrency slot? | No — only its internals draw from the pool, or a sub-flow deadlocks at `concurrency: 1` | §9.2 |
-
-### Execution semantics
-
-**An unwritten shared slot in a structured body: `""` or omission?** §11.2 says "an empty string, or
-omission for a structured `body` field"; 001-C R4 and R5 both assert `""`. Against a
-schema-validated body these differ — `validateRequest` (§10.1) accepts one and rejects the other
-whenever the field is typed or required.
-
-**What reason does a step carry when retry exhausts with no `shouldRetry`?** §11.1's default retries
-transport errors and 5xx. §14.6 defines `retries-exhausted` purely in terms of the predicate, so a
-step with `maxAttempts: 3`, no predicate and three 502s has three arguable reasons. R4k asserts an
-exact string per reason.
-
-**Does a cleanup step run when the parent completed before the interrupt?** §9.1 defines `cancelled`
-as a *parent's* outcome; §11.3 describes "steps whose `depends` accepts `cancelled`" as a property
-of the run. A step declaring bare `status: [cancelled]` whose parent finished `success` satisfies
-the second reading and fails the first. R4g's fixture is exactly that shape.
-
-**Which outcome wins when a run both fails and is cancelled?** `RunResult.status` admits one value
-and the exit codes differ (1 versus 4). §14.1's "worst outcome" for a multi-flow selection likewise
-gives no ordering over `1`, `2` and `4`.
-
-> The engine currently answers **cancelled**, and the CLI's multi-flow reducer answers **the
-> numerically highest code**, which orders them `4 > 3 > 2 > 1`. Neither is tested and neither is
-> reasoned — they are what the obvious implementation does. A conformance row settling this should
-> land with whichever answer the argument picks, since the two disagree: an interrupted run
-> containing a genuine failure reports `cancelled` from the engine and `4` from a single-flow CLI
-> run, which hides a real regression behind an infrastructure outcome.
-
-**Which attempt's outputs survive a retry?** Presumably the last, but §11.1 does not say — nor
-whether outputs are extracted on every attempt so `shouldRetry`'s `ctx` can read them, which decides
-whether a predicate can poll on a derived value rather than on `res` directly.
-
-**What is `flow.iteration` outside a dataset?** §7.3 lists it unconditionally; §9.4 defines it only
-as a row index. F1 interpolates it into a request body.
-
-**Does a sub-flow inherit its caller's `config:`?** §12.3's table is exhaustive about what is data
-and what is ambient configuration, and does not mention the block at all. §9.2 settles `concurrency`
-as run-wide, but `failOnStatusCode`, `validateRequest`, `validateSchema`, `strictSchema`,
-`failOnUnresolved`, `redactHeaders` and `capturePreviewBytes` are per-flow *defaults for steps* with
-no stated answer — a shared login flow declaring `failOnStatusCode: false` invoked from a strict
-parent has two defensible readings. §12.3's rule does not decide it, because `config:` is
-configuration under either half of "configuration inherits, data is declared".
-
-**Are assertions evaluated on a step that never dispatched?** §10.1 fails a step on
-`validateRequest` *before* sending, so there is no response for a `res.*` assertion to address — but
-001-C R4j asserts that such a step reports `assertions[]` all passing. Either the array is empty and
-R4j needs correcting, or assertions are evaluated against an absent response.
-[002](./002-api-flows-ui.md) §9 renders the array either way.
-
-**Which auth modes does a profile accept, and which of them are signing modes?** §6.4 names eight of
-`AuthMode`'s twelve members and lists four as signing modes. `oauth1` and `akamai-edgegrid` are
-absent from both lists and compute signatures across several request fields, so the partial-override
-error §6.4 introduces should cover them; `inherit` has no referent at a profile boundary and needs
-either a resolution rule or a validation error. §5.4's schema enum and §14.3's check list both need
-the answer. Noted at §13.2's `MaterializedRequest.auth`.
 
 ### The format
 
@@ -6060,13 +6205,6 @@ order and formatting survive is unstated for a format whose primary editor is a 
 
 ### CLI and artifacts
 
-**How is a sub-flow's namespaced id written to a capture path?** §14.5 captures internals "under a
-namespaced id (`auth/login`)", while §5.3 has step ids become directory names sanitized for Windows.
-Read literally the `/` nests, which collides whenever a top-level step is itself named `auth` — one
-directory would hold both that step's attempts and the sub-flow's children. `readCapture` takes a
-`stepId` without saying which form it expects. The layout is a declared contract and
-[002](./002-api-flows-ui.md) §11.2 reads it back, so the two have to agree.
-
 **What does `--dry-run` resolve `{{steps.*}}` to?** §14.1 materializes and validates every step
 without running any, so no step output exists. R4h tests `--dry-run` against a mistyped body, and it
 is the question §19.1 names as what the v2 work waits on — a dry run that resolved every step
@@ -6074,25 +6212,6 @@ reference to nothing would print requests a real run would never send, which is 
 run for a feature whose whole purpose is showing what *would* be sent. The premise 002 §15 used to
 defer the app's half on — that the engine already supports it — was never true and has been
 corrected there.
-
-**What is in `ctx` for a `script:` form?** The shape half is settled; the `bru.setVar` half is not.
-
-Every script position is handed the same base: every variable flat, `env` and `vars` as §7.3's two
-named objects, and all seven namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`,
-`process` — as keys of their own. `row` is empty outside a dataset, `pre` is empty outside the step's
-own materialization, and neither is absent, so a script never has to test for the namespace before
-reading it. Two positions add to it: an **output** script also gets `req` and `res` (§10.2's views of
-what went out and what came back), and **`shouldRetry`** also gets `failures`, this attempt's failed
-assertions — and gets neither `req` nor `res`, because the response it is judging is its own first
-argument. `when:` and `pre:` add nothing, for §9.3's reason: they run before the request.
-
-What is still open is whether a flow `script:` may call `bru.setVar` at all, given §7.3's
-runtime-variables tier. That is a question about writing, and everything above is about reading.
-
-**What is the capture layout for iterations, exactly?** §14.5 is a declared contract that says
-"dataset iterations nest under a per-iteration subdirectory" without naming the format, and gives
-the run directory as `2026-08-05T14-22-01Z-a3f9` in one place and `2026-08-07T10-14-02Z` in
-another. 002 §10 parses these names.
 
 ### Left to implementation
 
@@ -6144,7 +6263,6 @@ in two tables is a UI deferral that will drift.
 | **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which `bru flow run` leaves empty by design (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
 | **Real-world OpenAPI robustness** | Conformance fixtures are minimal by design (companion §8) | Coverage for `$ref` cycles, vendor extensions, missing `operationId`, and multi-document specs — separate ground from execution semantics |
-| **Run retention — clearing runs from the app** (§14.5) | Nothing under `.bruno-runs/` is pruned today, so it grows without bound. A policy that deletes captures should be *visible and chosen*: the directory is what a CI job archives and what a user opens a week later, and a run that disappeared on a default nobody set is indistinguishable from one that was never written | A user-facing way to clear runs — a control in [002](./002-api-flows-ui.md) §10's history that deletes a selected run or suite, and a `bru flow runs clear` for the CLI — before any automatic bound. If an automatic one follows, it needs an explicit opt-in, a unit that is the suite rather than the run (§14.8.5), a rule for a run still in flight, which is the question the old per-run bound never answered, and an answer for the newest suite, which §14.2's `--retry-failed` and [002](./002-api-flows-ui.md) §4.1's rerun action both select from — a policy that reaches it takes away the ability to re-run what just failed, silently and at exactly the moment somebody wanted it |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an
 oversight to rediscover. A row moves from §19.2 to §19.1 when someone commits to a release for it,

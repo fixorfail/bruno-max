@@ -1,0 +1,20 @@
+# §12.3 — every `config:` key inherits except `baseUrl`.
+version: 1
+
+meta:
+  name: config inheritance — a caller's baseUrl does not reach its sub-flow
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: https://caller.example.com
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    body:
+      name: widget
+
+  - id: child
+    uses: ./r4-config-baseurl-child.flow.yml

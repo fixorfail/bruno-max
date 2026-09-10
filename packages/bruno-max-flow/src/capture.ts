@@ -7,9 +7,10 @@
  * declared layout in two implementations and let the CLI and the app produce directories neither can
  * fully read.
  *
- * **Nothing here deletes.** §14.5 keeps every run: the capture root is gitignored, grows with each
- * one, and is the user's to clear. `RemoveDirectory` is a port for §19's clearing of runs, which has
- * no caller yet — see `types/ports.ts`.
+ * **Nothing here deletes, and nothing ever will.** §14.5 keeps every run: the capture root is
+ * gitignored, grows with each one, and is the user's to clear — managing those files is theirs and
+ * not the app's (§3). There is no removal port for the same reason; a required one that nothing
+ * calls reads as pruning half-built.
  *
  * Redaction (§14.4) is applied on the way in, never after: §14.5 requires that a secret is not
  * written into a file buffer and then removed from it.
@@ -73,7 +74,6 @@ export const flowDigest = (source: string): string => createHash('sha256').updat
 /** An ISO instant as a directory name: no colons, and no sub-second part to make one run unfindable. */
 const pathSafeTimestamp = (startedAt: string): string => startedAt.replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
 
-/** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus the runId's first four hex. */
 /**
  * The four characters that disambiguate two directories named for the same second.
  *
@@ -93,6 +93,7 @@ const shortId = (id: string): string => {
   return /^[0-9a-f]{4}/.test(hex) ? hex.slice(0, 4) : createHash('sha256').update(id).digest('hex').slice(0, 4);
 };
 
+/** `2026-08-05T14-22-01Z-a3f9` — the start time made path-safe, plus four hex off the runId (§14.5). */
 const runDirectoryName = (startedAt: string, runId: string): string =>
   `${pathSafeTimestamp(startedAt)}-${shortId(runId)}`;
 
@@ -102,19 +103,33 @@ const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const MAX_SEGMENT = 64;
 
 /**
- * §14.5: one flat directory per step id. A sub-flow's `auth/login` becomes `auth__login` so a run
- * directory lists as the ids it holds rather than having to be walked.
+ * §14.5: a step id becomes a directory, and a sub-flow's namespaced `auth/login` **nests** — one
+ * directory per segment, so the layout mirrors the composition it came from.
+ *
+ * Sanitization is per segment, because a segment is what a directory name is. Flattening the id to
+ * `auth__login` first got this wrong twice: `con/login` reads as the harmless `con__login` while its
+ * first segment is a Windows device name, and `__` is itself legal in a step id (§5.3) — so the
+ * top-level step `auth__login` and the sub-flow step `auth/login` resolved to one directory and
+ * overwrote each other's attempts.
+ *
+ * A step id cannot spell `.` or `/` (§5.3's charset), so the only separators here are the ones the
+ * engine put in, and no segment can climb out of the run directory.
  */
-const stepSegment = (stepId: string): string => {
-  const flat = stepId.replace(/\//g, '__');
-  const safe = RESERVED_DEVICE.test(flat) ? `${flat}_` : flat;
+const pathSegment = (segment: string): string => {
+  const safe = RESERVED_DEVICE.test(segment) ? `${segment}_` : segment;
   if (safe.length <= MAX_SEGMENT) return safe;
-  return `${safe.slice(0, MAX_SEGMENT - 8)}-${createHash('sha1').update(stepId).digest('hex').slice(0, 7)}`;
+  // Hashed on the segment rather than the whole id, so one long step name is the same directory
+  // wherever it is nested.
+  return `${safe.slice(0, MAX_SEGMENT - 8)}-${createHash('sha1').update(segment).digest('hex').slice(0, 7)}`;
 };
 
 /** `iteration` is absent for a flow with no `dataset:`, which nests nothing (§14.5). */
 export const stepCaptureDir = (runDir: string, stepId: string, iteration?: number): string =>
-  path.join(runDir, ...(iteration === undefined ? [] : [`iteration-${iteration}`]), stepSegment(stepId));
+  path.join(
+    runDir,
+    ...(iteration === undefined ? [] : [`iteration-${iteration}`]),
+    ...stepId.split('/').map(pathSegment)
+  );
 
 export const attemptFile = (attempt: number): string => `attempt-${attempt}.json`;
 

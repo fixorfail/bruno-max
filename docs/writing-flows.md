@@ -204,7 +204,21 @@ config:
     maxAttempts: 3
     delay: 1000
   redactHeaders: [X-Legacy-Key]   # masked in logs and captures, on top of the built-in list
+```
 
+Values are masked too, not only header names — wherever they surface, in a body, a query string or
+an extracted output. Which values, though, differs between the app and `bru`, and it is worth
+knowing before you write a flow for CI:
+
+- **In the app**, every `secret: true` environment variable is masked by value.
+- **Under `bru flow run`**, two things are: a param your flow declares `secret: true`, and whatever
+  an auth profile resolves to. Those the engine works out for itself.
+- **An `--env-var` is not** treated as secret under `bru`. You typed it on a command line your shell
+  recorded, and masking every one would blank ordinary values out of your whole report. If a value
+  must not appear in a capture, declare it as a `secret: true` param or put it behind an auth
+  profile.
+
+```yaml
 authProfiles:                  # named auth configs, referenced by steps and api bindings
   user-token:
     mode: bearer
@@ -1043,7 +1057,26 @@ sees the step's whole outcome, which is what makes polling a first-class pattern
 
 **Without `shouldRetry`, retry fires only on a transport error or a 5xx** — never on a failed
 assertion or a schema mismatch, which mean the server answered and the answer was wrong. That is what
-makes a flow-wide `config.retry` safe to set even when some steps are not idempotent.
+makes a flow-wide `config.retry` safe to set even when some steps are not idempotent. A step that
+runs out of attempts fails with `retries-exhausted` either way — with a predicate or without one —
+and the last attempt's status is in the failure message.
+
+**`ctx.outputs` holds this attempt's own extracted outputs**, so a poll can test the value it
+already declared instead of writing the same path twice:
+
+```yaml
+    outputs:
+      state: data.task.status
+    retry:
+      maxAttempts: 10
+      delay: 2000
+      shouldRetry: |
+        (res, attempt, ctx) => ctx.outputs.state !== 'ready'
+```
+
+An output whose path matched nothing is simply absent, so `ctx.outputs.state` is `undefined` there —
+the same thing you would have seen reading the missing path off `res`. What the step *publishes* to
+`{{steps.<id>.*}}` is the last attempt's, the one it settled on.
 
 `delay` is the wait *before* each retry, so `maxAttempts: n` waits `n - 1` times. With
 `backoff: exponential` each wait doubles, capped by `maxDelay`.
@@ -1966,6 +1999,7 @@ What it reports:
 | `invalid-subflow-field` | A field a `uses:` step may not carry — `retry:`, `body:`, `auth:` and the rest address one response, and a sub-flow has many or none |
 | `subflow-dataset` | `dataset:` in a sub-flow; only a top-level flow iterates |
 | `shadowed-reserved-name` *(warning)* | A `vars:` or `params:` entry named `steps`, `row`, `params`, `shared`, `flow`, `pre` or `process` — the namespace shadows it. Also `env` or `vars`, which a script reaches as `ctx.env` and `ctx.vars`, so only `{{...}}` can read a variable of either name |
+| `bru-unavailable` *(warning)* | A script mentions `bru`. There is no `bru` in a flow script — reading is `ctx`, and writing a value for a later step is `outputs:` or a `shared:` slot |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow that is not marked `meta.library: true`, so a directory run fires it |
 | `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Connector-supplied outputs are never warned about |
 | `unused-slot` *(warning)* | A declared slot nothing reads |
@@ -2077,10 +2111,6 @@ So you do not write a flow that depends on it:
   today. `bru flow run` rejects it as unknown rather than ignoring it, so a CI line using it fails
   loudly instead of quietly running without it. What it was going to print about *outputs*,
   `bru flow validate` prints already.
-- **Secret provenance in the CLI** (001 §14.4) — the app tells the engine which values came from a
-  `secret: true` variable, so those are masked wherever they appear. `bru flow run` does not, so under
-  `bru` a secret is masked by the header-name rules (`config.redactHeaders`) and not by its value.
-
 And one thing that is **deliberately** not checked, so you do not go looking for it:
 
 - **A step's `headers:` against the operation.** `body:`, `query:` and `pathParams:` are measured

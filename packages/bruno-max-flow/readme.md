@@ -17,20 +17,27 @@ with an upstream package by name or path. It must not import `bruno-app` or `bru
 ## Status
 
 **All six entry points are implemented** and the conformance suite is green — F1–F4 and the
-engine-level rows of 001-C §7. What that covers is the §7 materialization pipeline, the §10.2
-dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's sub-flows, §14.5's
-capture directory in both directions, and 002 §11.1's resolved graph.
+engine-level rows of 001-C §7. What that covers is §5.4's document schema, the §7 materialization
+pipeline, the §10.2 dialect, §9's graph, datasets and slots, §11's retry and propagation, §12's
+sub-flows, §14.5's capture directory in both directions, and 002 §11.1's resolved graph.
 
-Not implemented: cookie-jar scoping (§7.6), the §5.4 document schema, and **the
-primary half of §14.4's redaction**. §14.4 specifies two
-mechanisms; the header-name denylist is in `redact.ts`, and provenance tracking is not, because
-§13.2's `variables` carries no field saying which environment entries are `secret: true`. That input
-now exists on one side — the Electron host receives whole variable entries with the flag intact
-(002 §7.2, 002-C U5.2) — so what remains is a tier field for it to travel in and the tracking
-itself; 001-C's R4n holds the rows either way.
-`config.capturePreviewBytes` is likewise unread: previews are the reporter's inline copy, and no
-flow reporter writes one yet.
-`tests/conformance/fixtures/readme.md` lists the conformance rows that go with all of these.
+The one thing §14.4 asks for that a `bru` run does not get is **provenance redaction**. §14.4
+specifies two mechanisms and the engine has both: the header-name denylist, and
+`createSecretTracker` in `redact.ts`, which masks the values a run was told are secret wherever
+they later surface — so a secret promoted into a shared slot (§9.1) or extracted into an output
+stays masked for free. `bruno-electron` feeds the tracker from the environment entries it decrypts
+before the renderer ever sees them (002 §7.2, 002-C U5.2).
+
+**`bruno-cli` passes no `secrets`, and that is a decision rather than a shortfall.** It holds no
+value it *knows* to be secret: a `secret: true` variable's value lives in the app's encrypted store
+and `parseEnvironment` zeroes it, and an `--env-var` was typed on a command line the shell already
+recorded — masking every one of those would blank ordinary values out of every report. Two sources
+still reach the tracker under `bru`, because the *engine* derives them rather than the host
+declaring them: a param the flow marked `secret: true`, and the credentials an auth profile
+resolves to. `redaction.integration.spec.js` under `bruno-cli` pins all three, the negative
+included. 001-C's R4n holds the rows for both hosts.
+
+`tests/conformance/fixtures/readme.md` maps the corpus onto the conformance rows it serves.
 
 The surface is six functions:
 
@@ -50,11 +57,12 @@ options are load-bearing and neither is the library default — `merge: true` (a
 otherwise leave a literal `<<` field, silently changing a committed flow) and the `!file` / `!...`
 custom tags. R4p pins both.
 
-The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5,
-`openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1, `run.ts` §9,
-§11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4, `capture.ts` §14.5,
-`history.ts` 002 §11.2 — the reader of what `capture.ts` writes, sharing its path computation so the
-layout has one implementation rather than two — and `describe.ts` 002 §11.1.
+The modules under `src/` map onto the spec rather than onto layers: `document.ts` is §5, `schema/`
+§5.4, `openapi.ts` §6, `materialize.ts` §7, `expression.ts` §10.2, `step.ts` §10 and §11.1,
+`run.ts` §9, §11.2 and §12, `dataset.ts` §9.4, `validate.ts` §14.3, `redact.ts` §14.4,
+`capture.ts` §14.5, `history.ts` 002 §11.2 — the reader of what `capture.ts` writes, sharing its
+path computation so the layout has one implementation rather than two — and `describe.ts` 002
+§11.1.
 
 `references.ts` is shared by `validate.ts` and `describe.ts` for the same reason: §8.3 makes raw
 `.body` access legal but *undeclared*, so the validator's warning and the graph's dashed edge come
@@ -80,11 +88,17 @@ already gets (002 §7.3) — which is the payoff the port design was for, and th
 `MaterializedRequest.auth` had to become Bruno's real `Auth` shape rather than the flat form a flow
 authors (001 §6.4, 001-C R4j).
 
-Two limits worth knowing, both recorded where they belong rather than only here. Cookie-jar scoping
-(§7.6) is not honoured: `bruno-electron`'s cookie jar is process-wide, so `StepContext.cookieJar` has
-nothing to map onto and dataset iterations share cookies. And a collection in **safe mode** cannot
-run a flow's `script:` forms — quickjs discards the value a script evaluates to, and the port refuses
-rather than silently running it in the node VM.
+Two things about this host are worth knowing, both recorded where they belong rather than only here.
+A collection in **safe mode** runs a flow's `script:` forms rather than refusing them or escalating
+to `node:vm`, which took a second QuickJS entry point: the sandbox's own closure resolves to the
+fixed string `'done'` and discards whatever a script evaluated to, which is the one thing a flow
+script exists to produce. `runScriptInQuickJsForValue`
+(`bruno-js/src/fork/quickjs-value-runner.js`) dumps the value out of the VM instead, and both hosts
+use it. A flow with no collection has no `securityConfig` to read and takes `safe` as the reading of
+that absence. And **cookie-jar scoping (§7.6) is honoured**: the engine mints a jar id per run and
+per dataset iteration and never looks inside it, so each host only has to give an id a jar — here
+cloned from the app's process-wide jar at first use, so a flow starts from the session the app
+already has; under `bru`, empty, there being no such session to inherit.
 
 `bruno-app` is the third, under `src/fork/flows/` behind the one delegation surface `src/fork/registry.js`
 (001 §13.3): the sidebar section, the flow tab, a hand-rolled SVG graph, run controls and the step

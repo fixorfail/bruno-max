@@ -35,8 +35,9 @@ steps:
   - id: follow_up
     operation: regress-api#getState
 
-  # The four-way list §9.1 gives cleanup: the question this fixture asks is whether the step runs
-  # after the run stopped, not how a bare `status: [cancelled]` resolves — which §18 still has open.
+  # The four-way list §9.1 gives cleanup, which is the form a cleanup step takes: declaring
+  # `cancelled` makes a step eligible for the window, and naming a status the parent reached is what
+  # makes its dependency met (§11.3). `r4g-cleanup-bare-cancelled.flow.yml` is the other half.
   - id: cleanup
     operation: regress-api#getThing
     depends:

@@ -1,9 +1,10 @@
 # 002 — API Flows UI (run & observe)
 
-**Status:** Draft — the three questions 001 owed this spec are answered; §14 carries one of its own,
-local to `readCapture`'s options
+**Status:** **Implemented.** The sidebar, the flow tab, the graph, the run controls, the step
+detail pane and the run history are built on [001](./001-api-flows.md)'s engine boundary; §15 holds
+what is deliberately deferred, the visual builder above all.
 **Owner:** Jake Campbell
-**Last revised:** 2026-09-03
+**Last revised:** 2026-09-09
 
 The app surface for [001](./001-api-flows.md): open a `.flow.yml`, see its graph, run it against the
 app's environment and auth, watch it execute, and diagnose a failure down to the attempt that caused
@@ -2009,9 +2010,10 @@ Three properties this inherits from 001 §14.5 rather than inventing:
   `.bruno-runs/` directory downloaded from a build artifact opens in the app exactly as a local run
   does. This is the strongest argument for reading the directory format rather than an app-private
   store.
-- **Nothing is pruned.** 001 §14.5 keeps every run: the directory is gitignored, grows with each
-  run, and is the user's to clear. The UI shows what is on disk and does not delete; clearing runs
-  from the app is 001 §19's future work, not a policy a viewer applies on its own.
+- **Nothing is pruned, and the app never will.** 001 §14.5 keeps every run: the directory is
+  gitignored, grows with each run, and is the user's to clear. Managing those files is theirs and not
+  the app's — 001 §3 makes it a non-goal, and there is no removal port for a viewer to reach even if
+  it wanted one. The UI shows what is on disk.
 - **Redaction already happened.** Captures are written redacted, so nothing here needs to filter.
 
 Runs from a *different* flow in the same scope are excluded — `run.json` names its flow, which is
@@ -2483,12 +2485,18 @@ never-started, without claiming an outcome for any of them. On a complete run it
 branch on which fields are present.
 
 **`stepIds` is an input rather than something the reader discovers, because 001 §14.5's directory
-name is a lossy encoding of the step id.** The segment replaces `/` with `__`, suffixes a reserved
-Windows device name, and truncates a long id to a hash — so `child__use` is either `child/use` or a
-step genuinely named `child__use`, and nothing on disk separates them. Walking the tree and inverting
-the names would answer confidently and sometimes wrongly. The caller already holds the ids it cares
-about — the graph `describeFlow` returned — so the decidable question is which of *those* have a
-capture, and the id-to-segment mapping stays in the engine, where §14.5 puts every path computation.
+name is a lossy encoding of the step id.** A sub-flow's id nests one directory per segment, a
+reserved Windows device name takes a suffix, and a segment over the cap is truncated to a hash — so
+a path on disk does not invert to the id that produced it, and walking the tree would answer
+confidently and sometimes wrongly. The caller already holds the ids it cares about — the graph
+`describeFlow` returned — so the decidable question is which of *those* have a capture, and the
+id-to-segment mapping stays in the engine, where §14.5 puts every path computation.
+
+That this reader **probes** rather than walks is also what lets the layout nest at all: `auth` and
+`auth/login` are asked for separately and each resolves to its own path, so a container step being a
+directory's parent costs nothing. 001 §14.5 records the converse — that flattening `auth/login` to
+`auth__login` collides with a legal top-level step of that name — which is the ambiguity this
+paragraph used to describe as unavoidable.
 
 **`params` and `vars` are absent rather than empty when a run did not record them**, and the
 distinction is `flowChanged`'s: absent is *unknown*, not "none were supplied", and §5.6 draws no
@@ -3221,4 +3229,4 @@ app so that a UI deferral is recorded once rather than in two tables that would 
 | **Diffing two runs** | §10 makes both runs readable, which is the prerequisite; what to diff (bodies? outputs? timings?) is unclear without watching people use it | A diff model over `StepCapture`, and evidence about which comparison people reach for first |
 | **OS-level run notifications** | §4.1 covers the ambient case; an OS notification is a third surface needing a preference, and no Electron `Notification` usage exists in the app to build on | Evidence that flows run long enough for people to leave the app during one |
 | **Opening a `connectors.yml` from its diagnostic** | §6 lists a connector-file diagnostic with its file and line named and no control, because the app has no tab that can open a file that is not a `.flow.yml` | Three things, not one: an electron read guard for a `connectors.yml` under the scope root, a watcher on it so a fix re-validates the flows it serves, and a tab type for a file that is not a `.flow.yml` |
-| **Cross-run trends** | §3 excludes analytics; `.bruno-runs/` retention (default 10) is too short a window to trend over anyway | A durable run store, which is a different feature from reading artifacts |
+| **Cross-run trends** | §3 excludes analytics, and `.bruno-runs/` is a directory the user prunes by hand (001 §3) rather than a store with a queryable history | A durable run store, which is a different feature from reading artifacts |

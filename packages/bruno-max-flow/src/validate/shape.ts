@@ -255,6 +255,64 @@ const checkReservedNames = (flow: NormalizedFlow, report: Report) => {
 };
 
 /**
+ * §8.2: `bru` is not in a flow script's scope, in either sandbox or either host.
+ *
+ * A script reaching for it compiles and then throws `ReferenceError` mid-run, which names the symbol
+ * and not the reason — and the author most likely to write it is one porting a `.bru` script, where
+ * `bru.setVar` is how data moves. In a flow it moves through `outputs:` and `shared:` instead, and
+ * the difference is the point rather than an omission: those are *declared*, so §9.1 can order the
+ * writers against the readers and 002 §5 can draw the edge. A `bru.setVar` write is a side channel
+ * the graph cannot show and the validator cannot order.
+ *
+ * A warning rather than an error, because the match is textual: `bru` inside a string or a comment
+ * is not a call, and refusing to run a flow over a substring would be worse than the throw it
+ * replaces.
+ */
+const BRU_REFERENCE = /\bbru\s*\./;
+
+const checkBruUsage = (flow: NormalizedFlow, report: Report) => {
+  const scripts: { source: string; stepId?: string; node: (string | number)[] }[] = [];
+
+  for (const [name, source] of Object.entries(flow.functions.define)) {
+    scripts.push({ source, node: ['functions', 'define', name] });
+  }
+
+  flow.steps.forEach((step, index) => {
+    step.pre.forEach((entry, at) => {
+      scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'pre', at] });
+    });
+    step.when.forEach((entry, at) => {
+      if (typeof entry !== 'string') {
+        scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'when', at] });
+      }
+    });
+    step.outputs.forEach((entry, at) => {
+      if (entry.script) {
+        scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'outputs', at] });
+      }
+    });
+    if (step.retry.shouldRetry) {
+      scripts.push({
+        source: step.retry.shouldRetry,
+        stepId: step.id,
+        node: ['steps', index, 'retry', 'shouldRetry']
+      });
+    }
+  });
+
+  for (const { source, stepId, node } of scripts) {
+    if (!BRU_REFERENCE.test(source)) continue;
+    report.warn(
+      'bru-unavailable',
+      'bru is not in scope in a flow script and this will throw at run time — a value a later step '
+      + 'needs is declared with outputs: or a shared: slot, which is what lets the graph order it (§8.2)',
+      stepId,
+      node
+    );
+  }
+};
+
+/**
  * §12.5's lint. A required param with no default and no `library: true` is a flow a glob run fires
  * and reports as a missing-param failure that says nothing about the cause. A warning, because
  * taking the param from `--param` on every invocation is legitimate.
@@ -495,6 +553,7 @@ export const checkShape = (flow: NormalizedFlow, report: Report, options: Option
   checkDropPlacement(flow, report);
   checkNullOutputs(flow, report);
   checkReservedNames(flow, report);
+  checkBruUsage(flow, report);
   checkLibraryFlag(flow, report, options.supplied);
   checkExpressions(flow, report);
   checkExports(flow, report, options.published);

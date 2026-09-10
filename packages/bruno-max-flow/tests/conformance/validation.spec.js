@@ -63,6 +63,50 @@ describe('R4h — Request validation', () => {
     expect(run.callsFor('createThing')).toHaveLength(0);
   });
 
+  /**
+   * §10.1 and R4j: what `assertions[]` holds for a step that never dispatched.
+   *
+   * It is **empty**, not all-passing. The distinction is invisible to `every(passed)` — an empty
+   * array satisfies it vacuously, which is how R4j came to say "all pass" of an engine that reports
+   * nothing — and it is the whole difference on 002 §9's assertions tab, where a list of green
+   * checks says the response was inspected and found correct. Nothing was inspected: there is no
+   * response to inspect, and a check that never ran has no verdict to report.
+   */
+  it('reports no assertions at all for a step whose request never went out', async () => {
+    const { entry, files } = variant(flow('r4h-request.flow.yml'), (document) => {
+      document.steps[1].body.count = 'about {{steps.state.count}}';
+      document.steps[1].assert = ['res.status eq 201'];
+    });
+    const run = await runFlow(entry, { files, responses });
+
+    expect(run.outcome('create')).toBe('failed:invalid-request');
+    expect(run.callsFor('createThing')).toHaveLength(0);
+    // Not `[{ passed: true }]` — the assertion was never evaluated, and §14.6's reason is the only
+    // thing reporting on this step.
+    expect(run.step('create').assertions).toEqual([]);
+    expect(run.step('create').validation.request.valid).toBe(false);
+  });
+
+  it('reports no assertions for a step whose request got no response either', async () => {
+    const { entry, files } = variant(flow('r4h-request.flow.yml'), (document) => {
+      document.steps[1].assert = ['res.status eq 201'];
+    });
+    const run = await runFlow(entry, {
+      files,
+      responses: {
+        getState: STATE,
+        createThing: () => {
+          throw new Error('ECONNREFUSED');
+        }
+      }
+    });
+
+    // The same rule one step further on: dispatch was attempted and nothing came back, so there is
+    // still no response for `res.status` to address.
+    expect(run.outcome('create')).toBe('failed:transport-error');
+    expect(run.step('create').assertions).toEqual([]);
+  });
+
   it('dispatches unvalidated where the step opts out', async () => {
     const { entry, files } = variant(flow('r4h-request.flow.yml'), (document) => {
       document.steps[1].body.count = 'about {{steps.state.count}}';
@@ -707,6 +751,65 @@ describe('R8.10 — Which operation a reference names', () => {
  * like any other. They are the objects a script's context puts *above* the flat spread of variables,
  * so a variable so named is reachable from a request and invisible to every script that reads it.
  */
+/**
+ * §8.2: `bru` is not in a flow script's scope, and the check exists so the author finds that out
+ * from `bru flow validate` rather than from a `ReferenceError` in the middle of a run.
+ *
+ * The position coverage is the point. An author porting a `.bru` script writes `bru.setVar` wherever
+ * that script had it, and a check wired into one script position and not the others is one that
+ * reports the tidy cases and misses the rest.
+ */
+describe('R8.9b — bru in a flow script', () => {
+  const warned = async (edit) => {
+    const { entry, files } = variant(flow('graph.flow.yml'), edit);
+    return of(await validate(entry, { files }), 'bru-unavailable');
+  };
+
+  it('warns from a shouldRetry predicate, naming what to use instead', async () => {
+    const [complaint] = await warned((document) => {
+      document.steps[1].retry = { maxAttempts: 2, shouldRetry: '(res) => bru.setVar("x", res.status)' };
+    });
+
+    expect(complaint.severity).toBe('warning');
+    expect(complaint.message).toContain('outputs:');
+    expect(complaint.message).toContain('shared:');
+  });
+
+  it.each([
+    ['an outputs: script', (document) => {
+      document.steps[1].outputs = { token: { script: '(res) => bru.getVar("t")' } };
+    }],
+    ['a when: script', (document) => {
+      document.steps[1].when = [{ script: '(ctx) => bru.getEnvVar("live") === "1"' }];
+    }],
+    ['a pre: script', (document) => {
+      document.steps[1].pre = { nonce: '() => bru.setVar("n", 1)' };
+    }],
+    // §8.6's block is flat: every key but `use` is a definition.
+    ['a functions: entry', (document) => {
+      document.functions = { sign: '() => bru.interpolate("{{x}}")' };
+    }]
+  ])('warns from %s', async (_label, edit) => {
+    expect(await warned(edit)).toHaveLength(1);
+  });
+
+  it('says nothing about a script that does not reach for it', async () => {
+    const quiet = await warned((document) => {
+      document.steps[1].outputs = { token: { script: '(res) => res.body.data.id' } };
+    });
+
+    expect(quiet).toEqual([]);
+  });
+
+  it('says nothing about a variable whose name merely contains bru', async () => {
+    const quiet = await warned((document) => {
+      document.steps[1].outputs = { token: { script: '(res, ctx) => ctx.brunoRef + ctx.bru_key' } };
+    });
+
+    expect(quiet).toEqual([]);
+  });
+});
+
 describe('R8.11 — Names a script’s context shadows', () => {
   it('warns about a var named env, naming what a script reads instead', async () => {
     const { entry, files } = variant(flow('graph.flow.yml'), (document) => {

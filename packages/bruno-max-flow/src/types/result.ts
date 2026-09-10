@@ -82,7 +82,13 @@ export type IterationResult = {
   row?: Vars;
   status: RunStatus;
   steps: StepResult[];
-  /** The steps whose outcome decided `status` — §14.6. Empty when it passed or was cancelled. */
+  /**
+   * The steps whose outcome decided `status` — §14.6. Empty when it passed.
+   *
+   * A cancelled iteration names the steps that had **already failed** when the interrupt arrived,
+   * without those steps having decided anything: the interrupt owns the status, and this is the
+   * only place a failure that happened first survives it.
+   */
   decidedBy?: string[];
 };
 
@@ -109,7 +115,7 @@ export type RunResult = {
   iterations: IterationResult[];
   /**
    * Every iteration's `decidedBy`, in iteration order and without repeats — the steps that decided
-   * this run's status.
+   * this run's status, or, where it was cancelled, the ones that had already failed under it.
    *
    * Step ids rather than a reason of its own, because each one already carries the `reason` and
    * `message` that say what it did: a second vocabulary here would be a restatement that can

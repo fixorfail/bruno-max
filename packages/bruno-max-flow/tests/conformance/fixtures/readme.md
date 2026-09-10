@@ -50,8 +50,16 @@ works, so they are as small as the rule allows and bind the generic `regressions
 | `r3-negative-no-optout.flow.yml` · `r3-optout-no-assertion.flow.yml` | R3 — each half of §10.3's two-part rule, asserted alone |
 | `r4-slot-nondescendant.flow.yml` | R4 — a slot read off the writer's branch |
 | `r4-slot-unwritten.flow.yml` | R4 and R5 — an unwritten slot resolves empty and reaches the wire as `""` |
+| `r4-slot-unwritten-typed.flow.yml` | §11.2 — the same slot in a typed field, where `""` and omission stop being interchangeable |
+| `r9-flow-iteration-nodataset.flow.yml` | §9.4 — `{{flow.iteration}}` resolving to `0` outside a dataset |
+| `r4g-cleanup-bare-cancelled.flow.yml` | §11.3 — a bare `status: [cancelled]` after a successful parent, beside the four-way list that works |
 | `r4-output-unproduced.flow.yml` | R4 and R4b — an unproduced output skips its consumer |
 | `r4-subflow-slot.flow.yml` · `r4-subflow-slot-child.flow.yml` | R4 — a caller's slot is not visible inside a sub-flow |
+| `r4-config-inherit.flow.yml` · `r4-config-inherit-child.flow.yml` | §12.3 — a caller's `config:` reaches a sub-flow that declares none |
+| `r4-config-own.flow.yml` · `r4-config-own-child.flow.yml` | §12.3 — the sub-flow's own `config:` wins over its caller's |
+| `r4-config-baseurl.flow.yml` · `r4-config-baseurl-child.flow.yml` | §12.3 — `baseUrl` is the one `config:` key that does not inherit; the caller names a host the sub-flow must not be sent to |
+| `r2-retry-exhausted-default.flow.yml` | §14.6 — `retries-exhausted` with no `shouldRetry` declared at all |
+| `r2-retry-outputs.flow.yml` | §11.1 — a predicate polling on `ctx.outputs`, with one output whose path matches nothing |
 | `r4-dataset-slots.flow.yml` | R4 — concurrent iterations each get their own slots |
 | `r4b-condition-false.flow.yml` · `r4b-unmet-dependency.flow.yml` · `r4b-cancelled.flow.yml` | R4b — the three skip reasons `failOnUnresolved` must leave alone |
 | `r4c-generated-vars.flow.yml` · `r4c-inline-generated.flow.yml` · `r4c-vars-steps-ref.flow.yml` | R4c — when `vars:` are evaluated, and what binding a generated value to one buys |
@@ -175,8 +183,11 @@ Three details are load-bearing rather than decorative:
 
 R4g2 and R4o need no fixture of their own: §14.5's layout is a property of *every* run, so
 `capture.spec.js` and `history.spec.js` assert it over the flows above — the retry one for a file
-per attempt, the dataset one for iteration nesting, the sub-flow pair for a flat `auth__login`, and
-`r4b-condition-false` for a skipped step writing no directory at all.
+per attempt, the dataset one for iteration nesting, the sub-flow pair for a nested `auth/login`, and
+`r4b-condition-false` for a skipped step writing no directory at all. §14.5's path rule has its own
+block in `capture.spec.js` beside those, asserted on `stepCaptureDir` rather than through a run: the
+cases that decide whether the rule is sound — a device name at depth, a segment past the cap, two
+ids differing only in how a separator is spelled — are ones no reasonable flow contains.
 
 ## What is not here
 
