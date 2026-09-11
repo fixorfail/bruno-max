@@ -34,10 +34,16 @@ jobs:
       - name: Install dependencies
         run: npm ci --legacy-peer-deps
 
-      # bruno-filestore's prepack fails to typecheck unless schema-types' dist is
-      # current, and bundle-cli.js turns that into a silent registry fallback.
-      - name: Build shared packages
-        run: npm run build:schema-types
+      # Generated build artifacts that no `prepack` produces. bruno-js has no prepack
+      # at all, and its sandbox bundle is gitignored — on a fresh checkout it simply
+      # is not there, so `npm pack` silently omits it and every `bru` invocation dies
+      # on `Cannot find module '../bundle-browser-rollup'`. scripts/setup.js is the
+      # only other place this runs; we do just this piece rather than the full setup,
+      # which starts by deleting node_modules.
+      - name: Generate build artifacts
+        run: |
+          npm run build:schema-types
+          npm run sandbox:bundle-libraries --workspace=packages/bruno-js
 
       - name: Bundle CLI
         run: node ./scripts/bundle-cli.js
@@ -70,6 +76,18 @@ jobs:
           if (failed) process.exit(1);
           NODE
           rm -f packed.json
+
+          # Bundled from source is not the same as complete: these are generated,
+          # gitignored files that are absent unless the step above ran.
+          CONTENTS=$(tar -tzf "$TARBALL")
+          for artifact in \
+            package/node_modules/@usebruno/js/src/sandbox/bundle-browser-rollup.js \
+            package/node_modules/@bruno-max/flow/dist/cjs/index.js; do
+            if ! grep -qx "$artifact" <<<"$CONTENTS"; then
+              echo "::error::$artifact is missing from the bundle"
+              exit 1
+            fi
+          done
 
       - name: Smoke test the tarball
         run: |
