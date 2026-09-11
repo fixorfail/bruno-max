@@ -1,0 +1,136 @@
+name: Release Bru CLI (bruno-max)
+
+# Builds the self-contained @usebruno/cli tarball from this fork and attaches it
+# to a GitHub release, so CI jobs can install it without an npm registry.
+
+on:
+  push:
+    tags:
+      - 'cli-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create/update (e.g. cli-v1.16.0-max.1)'
+        required: true
+      prerelease:
+        description: 'Mark the release as a prerelease'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Bundle and publish CLI tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      # bruno-filestore's prepack fails to typecheck unless schema-types' dist is
+      # current, and bundle-cli.js turns that into a silent registry fallback.
+      - name: Build shared packages
+        run: npm run build:schema-types
+
+      - name: Bundle CLI
+        run: node ./scripts/bundle-cli.js
+
+      # bundle-cli.js catches per-workspace `npm pack` failures and logs `skip <name>`,
+      # leaving that dependency pointed at the public registry — where this fork's code
+      # does not exist. Presence in node_modules proves nothing, so check provenance:
+      # a bundled package resolves as `file:./tarballs/...` in the packed package.json.
+      - name: Verify fork packages are bundled from source
+        run: |
+          set -euo pipefail
+          TARBALL=$(ls dist/cli-bundle/*.tgz)
+          tar -xzOf "$TARBALL" package/package.json > packed.json
+          node - <<'NODE'
+          const pkg = require('./packed.json');
+          // Packages this fork actually modifies: a registry fallback here ships
+          // upstream's code instead of ours, which is a broken release.
+          const required = ['@bruno-max/flow', '@usebruno/js'];
+          let failed = false;
+          for (const [name, spec] of Object.entries(pkg.dependencies || {})) {
+            if (!name.startsWith('@usebruno/') && !name.startsWith('@bruno-max/')) continue;
+            if (spec.startsWith('file:')) continue;
+            if (required.includes(name)) {
+              console.log(`::error::${name} resolved from the registry (${spec}) — this fork's changes are missing from the bundle`);
+              failed = true;
+            } else {
+              console.log(`::warning::${name} resolved from the registry (${spec}) — its npm pack failed`);
+            }
+          }
+          if (failed) process.exit(1);
+          NODE
+          rm -f packed.json
+
+      - name: Smoke test the tarball
+        run: |
+          set -euo pipefail
+          TARBALL=$(ls dist/cli-bundle/*.tgz)
+          npm install -g --prefer-offline "$TARBALL"
+          bru --version
+
+          # The fixture workspace's OpenAPI spec points at localhost:8081.
+          node -e '
+            require("http").createServer((req, res) => {
+              let body = "";
+              req.on("data", c => (body += c));
+              req.on("end", () => {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ id: "ord_1", url: req.url, headers: req.headers }));
+              });
+            }).listen(8081);
+          ' &
+          SERVER=$!
+          trap 'kill $SERVER 2>/dev/null || true' EXIT
+          npx wait-on tcp:8081 --timeout 30000
+
+          cd tests/flows/fixtures/workspace
+          bru flow list flows/linear.flow.yml
+          bru flow run flows/linear.flow.yml
+
+      - name: Name the asset
+        id: asset
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./packages/bruno-cli/package.json').version")
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir -p dist/release
+          cp "$(ls dist/cli-bundle/*.tgz)" "dist/release/bruno-max-cli-${VERSION}.tgz"
+          cp "$(ls dist/cli-bundle/*.tgz)" "dist/release/bruno-max-cli.tgz"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.asset.outputs.tag }}
+          VERSION: ${{ steps.asset.outputs.version }}
+          PRERELEASE: ${{ github.event.inputs.prerelease || 'false' }}
+        run: |
+          set -euo pipefail
+          NOTES=$(printf '%s\n' \
+            "Self-contained \`bru\` CLI built from \`${GITHUB_SHA}\` (bruno-cli ${VERSION})." \
+            "" \
+            "Install in CI:" \
+            '```bash' \
+            "npm install -g https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/bruno-max-cli-${VERSION}.tgz" \
+            '```')
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/release/*.tgz --clobber
+          else
+            FLAGS=()
+            [ "$PRERELEASE" = "true" ] && FLAGS+=(--prerelease)
+            gh release create "$TAG" dist/release/*.tgz \
+              --title "Bru CLI $TAG" \
+              --notes "$NOTES" \
+              "${FLAGS[@]}"
+          fi
