@@ -1,0 +1,21 @@
+# 004 §7: a retry is a request, and takes a token like any other. The delay is zero so every sleep
+# in the log is the limiter's, and the step is expected to fail — what is under test is how many
+# requests went out and how they were spaced, not the verdict.
+version: 1
+
+meta:
+  name: 004 — every attempt is paced
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+
+steps:
+  - id: flaky
+    operation: paced#pingA
+    retry:
+      maxAttempts: 3
+      delay: 0

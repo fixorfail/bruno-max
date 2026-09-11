@@ -68,6 +68,57 @@ const resolveOutputs = (entry, options = {}) =>
   });
 
 describe('R10.1 — A connector file supplies an operation\'s outputs', () => {
+  /**
+   * §8.5 reads a connector entry by §8.1's rule, so every form an `outputs:` block takes is
+   * available — the short path, `from:`, and `script:`. Written down because the entry looks like a
+   * path map, and an author who assumed it was one would declare the computed half inline in every
+   * flow, which is the duplication §8.5 exists to remove.
+   */
+  it('takes a script: output as readily as a path', async () => {
+    const files = collectionFile(
+      [
+        'version: 1',
+        'apis:',
+        '  things: ../../../../../specs/regressions-v1.yml',
+        'connectors:',
+        '  things#getThing:',
+        '    shouty:',
+        '      script: |',
+        '        (res) => res.body.data.name.toUpperCase()'
+      ].join('\n')
+    );
+    const run = await runFlow(flow('inherit.flow.yml'), { scope: SCOPE, files, responses: RESPONSES });
+
+    expect(run.result.status).toBe('passed');
+    expect(outputsOf(run, 'get_thing')).toEqual(expect.objectContaining({ shouty: 'WIDGET' }));
+  });
+
+  /**
+   * §8.6's library belongs to the flow the script runs in, and a connector file supplies none — so a
+   * connector script calling a shared helper is a run-time failure in any flow that does not declare
+   * it, not a validation one. Pinned because it is the sharp edge of the case above.
+   */
+  it('runs a connector script in the using flow\'s library, and says so when it is not there', async () => {
+    const files = collectionFile(
+      [
+        'version: 1',
+        'apis:',
+        '  things: ../../../../../specs/regressions-v1.yml',
+        'connectors:',
+        '  things#getThing:',
+        '    short:',
+        '      script: |',
+        '        (res) => lastFour(res.body.data.id)'
+      ].join('\n')
+    );
+
+    expect(await validate(flow('inherit.flow.yml'), { scope: SCOPE, files })).toEqual([]);
+
+    const run = await runFlow(flow('inherit.flow.yml'), { scope: SCOPE, files, responses: RESPONSES });
+    expect(run.outcome('get_thing')).toBe('failed:script-error');
+    expect(run.step('get_thing').message).toContain('lastFour is not defined');
+  });
+
   it('publishes connector-supplied outputs from a step with no outputs: block', async () => {
     const run = await runFlow(flow('inherit.flow.yml'), { scope: SCOPE, responses: RESPONSES });
 
@@ -388,5 +439,200 @@ describe('R10.5 — Where each output was declared', () => {
       'thingName:collection'
     ]);
     expect(listing[2].outputs).toEqual([]);
+  });
+});
+
+/**
+ * §8.5's binding defaults — everything about an API that is true of the *service* rather than of one
+ * flow, declared once in the connector file and inherited by every flow that binds the document.
+ *
+ * The same identity rule the outputs above are matched on: by the document a `source:` resolves to,
+ * never by the alias, so a flow that named it something else still gets them.
+ */
+describe('R10.6 — a connector file supplies the binding, not only its outputs', () => {
+  const ECHO = { status: 200, body: { ok: true } };
+
+  it('inherits the host, the auth profile, the defaults and the colour', async () => {
+    const run = await runFlow(flow('binding-inherit.flow.yml'), { scope: SCOPE, responses: { echoA: ECHO } });
+
+    expect(run.status).toBe('passed');
+    const call = run.call('echoA');
+    expect(call.url).toContain('https://shared.example.com');
+    expect(call.auth).toEqual(expect.objectContaining({ mode: 'bearer', bearer: { token: 'tok-shared' } }));
+    expect(call.headers).toEqual(expect.objectContaining({ 'X-Tenant-Id': 'acme', 'X-Client': 'shared' }));
+    expect(call.query).toEqual(expect.arrayContaining([{ name: 'api_version', value: '2026-01' }]));
+  });
+
+  it('carries the inherited colour into the description a viewer draws', async () => {
+    const description = await describeFlow(flow('binding-inherit.flow.yml'), { scope: SCOPE });
+
+    expect(description.apis).toEqual(
+      expect.arrayContaining([expect.objectContaining({ alias: 'svc', color: '#8ab4f8' })])
+    );
+  });
+
+  it('lets the flow override field by field, and keeps what it did not mention', async () => {
+    const run = await runFlow(flow('binding-override.flow.yml'), { scope: SCOPE, responses: { echoA: ECHO } });
+
+    expect(run.status).toBe('passed');
+    const call = run.call('echoA');
+    expect(call.url).toContain('https://own.example.com');
+    expect(call.auth).toEqual(expect.objectContaining({ mode: 'bearer', bearer: { token: 'tok-own' } }));
+    // The flow's own X-Client wins; the X-Tenant-Id it never mentioned still arrives.
+    expect(call.headers).toEqual(expect.objectContaining({ 'X-Tenant-Id': 'acme', 'X-Client': 'own' }));
+    // `!...` drops an inherited default exactly as it drops an inherited output.
+    expect(call.query).toEqual([]);
+  });
+
+  it('gives the flow\'s own config.baseUrl the rank above the inherited host', async () => {
+    const run = await runFlow(flow('binding-config-baseurl.flow.yml'), { scope: SCOPE, responses: { echoA: ECHO } });
+
+    expect(run.status).toBe('passed');
+    const call = run.call('echoA');
+    // §6.3: a scope file's host is a default for a flow that named none, and this flow named one.
+    expect(call.url).toContain('https://flow-config.example.com');
+    // Everything else the connector file supplied still applies.
+    expect(call.headers).toEqual(expect.objectContaining({ 'X-Tenant-Id': 'acme' }));
+  });
+
+  it('validates clean', async () => {
+    for (const name of ['binding-inherit', 'binding-override', 'binding-config-baseurl']) {
+      expect(await validate(flow(`${name}.flow.yml`), { scope: SCOPE })).toEqual([]);
+    }
+  });
+
+  it('reports a connector file\'s own bad colour against the connector file', async () => {
+    const diagnostics = await validate(flow('binding-inherit.flow.yml'), {
+      scope: SCOPE,
+      files: collectionFile(
+        ['version: 1', 'apis:', '  shared-svc:', '    source: ../../../../../specs/paced-other-v1.yml', '    color: blue', 'connectors: {}'].join('\n')
+      )
+    });
+
+    expect(of(diagnostics, 'invalid-api-color')).toEqual([
+      expect.objectContaining({ severity: 'warning', file: COLLECTION_FILE })
+    ]);
+  });
+});
+
+/**
+ * §8.5's identity across directory depth — R10.7.
+ *
+ * The connector file and the flow it configures sit at different depths, so the same document is
+ * `../../../specs/…` in one and `../../../../specs/…` in the other. Matching is on what each path
+ * resolves to *against its own file*, never on the string, which is what makes a `flows/shared/`
+ * library configurable from the scope's connector file at all.
+ */
+describe('R10.7 — a library one directory deeper than the connector file', () => {
+  const ECHO = { status: 200, body: { ok: true } };
+
+  it('inherits the binding through the differing relative paths', async () => {
+    const run = await runFlow(flow('uses-shared-binding.flow.yml'), { scope: SCOPE, responses: { echoA: ECHO } });
+
+    expect(run.status).toBe('passed');
+    const call = run.call('echoA');
+    // Neither the library nor its caller names a host; the workspace connector file does.
+    expect(call.url).toContain('https://workspace-scope.example.com');
+    expect(call.headers).toEqual(expect.objectContaining({ 'X-Scope': 'workspace' }));
+  });
+
+  it('resolves the library against its own scope, not its caller\'s', async () => {
+    // §12.3: the library is under the workspace, so the collection file's bindings never reach it —
+    // which is the same rule `uses-shared.flow.yml` pins for outputs, one field along.
+    const run = await runFlow(flow('uses-shared-binding.flow.yml'), { scope: SCOPE, responses: { echoA: ECHO } });
+
+    expect(run.call('echoA').headers['X-Tenant-Id']).toBeUndefined();
+  });
+
+  it('validates clean', async () => {
+    expect(await validate(flow('uses-shared-binding.flow.yml'), { scope: SCOPE })).toEqual([]);
+  });
+});
+
+/**
+ * §8.5's auth profiles — R10.8.
+ *
+ * A credential is a property of the service, so it belongs beside the binding that takes it. The
+ * profile reads a *slot* rather than a step: a connector file has no steps of its own, and the token
+ * is produced by whichever step signed in — which is the case §9.1's slots exist for.
+ *
+ * The flow keeps the `shared:` declaration. That line says which of *this* flow's steps may write
+ * the value, which is a fact about this graph and not about the service.
+ */
+describe('R10.8 — a connector file declares the credential beside the binding', () => {
+  const SIGNED = { status: 200, body: { data: { token: 'tok-signed-in' } } };
+  const RESPONSES = { sessionSignIn: SIGNED, sessionThing: SIGNED };
+
+  it('authenticates from a profile no flow declares', async () => {
+    const run = await runFlow(flow('profile-inherit.flow.yml'), { scope: SCOPE, responses: RESPONSES });
+
+    expect(run.status).toBe('passed');
+    expect(run.call('sessionThing').auth).toEqual(
+      expect.objectContaining({ mode: 'apikey', apikey: expect.objectContaining({ key: 'Authorization' }) })
+    );
+  });
+
+  it('resolves the slot the profile reads in the using flow\'s scope', async () => {
+    const run = await runFlow(flow('profile-inherit.flow.yml'), { scope: SCOPE, responses: RESPONSES });
+
+    // The value came from this flow's own sign_in step, through the slot — nothing the scope knows.
+    expect(run.call('sessionThing').auth.apikey.value).toBe('Token tok-signed-in');
+    // And the step that sent no credential sent none: `auth: none` still opts out.
+    expect(run.call('sessionSignIn').auth).toEqual({ mode: 'none' });
+  });
+
+  it('lets a flow override an inherited profile by name', async () => {
+    const run = await runFlow(flow('profile-override.flow.yml'), { scope: SCOPE, responses: RESPONSES });
+
+    expect(run.status).toBe('passed');
+    expect(run.call('sessionThing').auth).toEqual(
+      expect.objectContaining({ mode: 'bearer', bearer: { token: 'tok-flow-local' } })
+    );
+  });
+
+  it('validates clean, and counts the slot as read', async () => {
+    // `unused-slot` would fire if the profile's reference were invisible to §14.3's sweep.
+    expect(await validate(flow('profile-inherit.flow.yml'), { scope: SCOPE })).toEqual([]);
+    expect(await validate(flow('profile-override.flow.yml'), { scope: SCOPE })).toEqual([]);
+  });
+
+  it('names the flow that forgot the slot, before anything is sent', async () => {
+    const { entry, files } = variant(flow('profile-inherit.flow.yml'), (document) => {
+      delete document.shared;
+      document.steps[0].shared = undefined;
+    });
+
+    expect(of(await validate(entry, { scope: SCOPE, files }), 'undeclared-slot')).toEqual([
+      expect.objectContaining({ severity: 'error', stepId: 'call' })
+    ]);
+  });
+
+  /**
+   * A step inheriting its binding's `auth:` names neither the profile nor the file it came from, so
+   * a `{{shared.x}}` inside that profile surfaces as a step depending on a slot nothing in the flow
+   * mentions. The diagnostic has to carry the missing half or it names a mystery.
+   */
+  it('names the connector file when an inherited profile reads a slot the flow lacks', async () => {
+    const { entry, files } = variant(flow('profile-inherit.flow.yml'), (document) => {
+      delete document.shared;
+      document.steps[0].shared = undefined;
+    });
+    const [complaint] = of(await validate(entry, { scope: SCOPE, files }), 'undeclared-slot');
+
+    expect(complaint.message).toContain('auth profile session');
+    expect(complaint.message).toContain('connectors.yml');
+  });
+
+  it('reports a malformed profile against the connector file', async () => {
+    const diagnostics = await validate(flow('profile-inherit.flow.yml'), {
+      scope: SCOPE,
+      files: collectionFile(
+        ['version: 1', 'authProfiles:', '  session:', '    mode: apikeys', 'connectors: {}'].join('\n')
+      )
+    });
+
+    expect(of(diagnostics, 'invalid-auth-profile')).toEqual([
+      expect.objectContaining({ severity: 'error', file: COLLECTION_FILE, message: expect.stringContaining('apikey') })
+    ]);
   });
 });

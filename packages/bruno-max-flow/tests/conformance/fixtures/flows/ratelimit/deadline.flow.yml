@@ -1,0 +1,22 @@
+# 004 §7's budget: a wait the run has no time left for is refused rather than served. The second
+# step's turn is an hour away and the step may spend a second on itself, so the limiter gives up
+# waiting and the step reports the budget that elapsed — it never dispatches.
+version: 1
+
+meta:
+  name: 004 — a wait longer than the step's budget
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: hour
+
+steps:
+  - id: first
+    operation: paced#pingA
+  - id: second
+    operation: paced#pingB
+    depends: [first]
+    maxDuration: 1000

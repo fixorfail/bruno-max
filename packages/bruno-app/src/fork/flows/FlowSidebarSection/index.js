@@ -296,8 +296,17 @@ const sectionsOf = ({ flows, libraries, scripts, fixtures }) =>
       tree: buildFlowTree(section.flows, section.key)
     }));
 
-/** Which of a group's three lists an entry belongs to — the watcher's flags, in precedence order. */
+/** Which of a group's four lists an entry belongs to — the watcher's flags, in precedence order. */
 const bucketOf = (entry) => {
+  /**
+   * §8.5's connector file sits with the libraries, and is the only row there that is not a flow.
+   *
+   * It belongs to the same question they answer: these are the parts the scope's flows are built
+   * from rather than things to run. A label of its own for a section that holds exactly one file —
+   * and only in the scopes that have one — would be a heading per item, which §4.1 already declines
+   * for the flows themselves.
+   */
+  if (entry.connectors) return 'libraries';
   if (entry.script) return 'scripts';
   if (entry.fixture) return 'fixtures';
   // The flag rides the watcher's tree entry (§11.3): the section lists flows nobody has opened, and
@@ -893,6 +902,25 @@ const FlowSidebarSection = () => {
           style={{ '--flow-depth': depth }}
           data-testid={`flow-row-${relativePath}`}
           onClick={() => openFlow(flow, 'flow-fixture')}
+        >
+          <span className="flow-name">{flow.filename}</span>
+        </div>
+      );
+    }
+
+    /**
+     * §8.5's connector file opens as plain YAML and carries no menu. Like a fixture it has no `meta:`
+     * to edit and no rename — the engine finds it by its exact path, so a renamed one is a file the
+     * run no longer reads.
+     */
+    if (flow.connectors) {
+      return (
+        <div
+          key={flow.pathname}
+          className="flow-row"
+          style={{ '--flow-depth': depth }}
+          data-testid={`flow-row-${relativePath}`}
+          onClick={() => openFlow(flow, 'flow-connectors')}
         >
           <span className="flow-name">{flow.filename}</span>
         </div>

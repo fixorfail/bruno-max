@@ -28,6 +28,10 @@ apis:                          # alias -> OpenAPI document; required to send any
     auth: service-account              # default profile for steps using this API
     defaultHeaders: { X-Tenant: "{{tenantId}}" }
     defaultQuery: { version: "2024-01" }
+    rateLimit:                         # optional: do not call this API faster than
+      requests: 100
+      per: minute                      # second (default) | minute | hour
+      burst: 10                        # default 1 = strict even spacing
 
 config:
   baseUrl: "{{apiBaseUrl}}"    # default: the document's servers[0]
@@ -302,6 +306,19 @@ connectors:
     userId: data.user.id
 ```
 
+### `rateLimit:` — pacing an API
+
+`rateLimit` on a binding caps how fast requests leave for that API. It is a **token bucket**:
+`requests` per `per`, with `burst` (default 1, i.e. strict even spacing) requests allowed back to
+back before the pacing takes hold.
+
+The bucket belongs to the resolved **document** and to the **run** — two aliases for one file share
+it, a sub-flow shares its caller's, and `--flows N` runs N of them. Every attempt takes a turn, so
+retries are paced too. Nothing reads `Retry-After` or adapts: `rateLimit` keeps you from provoking a
+429, `shouldRetry` handles one that arrives anyway. `bru flow run --no-rate-limit` ignores them all.
+Two flows in one run declaring different rates for one document: the stricter wins, with a
+`conflicting-rate-limit` warning.
+
 Matching is by the document and `operationId` a reference **resolves to**, not by the alias string —
 the connector file's aliases are its own. Layers, later winning: workspace file → collection file →
 the step's `outputs:`. A step **extends** what it inherits; a same-named entry overrides, and `!...`
@@ -312,6 +329,24 @@ drops one:
       state:     !...                 # drop the inherited entry
       paymentId: data.payment.id      # override it
 ```
+
+**A connector file's `apis:` block supplies the binding, not just the alias.** `baseUrl`, `auth`,
+`defaultHeaders`, `defaultQuery`, `color` and `rateLimit` are inherited by every flow binding the same
+document — matched on the resolved document, so the aliases need not agree. The flow's own value wins
+field by field; `defaultHeaders`/`defaultQuery` merge key by key and take `!...` to drop an inherited
+one. `source:` and the alias are never inherited — a flow still names the APIs it talks to.
+
+Two ranks to remember: a flow's `config.baseUrl` beats an inherited `baseUrl` (a binding's own
+`baseUrl:` beats both), and a binding's `auth:` names a profile by name.
+
+**A connector file may declare `authProfiles:` too**, inherited by name (the flow's own wins) and
+resolved in the *using* step's scope — so `{{shared.x}}` / `{{params.x}}` mean the using flow's. It
+has no steps of its own, so a shared credential reads a slot; the flow still declares
+`shared: { x: { writers: any } }` and writes it, or gets `undeclared-slot`.
+
+Connector entries take **every** output form a step's `outputs:` does — short path,
+`{ from: headers|status|pre, path }`, and `script:`. A `script:` there runs with the *using* flow's
+`functions:` library, which the connector file cannot supply, so keep it self-contained.
 
 `null` is not the removal token — that is `null-output`. Connector-supplied outputs are ordinary
 declarations: drawn as data edges, held to the visibility rule, and their paths checked against the
@@ -702,6 +737,10 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
 | `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
+| `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 |
+| `invalid-auth-profile` | A `flows/connectors.yml` auth profile declares no `mode:`, or one that is not a scheme |
+| `duplicate-binding` *(warning)* | Two aliases in one `flows/connectors.yml` bind the same document — only the later one's defaults apply |
+| `conflicting-rate-limit` *(warning)* | Two flows in the run bind the same API document at different rates — the run takes the stricter |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them |
@@ -737,7 +776,7 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `external-schema-ref` *(warning)* | The operation's schema `$ref`s another file; only the bound document is read, so the body is unchecked and the run will fail the step |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
 | `unused-output` *(warning)* | An output nothing in the flow reads |
-| `unused-slot` *(warning)* | A declared slot nothing reads |
+| `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it counts as a read |
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into |
 | `unreachable-step` *(warning)* | A step nothing can make eligible |
 | `null-output` | An output written `name: null`, in a step or a connector file — `!...` is the removal token, `null` drops nothing |

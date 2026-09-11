@@ -1,0 +1,15 @@
+# The child of subflow.flow.yml. It binds the same document under a name of its own and declares no
+# limit — 004 §6's rule that a sub-flow does not get to route around its caller's pacing.
+version: 1
+
+meta:
+  name: 004 — child
+  library: true
+
+apis:
+  inner:
+    source: ../../specs/paced-v1.yml
+
+steps:
+  - id: ping
+    operation: inner#pingC

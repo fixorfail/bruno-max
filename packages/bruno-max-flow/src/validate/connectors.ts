@@ -11,7 +11,8 @@
  * thing to fix is in the file the diagnostic names.
  */
 import type { Connectors, ConnectorEntry, ConnectorFile } from '../connectors';
-import { deref, type ResolvedOperation } from '../openapi';
+import { AUTH_MODES } from '../schema/v1';
+import { deref, resolveSpecSource, type ResolvedOperation } from '../openapi';
 import type { Diagnostic } from '../types/result';
 import { propertiesOf, type Schema } from './operation';
 import { suggest } from './report';
@@ -86,13 +87,121 @@ const checkEntry = (
   }
 };
 
+/** The keys §6.2 gives a binding. A connector file's `apis:` is the same block, read by one rule. */
+const BINDING_KEYS = ['source', 'baseUrl', 'auth', 'defaultHeaders', 'defaultQuery', 'color', 'rateLimit'];
+
+/**
+ * §8.5's `apis:` block, which exists so an entry has an alias to hang on — and which 004 §5 gave a
+ * second job: a service's `rateLimit:` declared once for every flow that calls it.
+ *
+ * Nothing else checks this block. A flow's is covered by §5.4's schema, and a connector file never
+ * meets that schema, so a key misspelt here is a limit that silently never applied — the run goes at
+ * full speed and nothing says why. That is the failure this file exists to prevent one layer down.
+ */
+type Report = (code: string, message: string, node: (string | number)[]) => void;
+
+const checkBindings = (file: ConnectorFile, error: Report, warn: Report): void => {
+  /**
+   * Two aliases in one file for one document. Harmless while `apis:` only gave an entry something to
+   * hang on — an entry names its alias, so both worked — and not harmless now that the block also
+   * carries defaults a flow inherits: those are matched on the document, so one alias's fields
+   * silently replace the other's. The later declaration is the one that applies.
+   */
+  const seen = new Map<string, string>();
+  for (const [alias, binding] of Object.entries(file.apis)) {
+    const identity = resolveSpecSource(binding.source, file.file);
+    const first = seen.get(identity);
+    if (first) {
+      warn(
+        'duplicate-binding',
+        `apis.${alias} binds the same document as apis.${first}, and only the later one's defaults `
+        + 'apply to a flow that inherits them — declare the document once',
+        ['apis', alias]
+      );
+    } else {
+      seen.set(identity, alias);
+    }
+  }
+
+  for (const [alias, raw] of Object.entries(file.rawApis)) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+
+    for (const key of Object.keys(raw as Record<string, unknown>)) {
+      if (BINDING_KEYS.includes(key)) continue;
+      warn(
+        'unknown-property',
+        `apis.${alias} declares ${key}, which is not a binding property${suggest(key, BINDING_KEYS)}`,
+        ['apis', alias, key]
+      );
+    }
+
+    const binding = file.apis[alias];
+    if (!binding) continue;
+
+    // §6.2's colour, checked here for the same reason the rate is: a flow inherits it, and a
+    // diagnostic against every flow that binds the document would name none of the files to fix.
+    if (binding.color !== undefined && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(binding.color)) {
+      warn(
+        'invalid-api-color',
+        `apis.${alias} declares color: ${binding.color}, which is not a #rgb or #rrggbb colour`,
+        ['apis', alias, 'color']
+      );
+    }
+
+    const limit = binding.rateLimit;
+    if (!limit) continue;
+    for (const [key, value] of [
+      ['requests', limit.requests],
+      ['burst', limit.burst]
+    ] as const) {
+      if (Number.isInteger(value) && value >= 1) continue;
+      error(
+        'invalid-rate-limit',
+        `apis.${alias} declares rateLimit.${key} as ${Number.isNaN(value) ? 'a value that is not a number' : String(value)} — it is a whole number of at least 1`,
+        ['apis', alias, 'rateLimit', key]
+      );
+    }
+  }
+};
+
+/**
+ * §6.4's profiles declared in a connector file (§8.5).
+ *
+ * `mode` is the one field the engine reads, and §5.4's schema requires it of a flow's profiles —
+ * but a connector file meets no schema, so without this a profile with a misspelt or missing mode is
+ * a credential that silently authenticates as `none`. Reported here rather than against the flows
+ * that use it: the mistake is in this file, and it is one mistake however many flows inherit it.
+ */
+const checkProfiles = (file: ConnectorFile, error: Report): void => {
+  for (const [name, profile] of Object.entries(file.authProfiles)) {
+    const mode = profile.mode;
+    if (mode === undefined) {
+      error('invalid-auth-profile', `authProfiles.${name} declares no mode:`, ['authProfiles', name]);
+      continue;
+    }
+    if (!AUTH_MODES.includes(String(mode))) {
+      error(
+        'invalid-auth-profile',
+        `authProfiles.${name} declares mode: ${String(mode)}${suggest(String(mode), AUTH_MODES)}`,
+        ['authProfiles', name, 'mode']
+      );
+    }
+  }
+};
+
 export const checkConnectors = (connectors: Connectors): Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
 
   for (const file of connectors.files) {
-    const error = (code: string, message: string, node: (string | number)[]) => {
-      diagnostics.push({ severity: 'error', code, message, file: file.file, ...(file.positions.at(node) || {}) });
-    };
+    const report = (severity: Diagnostic['severity']) =>
+      (code: string, message: string, node: (string | number)[]) => {
+        diagnostics.push({ severity, code, message, file: file.file, ...(file.positions.at(node) || {}) });
+      };
+    const error = report('error');
+    // §6.2's colour and an unrecognized binding key carry the severity the flow document's own
+    // schema gives them, so a file that is wrong the same way is wrong to the same degree wherever
+    // it is written — and `--strict` still stops on either.
+    const warn = report('warning');
 
     // A file that did not parse has no entries worth checking, for the reason a flow's parse error
     // stops everything else (§14.3) — the model it left is not evidence of what was written.
@@ -109,6 +218,9 @@ export const checkConnectors = (connectors: Connectors): Diagnostic[] => {
       }
       continue;
     }
+
+    checkBindings(file, error, warn);
+    checkProfiles(file, error);
 
     for (const entry of file.entries) {
       if (entry.problem) {

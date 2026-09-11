@@ -1,0 +1,22 @@
+# 004 §5: the flow declares no rateLimit and takes the collection connector file's — the point of
+# declaring a service's rate once rather than in every flow that calls it.
+version: 1
+
+meta:
+  name: 004 — inheriting a connector file's rate
+
+apis:
+  svc: ../../../../../specs/paced-v1.yml
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: svc#pingA
+  - id: b
+    operation: svc#pingB
+  - id: c
+    operation: svc#pingC
+  - id: d
+    operation: svc#pingD

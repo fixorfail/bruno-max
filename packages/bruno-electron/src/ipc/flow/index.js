@@ -200,15 +200,49 @@ const isInFixturesDirectory = (entry, scope) => {
 };
 
 /**
+ * 001 §8.5's connector file — 002 §4.6a's row, edited as plain YAML.
+ *
+ * One exact path rather than a directory or an extension, because that is the whole of the rule the
+ * engine itself discovers it by: `<scope>/flows/connectors.yml` and nothing else. A `connectors.yml`
+ * a directory deeper is not the file a run reads, and making it writable through this channel would
+ * say otherwise.
+ */
+const requireConnectorFileInScope = (entry, scope) => {
+  requireScope(scope);
+  const root = path.resolve(scope.collectionRoot || scope.workspaceRoot);
+  const resolved = path.resolve(entry);
+  if (resolved !== path.join(root, 'flows', 'connectors.yml')) {
+    throw new Error('not the scope flows/connectors.yml');
+  }
+  return resolved;
+};
+
+const isConnectorFile = (entry, scope) => {
+  try {
+    requireConnectorFileInScope(entry, scope);
+    return true;
+  } catch (error) {
+    return false;
+  }
+};
+
+/**
  * Fixtures are tested first, and by directory alone.
  *
  * A `.js` under `flows/fixtures/` is a fixture — it is data a flow reads, not a `use:` helper — and
  * checking the extension first would send it to the script guard, which would refuse it for sitting
  * outside `flows/scripts/`. The two directories are disjoint, so nothing else changes hands.
+ *
+ * The connector file is tested after them for the same reason and with the same effect: a
+ * `connectors.yml` filed under `flows/fixtures/` is a fixture, and the scope's own is not in any of
+ * the three directories the other guards cover.
  */
 const requireEditableInScope = (entry, scope) => {
   if (typeof entry === 'string' && isInFixturesDirectory(entry, scope)) {
     return requireFixtureInScope(entry, scope);
+  }
+  if (typeof entry === 'string' && isConnectorFile(entry, scope)) {
+    return requireConnectorFileInScope(entry, scope);
   }
   return typeof entry === 'string' && entry.toLowerCase().endsWith('.js')
     ? requireScriptInScope(entry, scope)

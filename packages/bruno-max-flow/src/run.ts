@@ -26,7 +26,7 @@ import { loadLibrary, withLibrary } from './functions';
 import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, scopeVariables, type Scope } from './interpolate';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
-import { SpecLoader } from './openapi';
+import { resolveSpecSource, SpecLoader } from './openapi';
 import { createRedactor, createSecretTracker, MASK, type Redactor, type SecretTracker } from './redact';
 import {
   lowerCasedKeys,
@@ -37,6 +37,7 @@ import {
   wantsRetry,
   type ScriptRunner
 } from './step';
+import { createLimiter, type Limiter } from './ratelimit';
 import type { FlowSnapshot } from './types/capture';
 import type { RunOptions } from './types/options';
 import type { Clock, FlowContext, Vars } from './types/ports';
@@ -107,6 +108,12 @@ type RunState = {
   /** §8.5's connector files, read once per run and applied to every document `loadFlow` reads. */
   connectors: Connectors;
   budget: Budget;
+  /**
+   * §6.2's declared pacing, one bucket per bound document (004). Run-scoped exactly as `budget` is:
+   * every step, sub-flow and iteration of this run draws from it, and nothing outside the run does.
+   * Absent under `--no-rate-limit`, which is the only way a declared limit is not honoured.
+   */
+  limiter?: Limiter;
   emit: (event: FlowEvent) => void;
   /** The environment tiers, flattened per §7.3's order. `--env-var` merges into `environment`. */
   environment: Vars;
@@ -329,7 +336,23 @@ const loadFlow = async (
   // §8.5: a connector-supplied output is extracted and published exactly as an `outputs:` entry is,
   // so from here on nothing in the run knows a connector file exists. Which files apply is decided
   // by where *this* document is, not by who invoked it (§12.3).
-  return state.connectors.apply(flow);
+  const applied = await state.connectors.apply(flow);
+
+  /**
+   * 004 §6: a document's bucket exists from the moment a flow that binds it is *read*, not from the
+   * first step that reaches it.
+   *
+   * Two consequences, both wanted. A sub-flow binding the same document without a `rateLimit:` of
+   * its own is still paced by the one its caller declared — the limit describes the service, and a
+   * sub-flow is not a way around it. And where two documents in the run disagree, the bucket has
+   * already seen both by the time anything dispatches, so the rate does not depend on which step
+   * won the race to it.
+   */
+  for (const binding of Object.values(applied.apis)) {
+    if (binding.rateLimit) state.limiter?.register(resolveSpecSource(binding.source, file), binding.rateLimit);
+  }
+
+  return applied;
 };
 
 /**
@@ -648,6 +671,15 @@ const executeFlow = async (
     const stepId = `${prefix}${step.id}`;
     let attemptsRun = 0;
     let capturePath: string | undefined;
+    /** 004 §7: what this step spent waiting its turn, reported apart from what the requests took. */
+    let stepWaitMs = 0;
+
+    /**
+     * §6.2's bucket for this step's API — the document its binding resolves to, which is what the
+     * limiter is keyed on (004 §3). Computed once per step rather than per attempt: it cannot change
+     * between attempts, and `resolveSpecSource` is the same path `SpecLoader` already read.
+     */
+    const pacingKey = binding ? resolveSpecSource(binding.source, flow.file) : undefined;
 
     /**
      * §11.1's `maxDuration` — the whole step's budget, retries and the delays between them included,
@@ -720,10 +752,29 @@ const executeFlow = async (
     // Each attempt is captured separately (§14.5) and announces itself (§13.2), so the two live
     // here rather than in the dispatch closure — a poll that reported only its first attempt would
     // be indistinguishable from a hang, which is 002 §8.2's `attempt n/m` case.
+    /**
+     * How long this attempt may spend waiting for a token before the wait is pointless — the sooner
+     * of the step's `maxDuration` and the run's `maxRunDuration`.
+     *
+     * §11.3's deadline is *polled*, at scheduling points and around a retry delay, so a bucket
+     * declaring `requests: 1, per: hour` would otherwise sleep an hour past a run that had already
+     * run out of time, with nothing looking. A cleanup step is the exception: it runs after the run
+     * has stopped, so the run's deadline is behind it by definition and would refuse every wait —
+     * the grace window bounds that one instead, and the window is already this dispatch's signal.
+     */
+    const pacingBudget = (): number | undefined => {
+      if (isCleanup(step) && state.stoppedAt !== undefined) return undefined;
+
+      const ends = [budgetEnds, state.deadline].filter((end): end is number => end !== undefined);
+      return ends.length ? Math.max(0, Math.min(...ends) - state.clock.now()) : undefined;
+    };
+
     const attemptOnce = async () => {
       attemptsRun += 1;
       const attempt = attemptsRun;
       const attemptStartedAt = state.clock.now();
+      /** Kept apart from the attempt's elapsed time: a paced request is not a slow one. */
+      let attemptWaitMs = 0;
       state.emit({ type: 'step:attempt', id: stepId, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
 
       dispatchAborted = false;
@@ -738,6 +789,31 @@ const executeFlow = async (
         dispatch: async () => {
           const bound = beginDispatch();
           try {
+            /**
+             * 004 §7's token, taken here and on **every** attempt — a retry is a request like any
+             * other, and a poll that ignored the limit while retrying would break it exactly when
+             * the API is already saying it is under strain.
+             *
+             * Inside `dispatch` rather than at the top of the attempt because `runAttempt` runs
+             * §10.1's request validation first and can refuse without sending: a token spent there
+             * would pace a request that never went out. Inside `beginDispatch` because the signal it
+             * mints is the one that governs this dispatch — for a cleanup step that is the grace
+             * window, not the run's aborted signal.
+             */
+            if (pacingKey) {
+              const paced = await state.limiter?.acquire(pacingKey, bound.signal, pacingBudget());
+              if (paced) {
+                attemptWaitMs += paced.waitedMs;
+                if (!paced.acquired) {
+                  // Refused: the run stopped while this step queued, or the wait outlasted the time
+                  // it had. Both already have a name downstream — a rejected dispatch is a transport
+                  // error, and `dispatchAborted` plus `overBudget()` decide which of the two it was.
+                  dispatchAborted = bound.signal.aborted;
+                  throw new Error(`${step.id}: rate-limited, and the run ran out of time waiting`);
+                }
+              }
+            }
+
             return await state.options.ports.executeRequest(materialized.request, {
               ...state.flowContext,
               stepId,
@@ -756,12 +832,17 @@ const executeFlow = async (
         }
       });
 
+      stepWaitMs += attemptWaitMs;
+
       capturePath = await recordAttempt(state, {
         stepId,
         iteration: state.nestIterations ? run.iteration : undefined,
         attempt,
         startedAt: new Date(attemptStartedAt).toISOString(),
-        durationMs: state.clock.now() - attemptStartedAt,
+        // Net of §6.2's pacing: this number answers "how long did the API take", and a request held
+        // back by the flow's own limiter did not take any longer for it (004 §7).
+        durationMs: state.clock.now() - attemptStartedAt - attemptWaitMs,
+        rateLimitWaitMs: attemptWaitMs || undefined,
         // A step that failed `validateRequest` never dispatched, so there is no request to record
         // as sent (§10.1); §11.2's transport error has the opposite shape and no response.
         request: outcome.reason === 'invalid-request' ? undefined : materialized.request,
@@ -881,6 +962,13 @@ const executeFlow = async (
           : outcome.message || predicateError,
         attempts: attemptsRun,
         durationMs: state.clock.now() - startedAt,
+        /**
+         * Reported beside the step's wall time rather than subtracted from it (004 §7). The step's
+         * number already contains §11.1's retry delays, and taking one kind of waiting out of it and
+         * not the other would leave one field meaning two things. An attempt's `durationMs` is the
+         * one that means "the request", and the pacing does come out of that.
+         */
+        rateLimitWaitMs: stepWaitMs || undefined,
         assertions: outcome.assertions,
         validation: outcome.validation && Object.keys(outcome.validation).length ? outcome.validation : undefined,
         outputs: outcome.outputs,
@@ -1177,6 +1265,10 @@ const executeRun = async (runId: string, options: RunOptions): Promise<RunResult
     specs,
     connectors,
     budget: new Budget(options.overrides?.concurrency || 5),
+    // Built before the entry flow is read, because `loadFlow` registers the buckets it declares.
+    // `--no-rate-limit` leaves it absent rather than empty, so the dispatch path costs nothing at
+    // all for the runs that declare no limits — which is nearly all of them.
+    limiter: options.overrides?.rateLimit?.enabled === false ? undefined : createLimiter(options.ports.clock || REAL_CLOCK),
     emit: (event) => {
       // A throwing consumer never fails the run: a host bug in rendering must not turn a passing
       // flow red (§13.2).

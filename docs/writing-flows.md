@@ -264,6 +264,12 @@ apis:
   ledger-api:
     source: https://api.example.com/openapi.json  # or a URL
     baseUrl: https://sandbox.example.com
+    auth: service-account                         # an authProfiles: name — see below
+    color: "#8ab4f8"                              # how a viewer marks steps calling this API
+    defaultHeaders:                               # added to every step through this binding
+      X-Tenant-Id: "{{tenantId}}"
+    defaultQuery:
+      api_version: "2026-01"
 ```
 
 Paths are relative to the flow file. A step then names an operation as `alias#operationId`:
@@ -272,8 +278,68 @@ Paths are relative to the flow file. A step then names an operation as `alias#op
     operation: payments-api#createPayment
 ```
 
-**The base URL is resolved first-match-wins**: the binding's `baseUrl`, then `config.baseUrl`, then
+`defaultHeaders` and `defaultQuery` sit beneath the step's own `headers:` / `query:`, so any step can
+override one or drop it with `!...`.
+
+**The base URL is resolved first-match-wins**: the binding's `baseUrl`, then `config.baseUrl`, then a
+[connector file's](#flowsconnectorsyml--what-a-service-needs-declared-once) binding `baseUrl`, then
 the document's own `servers[0]`.
+
+#### `rateLimit:` — not calling an API faster than it allows
+
+A binding can say how fast the flow is willing to call it, and the run will not exceed it:
+
+```yaml
+apis:
+  partner-api:
+    source: ../../apispec/partner-v1.yml
+    rateLimit:
+      requests: 100     # required
+      per: minute       # second (default) | minute | hour
+      burst: 10         # default 1 — see below
+```
+
+`burst` is how many requests may go out back to back before the pacing takes hold. At its default of
+1 the flow runs at an even spacing — one request every 600ms for the limit above — which is what
+"no more than 100 a minute" usually means in practice. A larger burst lets a flow open at full speed
+and settle to the rate, which is what to write when the API publishes a burst allowance of its own.
+
+Three things worth knowing:
+
+- **The limit belongs to the API document, not to the alias.** Two aliases pointing at the same file
+  share one allowance, and so does a sub-flow that binds it under a different name — a sub-flow does
+  not get a second helping of its caller's limit.
+- **It is per run.** `bru flow run flows/ --flows 4` runs four flows at once, each with its own
+  pacing, so four flows sharing one API go four times as fast as any one of them. `--flows 1` (the
+  default) is the way to hold an absolute ceiling.
+- **Retries count.** Every attempt takes its turn, which is the point: a poll that ignored the limit
+  would break it exactly when the API is already struggling.
+
+Run against a local mock that has no limit worth honouring? `bru flow run … --no-rate-limit` ignores
+every declared one.
+
+This is not the same thing as retrying a 429, and the two answer different questions. `rateLimit`
+answers *don't make the server say no*; `shouldRetry` (see [Retry, polling and
+timeouts](#retry-polling-and-timeouts)) answers *the server said no anyway*. Nothing here reads a
+`Retry-After` header or backs off on its own — the rate is what the file says it is.
+
+**The same key works in `flows/connectors.yml`**, so a team declares a service's rate once instead of
+in every flow that calls it:
+
+```yaml
+# flows/connectors.yml
+version: 1
+
+apis:
+  partner-api:
+    source: ../../apispec/partner-v1.yml
+    rateLimit:
+      requests: 100
+      per: minute
+```
+
+A flow that writes its own `rateLimit:` overrides that default. If two flows in one run disagree
+about a rate, the run uses the stricter and `bru flow validate` warns you the two files differ.
 
 ### `authProfiles:` — naming credentials once
 
@@ -770,7 +836,7 @@ reads it — and the warning is the whole of the cost:
       thingId: data.id            # then use {{steps.create.thingId}}
 ```
 
-### `flows/connectors.yml` — the same outputs, declared once
+### `flows/connectors.yml` — what a service needs, declared once
 
 Writing `token: data.access_token` into every flow that calls `login` is a rename waiting to happen.
 A **connector file** declares an operation's default outputs in one place, and every step that targets
@@ -818,9 +884,30 @@ a name it does not is still there — and `!...` drops one:
 Use `!...`, not `null`. A `null` output path is reported as `null-output` rather than treated as a
 removal, because `null` means a literal null everywhere else in the format.
 
+**Every output form works here**, not just the short path — `{ from: headers|status|pre, path }` and
+`script:` included:
+
+```yaml
+connectors:
+  payments-api#createPayment:
+    paymentId: data.id
+    location:
+      from: headers
+      path: location
+    total:
+      script: |
+        (res) => res.body.data.items.reduce((sum, item) => sum + item.amount, 0)
+```
+
+One caveat with `script:` here: it runs with the **using flow's** function library (see
+[`functions:`](#functions--a-shared-library)), which the connector file cannot supply. A connector
+script that calls a shared helper works only in flows that declare it, and fails at run time —
+`script-error`, naming the identifier — rather than at validate time. Keep connector scripts
+self-contained unless every flow in the scope declares the same helpers.
+
 Connector-supplied outputs are ordinary declarations: the graph draws them as data edges, the
 visibility rules apply, and `bru flow validate` checks each path against the operation's response
-schema. **The cost is that a step no longer tells you what it produces** — so `bru flow validate`
+schema (a `script:` output has no path to check). **The cost is that a step no longer tells you what it produces** — so `bru flow validate`
 prints, per step, the outputs it resolved and which file each came from. That listing is the answer
 to "where did `steps.sign_in.token` come from"; run it before going to look. In the app the same
 answer is on the graph: a node carrying a connector-supplied output wears a `⧉` marker, and its
@@ -832,6 +919,176 @@ every flow that targets the operation, and reading a few of its entries is the p
 
 Sub-flows do not inherit their caller's connector files — a shared flow resolves its own, from its own
 scope, so it behaves the same whoever calls it.
+
+#### The binding itself, declared once
+
+The `apis:` block in a connector file is not just scaffolding for the entries below it. Everything on
+a binding that is true of the **service** rather than of one flow — `baseUrl`, `auth`,
+`defaultHeaders`, `defaultQuery`, `color` and
+[`rateLimit`](#ratelimit--not-calling-an-api-faster-than-it-allows) — is inherited by every flow that
+binds the same document:
+
+```yaml
+# flows/connectors.yml
+version: 1
+
+apis:
+  payments-api:
+    source: ../apispec/payments-v3.yml
+    baseUrl: "{{paymentsBaseUrl}}"
+    auth: service-account
+    color: "#8ab4f8"
+    defaultHeaders:
+      X-Tenant-Id: "{{tenantId}}"
+    rateLimit:
+      requests: 100
+      per: minute
+
+connectors:
+  payments-api#createPayment:
+    paymentId: data.id
+```
+
+A flow then names the document and gets the rest:
+
+```yaml
+apis:
+  payments: ../apispec/payments-v3.yml   # host, auth, headers and rate all come from the scope
+```
+
+Matching is on the resolved document, as it is for outputs — the aliases do not have to agree. Two
+aliases in *one* file binding the same document is a `duplicate-binding` warning: only the later
+one's defaults would apply, so declare the document once.
+
+**Your flow wins, field by field.** Write a field and the scope's is ignored for that field only:
+
+```yaml
+apis:
+  payments:
+    source: ../apispec/payments-v3.yml
+    baseUrl: https://sandbox.example.com   # this flow talks to the sandbox
+    defaultHeaders:
+      X-Client: migration-check            # added; X-Tenant-Id still arrives
+      X-Tenant-Id: !...                    # or drop the inherited one outright
+```
+
+Two rules worth holding:
+
+- **`config.baseUrl` beats an inherited `baseUrl`.** A scope file's host is a default for a flow that
+  named none. If your flow sets `config.baseUrl`, that is what it uses — a file two directories up
+  does not silently redirect it. (A `baseUrl:` on your own binding still beats both.)
+- **`source:` and the alias are never inherited.** Your flow still has to name the APIs it talks to;
+  the connector file only fills in how to talk to them. That is deliberate — an `operation:` naming
+  an alias your file never mentions would be unreadable.
+
+#### The credential, declared once
+
+The profile itself can live in the connector file too — a credential is as much a property of the
+service as its host is:
+
+```yaml
+# flows/connectors.yml
+version: 1
+
+apis:
+  backend:
+    source: ../apispec/backend-v1.yml
+    auth: session
+
+authProfiles:
+  # The backend's scheme is `Authorization: Token <t>`, so apikey-in-header rather than bearer.
+  session:
+    mode: apikey
+    key: Authorization
+    value: "Token {{shared.userAuthToken}}"
+    placement: header
+```
+
+Every flow under that scope now authenticates without writing a credential block. Your own
+`authProfiles:` still wins if you declare one of the same name.
+
+**The profile resolves against *your* flow.** A connector file has no run state of its own, so
+`{{shared.x}}` and `{{params.x}}` in it mean your flow's — which is what makes the example above
+work: the token is whatever your sign-in step put in the slot.
+
+**You still declare the slot.** A connector file has no steps, so it cannot name the one that signs
+in; `shared:` is how your flow says which of its steps may write the value:
+
+```yaml
+shared:
+  userAuthToken: { writers: any }
+
+steps:
+  - id: sign_in
+    operation: backend#login
+    auth: none                     # the step that gets the token does not need it
+    outputs:
+      token: data.access_token
+    shared:
+      userAuthToken: token         # everything downstream is now authenticated
+
+  - id: me
+    operation: backend#me          # no auth: here — the scope's profile applies
+```
+
+That one line stays in your flow on purpose: it is what keeps `{{shared.userAuthToken}}` traceable to
+something written in the file you are reading. Forget it and `bru flow validate` says
+`undeclared-slot` against the step that reads it, naming the profile and the file it came from,
+before anything is sent.
+
+##### When the sign-in lives in a library flow
+
+Usually it does: one `login.flow.yml` that every flow invokes. **Slots do not cross a `uses:`
+boundary** — §12 keeps a sub-flow's state to itself — so the library does not hand its slot up. It
+hands up an *export*, and the caller puts that into its own slot:
+
+```yaml
+# flows/shared/login.flow.yml — no shared: block at all
+meta: { library: true }
+
+params:
+  email: { required: true }
+
+exports:
+  userAuthToken: steps.login.userAuthToken
+
+steps:
+  - id: login
+    operation: backend#userLogin
+    auth: none
+    outputs:
+      userAuthToken: meta.user_auth_token
+```
+
+```yaml
+# any flow that needs to be signed in
+shared:
+  userAuthToken: { writers: any }
+
+steps:
+  - id: auth
+    uses: ./shared/login.flow.yml
+    with: { email: "{{testEmail}}" }
+    shared:
+      userAuthToken: userAuthToken   # the export, into this flow's slot
+
+  - id: me
+    operation: backend#me            # authenticated, with no auth: line anywhere
+    depends: [auth]
+```
+
+Two mistakes to avoid, because the diagnostics for them look unrelated to each other:
+
+- **Declaring the slot in the library as well.** If nothing in the *library* reads it, the slot there
+  does nothing — the value leaves through `exports:`, not through the slot — and you get
+  `unused-slot` pointing at the library. Delete the library's `shared:` block; the caller's is the
+  one that matters.
+- **Forgetting to feed the caller's slot.** Declaring `shared:` in the caller but not wiring the
+  `uses:` step's export into it leaves the slot empty, so every request carries `Token ` and the API
+  answers 401. `slot-without-writer` warns about exactly this.
+
+A profile with no `mode:`, or a misspelt one, is reported as `invalid-auth-profile` against the
+connector file — once, not against every flow that inherits it.
 
 ---
 
@@ -935,6 +1192,9 @@ steps:
 
 `shared: [chargeId]` on a step is shorthand for `chargeId: chargeId`. Reading a slot no `shared:`
 block declares is a validation error; reading a declared slot nobody wrote resolves empty.
+
+A slot nothing in the flow reads is a `unused-slot` warning — **unless the flow exports it**, which
+counts as a read: it leaves through the boundary and whoever invoked the flow is the reader.
 
 A library flow can also hand a slot to its caller — see
 [Exporting a value two branches might produce](#exporting-a-value-two-branches-might-produce).
@@ -1054,6 +1314,12 @@ sees the step's whole outcome, which is what makes polling a first-class pattern
       shouldRetry: |
         (res, attempt, ctx) => res.body.state === 'pending'
 ```
+
+**Retry is about a request that already went out.** If what you want is to avoid provoking the
+failure in the first place — an API with a published rate — that is
+[`rateLimit:`](#ratelimit--not-calling-an-api-faster-than-it-allows) on the binding, and the two are
+worth setting together: the limit keeps you under the threshold, and the predicate handles the day
+the server disagrees.
 
 **Without `shouldRetry`, retry fires only on a transport error or a 5xx** — never on a failed
 assertion or a schema mismatch, which mean the server answered and the answer was wrong. That is what
@@ -1471,6 +1737,16 @@ from elsewhere. **A dirty one keeps what you typed** and says the two diverged: 
 the file also changed on disk"*. Saving from there overwrites the file, which may be exactly what you
 mean; choosing for you is what an editor must not do, and saying nothing is what would make the
 overwrite silent.
+
+### Editing `flows/connectors.yml`
+
+The connector file is listed in the sidebar under **Libraries**, alongside the scope's library flows —
+it is the same kind of thing, a part your flows are built from rather than something to run. Clicking
+it opens it as plain YAML.
+
+There is no graph and no menu on it: it is not a flow, and the engine finds it by its exact path, so
+there is nothing to rename. Mistakes in it are reported where they bite — `bru flow validate` and the
+flows' own diagnostics read it as part of every flow in the scope.
 
 ### `flows/scripts/` — where raw helpers live
 
@@ -1974,6 +2250,10 @@ What it reports:
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them — the sibling's value is not visible |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
+| `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 |
+| `invalid-auth-profile` | A `flows/connectors.yml` auth profile declares no `mode:`, or one that is not a scheme |
+| `duplicate-binding` *(warning)* | Two aliases in one `flows/connectors.yml` bind the same document — only the later one's defaults apply |
+| `conflicting-rate-limit` *(warning)* | Two flows in the run bind the same API document at different rates — the run takes the stricter |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 | `duplicate-step-id` | Two steps share an id — the second overwrites the first's outputs and its capture directory |
 | `invalid-depends` | A `depends:` mapping without exactly one non-empty `all:` or `any:` — an empty list is not a join, it is a step that runs first |
@@ -2004,7 +2284,7 @@ What it reports:
 | `external-schema-ref` *(warning)* | The operation's schema lives in a second OpenAPI file. Bruno reads only the document you bound, so nothing here checks your body and the run will fail the step. Inline the schema, or bind the document that holds it |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow that is not marked `meta.library: true`, so a directory run fires it |
 | `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Connector-supplied outputs are never warned about |
-| `unused-slot` *(warning)* | A declared slot nothing reads |
+| `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it counts as a read |
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into, so every read of it resolves empty |
 | `unreachable-step` *(warning)* | A step nothing can make eligible, because what it depends on is in a cycle or is not there |
 | `null-output` | An output written `name: null` — in a step or in a connector file. `null` drops nothing; `!...` is what removes an inherited connector entry |

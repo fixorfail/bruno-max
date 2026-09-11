@@ -147,7 +147,13 @@ describe('FlowsWatcher', () => {
     const dependencyChanges = () =>
       win.webContents.send.mock.calls.filter(([channel]) => channel === 'main:flow-dependency-changed');
 
-    it('reports a change to an unlisted file under flows/, which no row stands for', async () => {
+    /**
+     * §8.5's connector file is the one listed file that is also a dependency of every flow in the
+     * scope, so it goes out on both channels: a row to draw, and a re-describe for everything open.
+     * Either one alone is a bug — without the row it is uneditable in the app, and without the
+     * dependency every open flow keeps reporting the outputs and bindings the old file gave it.
+     */
+    it('reports the connector file as both a row and a dependency', async () => {
       const connectors = path.join(flowsDir, 'connectors.yml');
       fs.writeFileSync(connectors, 'version: 1\n');
       watcher.addWatcher(win, { workspaceRoot });
@@ -157,8 +163,22 @@ describe('FlowsWatcher', () => {
       await until(() => dependencyChanges().length === 2);
 
       expect(dependencyChanges()[1][1]).toBe(connectors);
-      // It is not a flow, a script or a fixture, so it must not arrive as a row of the sidebar.
-      expect(sent('changeFile')).toEqual([]);
+      expect(sent('changeFile').map(([, , entry]) => entry)).toEqual([
+        expect.objectContaining({ filename: 'connectors.yml', connectors: true })
+      ]);
+    });
+
+    /** Exactly that path: a `connectors.yml` deeper down is not the file the engine reads. */
+    it('leaves a connectors.yml in a subdirectory an ordinary unlisted dependency', async () => {
+      const nested = path.join(flowsDir, 'nested');
+      fs.mkdirSync(nested);
+      const connectors = path.join(nested, 'connectors.yml');
+      fs.writeFileSync(connectors, 'version: 1\n');
+      watcher.addWatcher(win, { workspaceRoot });
+      await until(() => dependencyChanges().length === 1);
+
+      expect(dependencyChanges()[0][1]).toBe(connectors);
+      expect(sent('addFile')).toEqual([]);
     });
 
     /** 001 §6.2's `apis:` target, which normally sits outside `flows/` entirely. */

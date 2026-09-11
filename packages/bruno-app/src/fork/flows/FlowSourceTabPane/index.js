@@ -122,6 +122,18 @@ const KINDS = {
   'flow-fixture': {
     noun: 'fixture',
     modeFor: fixtureMode
+  },
+  /**
+   * §8.5's connector file. Edited as plain YAML rather than through §4.3's pane: that one describes
+   * its draft as a flow and draws the graph beside it, and a connector file is neither.
+   *
+   * No validity gate, for the reason the fixture has none one level up — `bru flow validate` and the
+   * sidebar's diagnostics read this file as part of every flow in the scope, so a half-typed line
+   * already reports itself there, against the flows it actually breaks.
+   */
+  'flow-connectors': {
+    noun: 'connector file',
+    modeFor: () => 'yaml'
   }
 };
 

@@ -1,0 +1,29 @@
+openapi: 3.0.3
+# R10.8's service: the one whose credential the collection connector file declares.
+info: { title: Session API, version: 1.0.0 }
+servers: [{ url: 'https://session-default.example.com' }]
+paths:
+  /session/sign-in:
+    post:
+      operationId: sessionSignIn
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      token: { type: string }
+  /session/thing:
+    get:
+      operationId: sessionThing
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object }

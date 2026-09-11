@@ -67,6 +67,15 @@ export type StepResult = {
   message?: string;
   attempts: number;
   durationMs: number;
+  /**
+   * §6.2's pacing, in ms: what this step spent waiting its turn at the API's bucket, summed over
+   * its attempts (004 §7). Absent when the step waited for nothing, which is every step of a flow
+   * that declares no `rateLimit:`.
+   *
+   * Included in `durationMs` rather than taken out of it — that number is the step's wall time and
+   * already contains §11.1's retry delays. This says how much of it was the flow being polite.
+   */
+  rateLimitWaitMs?: number;
   assertions: AssertionResult[];
   /** §10.1's automatic checks — absent when both are off. */
   validation?: {

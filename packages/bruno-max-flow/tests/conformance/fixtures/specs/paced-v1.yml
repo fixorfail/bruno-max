@@ -1,0 +1,56 @@
+openapi: 3.0.3
+# The service 004's rate-limiting scenarios bind. Three interchangeable operations, because what
+# those scenarios need is several requests with no data dependency between them — the ordering under
+# test is the limiter's, and a flow whose steps had to wait for each other would not show it.
+info: { title: Paced API, version: 1.0.0 }
+servers:
+  - url: https://paced.example.com
+paths:
+  /ping/a:
+    get:
+      operationId: pingA
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /ping/b:
+    get:
+      operationId: pingB
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /ping/c:
+    get:
+      operationId: pingC
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /ping/d:
+    get:
+      operationId: pingD
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }

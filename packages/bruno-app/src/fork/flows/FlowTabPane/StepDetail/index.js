@@ -579,6 +579,13 @@ const StepDetail = ({ stepId, node, running, scopeRoot, runDir, iteration, heigh
         {showsStepOutcome && node.durationMs !== undefined ? (
           <span className="detail-duration">{`${node.durationMs}ms`}</span>
         ) : null}
+        {/* 004 §7: the share of the duration that was §6.2's pacing, so a paced step does not read
+            as a slow API. Only ever shown where a limit actually held the step up. */}
+        {showsStepOutcome && node.rateLimitWaitMs ? (
+          <span className="detail-paced" title="waiting on this API's declared rate limit">
+            {`+${node.rateLimitWaitMs}ms paced`}
+          </span>
+        ) : null}
       </div>
 
       {showsStepOutcome && node.message ? <StepMessage node={node} /> : null}

@@ -5,6 +5,14 @@ version: 1
 
 apis:
   regress-api: ../../../specs/regressions-v1.yml
+  # R10.7: a binding whose `source:` is relative to *this* file. The shared library under
+  # `flows/shared/` reaches the same document by a different relative path, and inherits these
+  # because the match is on where each side's path resolves to, not on the string either wrote.
+  shared-svc:
+    source: ../../../specs/paced-other-v1.yml
+    baseUrl: https://workspace-scope.example.com
+    defaultHeaders:
+      X-Scope: workspace
 
 connectors:
   regress-api#signIn:

@@ -126,6 +126,9 @@ const createReporter = ({
     // use for the word "skipped" in front of its reason.
     const detail = step.status === 'skipped' ? `skipped · ${step.reason}` : duration(step.durationMs);
     const attempts = step.attempts > 1 ? `  ${step.attempts} attempts` : '';
+    // 004 §7: how much of the step's duration was its own politeness rather than the API's latency.
+    // Dimmed and only when there was some — a flow that declares no `rateLimit:` never sees it.
+    const paced = step.rateLimitWaitMs ? `  ${paint(90, `+${duration(step.rateLimitWaitMs)} paced`)}` : '';
     const why = step.status === 'failed' ? `  ${step.reason}` : '';
     // A skip gets its message on its own line, because a skip has no failure block to carry it and
     // `unresolved-dependency` on its own names nothing to go and fix (§14.6). A failure's message is
@@ -134,7 +137,7 @@ const createReporter = ({
     // The operation, not a resolved URL, identifies a step (§14.7) — what the flow file names, not
     // what interpolation made of it. A step the reporter never saw start falls back to its id.
     const label = column || step.id;
-    return `  ${painted} ${step.id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} ${detail}${attempts}${why}${note}`;
+    return `  ${painted} ${step.id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} ${detail}${attempts}${paced}${why}${note}`;
   };
 
   const inFlightLine = (id, label) => {

@@ -13,11 +13,18 @@
 import * as path from 'path';
 
 import { Connectors } from './connectors';
-import { normalizeFlow, parseDocument, type NormalizedFlow, type NormalizedStep } from './document';
+import {
+  asRecord,
+  normalizeFlow,
+  parseDocument,
+  type NormalizedFlow,
+  type NormalizedStep,
+  type RateLimit
+} from './document';
 import { resolveSubflowTarget } from './files';
 import { collectLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
 import { ranksOf, resolveStages } from './graph';
-import { SpecLoader, resolveOperation } from './openapi';
+import { SpecLoader, resolveOperation, resolveSpecSource } from './openapi';
 import {
   readsOf,
   referenceKind,
@@ -87,6 +94,50 @@ type Tools = {
   scopeRoot: string;
   readFlow: (file: string) => Promise<NormalizedFlow>;
   readText: (file: string) => Promise<string>;
+  /**
+   * §6.2's `rateLimit:` per resolved document, accumulated across the whole reachable graph — one
+   * map for the entry and every sub-flow, because a disagreement is only visible from above.
+   *
+   * The run merges disagreeing limits to the strictest (004 §6) and never fails over one; this is
+   * only how the author is told two files say different things.
+   */
+  rateLimits: Map<string, { limit: RateLimit; file: string; alias: string }>;
+};
+
+/** Whether two declarations mean the same limit — `per` and `requests` only through the interval. */
+const sameLimit = (a: RateLimit, b: RateLimit): boolean =>
+  a.burst === b.burst && WINDOW_MS[a.per] / a.requests === WINDOW_MS[b.per] / b.requests;
+
+const WINDOW_MS: Record<RateLimit['per'], number> = { second: 1000, minute: 60_000, hour: 3_600_000 };
+
+const describeLimit = (limit: RateLimit): string =>
+  `${limit.requests} per ${limit.per}${limit.burst > 1 ? `, burst ${limit.burst}` : ''}`;
+
+/**
+ * §6.2's `rateLimit:` as a *number*, which the schema cannot settle on its own: `requests: "{{rps}}"`
+ * is a string the schema rejects, but `rateLimit: 5` — the shorthand an author reaches for first —
+ * is a scalar the binding's `type: ['string','object']` lets through, and normalization turns both
+ * into `NaN`. A limit that is `NaN` paces nothing, which looks exactly like a limit nobody wrote.
+ */
+const checkRateLimit = (
+  limit: RateLimit,
+  alias: string,
+  node: (string | number)[],
+  error: (code: string, message: string, stepId?: string, node?: (string | number)[]) => void
+): void => {
+  for (const [key, value] of [
+    ['requests', limit.requests],
+    ['burst', limit.burst]
+  ] as const) {
+    if (!Number.isInteger(value) || value < 1) {
+      error(
+        'invalid-rate-limit',
+        `${alias} declares rateLimit.${key} as ${Number.isNaN(value) ? 'a value that is not a number' : String(value)} — it is a whole number of at least 1`,
+        undefined,
+        [...node, key]
+      );
+    }
+  }
 };
 
 /**
@@ -321,7 +372,19 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
   }
 
   const specs = new Map<string, Awaited<ReturnType<SpecLoader['load']>>>();
+  /**
+   * What this document's own `apis:` block wrote for an alias, as opposed to what §8.5's connector
+   * files filled in beneath it.
+   *
+   * The checks below anchor at `['apis', <alias>, <field>]` in *this* file, so running them over an
+   * inherited value would report a connector file's mistake at a line the flow does not have — and
+   * report it once per flow that binds the document, rather than once where it is written.
+   * `validate/connectors.ts` checks those against the file that wrote them.
+   */
+  const authored = (alias: string): Record<string, unknown> => asRecord(asRecord(flow.raw.apis)[alias]);
+
   for (const binding of Object.values(flow.apis)) {
+    const own = authored(binding.alias);
     /**
      * §6.2's colour is `#rgb` or `#rrggbb` and nothing else. A warning rather than an error, because
      * it decides how a graph is drawn and never what a flow does — but a warning rather than
@@ -329,13 +392,45 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
      * is exactly what a *missing* colour looks like. Nothing else would tell the author their typo
      * from a binding they never coloured.
      */
-    if (binding.color !== undefined && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(binding.color)) {
+    if (own.color !== undefined && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(binding.color || '')) {
       warn(
         'invalid-api-color',
         `${binding.alias} declares color: ${binding.color}, which is not a #rgb or #rrggbb colour`,
         undefined,
         ['apis', binding.alias, 'color']
       );
+    }
+
+    if (binding.rateLimit) {
+      // Shape is only this file's business where this file wrote it; a connector file's is checked
+      // against the connector file. The conflict below is tracked either way — a disagreement is
+      // between two declarations, and one of them being inherited does not make it agree.
+      if (own.rateLimit !== undefined) {
+        checkRateLimit(binding.rateLimit, binding.alias, ['apis', binding.alias, 'rateLimit'], error);
+      }
+
+      /**
+       * 004 §6: two flows in one call graph can bind the same document and ask for different rates.
+       * The run merges them to the strictest and carries on — nobody wants a validation error over
+       * politeness — but silence would leave the looser file reading as though it were in force.
+       *
+       * Keyed on where the `source:` resolves to, not on the alias, because that is what the run
+       * shares a bucket on: two aliases for one document are one limit, and the same alias in two
+       * flows pointing at different documents is two.
+       */
+      const identity = resolveSpecSource(binding.source, file);
+      const seen = tools.rateLimits.get(identity);
+      if (!seen) {
+        tools.rateLimits.set(identity, { limit: binding.rateLimit, file, alias: binding.alias });
+      } else if (!sameLimit(seen.limit, binding.rateLimit) && !(seen.file === file && seen.alias === binding.alias)) {
+        warn(
+          'conflicting-rate-limit',
+          `${binding.alias} declares rateLimit ${describeLimit(binding.rateLimit)} for ${identity}, which `
+          + `${path.basename(seen.file)} binds as ${seen.alias} at ${describeLimit(seen.limit)} — the run takes the stricter`,
+          undefined,
+          own.rateLimit === undefined ? ['apis', binding.alias] : ['apis', binding.alias, 'rateLimit']
+        );
+      }
     }
 
     try {
@@ -580,7 +675,8 @@ export const validateFlow = async (options: ValidateOptions): Promise<Diagnostic
     scope: options.scope,
     scopeRoot: options.scope.collectionRoot || options.scope.workspaceRoot,
     readFlow: async (file) => connectors.apply(normalizeFlow(parseDocument(await readText(file)), file)),
-    readText
+    readText,
+    rateLimits: new Map()
   };
 
   const diagnostics = await validateDocument(await tools.readFlow(options.entry), tools, {

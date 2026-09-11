@@ -1,0 +1,26 @@
+# The other half: a flow that writes a field down has said what it wants. Its host, its profile and
+# its own X-Client win; the inherited X-Tenant-Id it did not mention still arrives, and `!...` drops
+# the inherited query parameter.
+version: 1
+
+meta:
+  name: connector bindings — overridden field by field
+
+apis:
+  svc:
+    source: ../../../../../specs/paced-other-v1.yml
+    baseUrl: https://own.example.com
+    auth: own-account
+    defaultHeaders:
+      X-Client: own
+    defaultQuery:
+      api_version: !...
+
+authProfiles:
+  own-account:
+    mode: bearer
+    token: tok-own
+
+steps:
+  - id: call
+    operation: svc#echoA

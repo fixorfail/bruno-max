@@ -65,6 +65,11 @@ const StyledWrapper = styled.div`
     color: ${(props) => props.theme.colors.text.muted};
   }
 
+  .detail-paced {
+    font-size: 0.75rem;
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
   /* Wraps rather than truncates: a schema failure names every field it rejected, and half of that
      list is not a shorter version of the answer. */
   .detail-message {

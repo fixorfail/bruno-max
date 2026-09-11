@@ -1,0 +1,24 @@
+# 004 §2: the bucket is the run's, so it spans the `uses:` boundary. Three requests go out — two
+# here and one inside the child — and all three are spaced by the one limit declared here.
+version: 1
+
+meta:
+  name: 004 — the bucket crosses a sub-flow boundary
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: paced#pingA
+  - id: b
+    operation: paced#pingB
+  - id: child
+    uses: ./subflow-child.flow.yml

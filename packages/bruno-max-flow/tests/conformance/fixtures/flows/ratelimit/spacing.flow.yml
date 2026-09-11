@@ -1,0 +1,27 @@
+# 004 §7: four independent steps against one binding limited to a request a second. Nothing here
+# depends on anything else and `concurrency: 4` lets all four be ready at once, so the only thing
+# deciding when each is sent is the bucket — which is what makes the sleep sequence falsifiable.
+version: 1
+
+meta:
+  name: 004 — strict spacing
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: paced#pingA
+  - id: b
+    operation: paced#pingB
+  - id: c
+    operation: paced#pingC
+  - id: d
+    operation: paced#pingD

@@ -1,0 +1,28 @@
+# 004 §5's other half: a flow that writes a rate down has said what it wants, and the connector
+# file's default does not apply. The burst here is wide enough for the whole flow, so none of these
+# four steps waits — which the inheriting flow beside it cannot say.
+version: 1
+
+meta:
+  name: 004 — overriding a connector file's rate
+
+apis:
+  svc:
+    source: ../../../../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+      burst: 4
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: svc#pingA
+  - id: b
+    operation: svc#pingB
+  - id: c
+    operation: svc#pingC
+  - id: d
+    operation: svc#pingD

@@ -1,0 +1,17 @@
+# R10.7 — a library one directory deeper than the connector file that configures it.
+#
+# `../../../../specs/` here against `../../../specs/` there: two different strings for one document,
+# which is the whole point of matching on what a `source:` resolves to (§8.5). This flow declares no
+# host and no headers, and sends both.
+version: 1
+
+meta:
+  name: R10 — shared echo
+  library: true
+
+apis:
+  svc: ../../../../specs/paced-other-v1.yml
+
+steps:
+  - id: call
+    operation: svc#echoA

@@ -1694,4 +1694,74 @@ describe('FlowSidebarSection', () => {
       expect(screen.getByTestId('flow-suite-progress')).toBeInTheDocument();
     });
   });
+
+  /**
+   * 001 §8.5's connector file. Not a flow, but it decides what every flow in the scope extracts,
+   * which host each binding calls and which credential it carries — and until it was listed the only
+   * way to edit it was outside the app.
+   */
+  describe('the connector file (§8.5)', () => {
+    const connectorsIn = (workspaceRoot, collectionRoot) => ({
+      pathname: `${collectionRoot || workspaceRoot}/flows/connectors.yml`,
+      filename: 'connectors.yml',
+      workspaceRoot,
+      collectionRoot,
+      connectors: true
+    });
+
+    const withConnectors = [
+      flowIn('/home/dev/workspace-one', 'checkout.flow.yml'),
+      flowIn('/home/dev/workspace-one', 'login.flow.yml', undefined, { library: true }),
+      connectorsIn('/home/dev/workspace-one')
+    ];
+
+    const rowOrder = () =>
+      [...document.querySelectorAll('.flow-subgroup-label, .flow-row')].map((element) =>
+        (element.classList.contains('flow-row') ? element.dataset.testid : element.textContent));
+
+    it('is listed with the libraries, which is what it is', () => {
+      renderSection({ flows: withConnectors, workspaces, activeWorkspaceUid: 'one' });
+
+      expect(rowOrder()).toEqual([
+        'flow-row-checkout.flow.yml',
+        'Libraries',
+        'flow-row-connectors.yml',
+        'flow-row-login.flow.yml'
+      ]);
+    });
+
+    it('gives a scope with no library flows a Libraries section of its own', () => {
+      renderSection({
+        flows: [flowIn('/home/dev/workspace-one', 'checkout.flow.yml'), connectorsIn('/home/dev/workspace-one')],
+        workspaces,
+        activeWorkspaceUid: 'one'
+      });
+
+      expect(rowOrder()).toEqual(['flow-row-checkout.flow.yml', 'Libraries', 'flow-row-connectors.yml']);
+    });
+
+    it('opens it as plain YAML in its own tab', () => {
+      const { store } = renderSection({ flows: withConnectors, workspaces, activeWorkspaceUid: 'one' });
+
+      fireEvent.click(screen.getByTestId('flow-row-connectors.yml'));
+
+      expect(store.getState().tabs.tabs).toEqual([
+        expect.objectContaining({
+          type: 'flow-connectors',
+          pathname: '/home/dev/workspace-one/flows/connectors.yml',
+          tabName: 'connectors.yml'
+        })
+      ]);
+    });
+
+    /**
+     * No `meta:` to edit, and no rename: the engine finds this file by its exact path, so a renamed
+     * one is a file the run no longer reads.
+     */
+    it('carries no row menu', () => {
+      renderSection({ flows: [connectorsIn('/home/dev/workspace-one')], workspaces, activeWorkspaceUid: 'one' });
+
+      expect(screen.queryByTestId('flow-menu-trigger')).not.toBeInTheDocument();
+    });
+  });
 });

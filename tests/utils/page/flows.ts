@@ -176,6 +176,19 @@ export const buildFlowLocators = (page: Page) => {
     },
 
     /** §4.3's raw editor. */
+    /**
+     * §4.5's script, §4.6's fixture and §8.5's connector file — one pane, whose testids carry the
+     * tab type so a locator names which of the three it is reading.
+     */
+    source: (type: 'flow-script' | 'flow-fixture' | 'flow-connectors') => ({
+      pane: () => page.getByTestId(`${type}-pane`),
+      editor: () => page.getByTestId(`${type}-pane`).locator('.script-editor'),
+      filename: () => page.getByTestId(`${type}-pane`).locator('.script-filename'),
+      badge: () => page.getByTestId(`${type}-pane`).locator('.script-badge'),
+      state: () => page.getByTestId(`${type}-pane`).locator('.script-state'),
+      save: () => page.getByTestId(`${type}-save`)
+    }),
+
     yaml: {
       pane: () => page.getByTestId('flow-yaml-pane'),
       editor: () => page.getByTestId('flow-yaml-pane').locator('.yaml-editor'),

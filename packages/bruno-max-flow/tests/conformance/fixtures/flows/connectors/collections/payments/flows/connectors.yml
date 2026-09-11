@@ -5,6 +5,41 @@ version: 1
 
 apis:
   things: ../../../../../specs/regressions-v1.yml
+  # 004 §5: a connector file is also where a service's rate is declared once for every flow under the
+  # scope. This binding names no connector entries — it is here for the `rateLimit:` alone, which is
+  # matched by the document it resolves to and not by the alias.
+  paced:
+    source: ../../../../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+  # §8.5's binding defaults: everything true of the *service* rather than of a flow, declared once.
+  # A flow binding this document inherits all of it and may override any field.
+  shared-svc:
+    source: ../../../../../specs/paced-other-v1.yml
+    baseUrl: https://shared.example.com
+    auth: service-account
+    color: "#8ab4f8"
+    defaultHeaders:
+      X-Tenant-Id: acme
+      X-Client: shared
+    defaultQuery:
+      api_version: "2026-01"
+  # R10.8's binding: the scope names both the document and the credential it takes.
+  session-svc:
+    source: ../../../../../specs/paced-session-v1.yml
+    baseUrl: https://session.example.com
+    auth: session
+
+# §8.5's profiles: the credential the service takes, declared beside the binding that takes it.
+# It reads a slot, because the token is produced by whichever step signed in and a connector file has
+# no steps of its own to name — R10.8. Each flow declares the slot and writes it.
+authProfiles:
+  session:
+    mode: apikey
+    key: Authorization
+    value: "Token {{shared.userAuthToken}}"
+    placement: header
 
 connectors:
   things#getThing:

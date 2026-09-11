@@ -86,6 +86,15 @@ export type RunOptions = {
      * clear (§14.5).
      */
     capture?: { enabled?: boolean; dir?: string };
+    /**
+     * --no-rate-limit (004 §8).
+     *
+     * `enabled: false` ignores every `rateLimit:` the run's flows declare, for the case the limit
+     * was written for a real API and the run is pointed at a local mock. There is no way to *impose*
+     * a limit from here: a rate is a property of the service, and a flag that tightened one would be
+     * a second place to look for what a run actually did.
+     */
+    rateLimit?: { enabled?: boolean };
   };
   signal?: AbortSignal;
   onEvent?: (event: FlowEvent) => void;

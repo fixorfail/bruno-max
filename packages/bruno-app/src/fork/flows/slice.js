@@ -222,6 +222,7 @@ const applyEvent = (state, event) => {
         message,
         attempts,
         durationMs,
+        rateLimitWaitMs,
         assertions,
         validation,
         outputs,
@@ -235,6 +236,9 @@ const applyEvent = (state, event) => {
         message,
         attempts,
         durationMs,
+        // 004 §7: how much of `durationMs` was the flow's own pacing rather than the API's latency.
+        // Absent on every step of a flow that declares no `rateLimit:`.
+        rateLimitWaitMs,
         assertions,
         validation,
         outputs,

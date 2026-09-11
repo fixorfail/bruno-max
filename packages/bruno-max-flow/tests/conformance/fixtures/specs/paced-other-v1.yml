@@ -1,0 +1,31 @@
+openapi: 3.0.3
+# A second service for 004's per-document scenarios: one binding limited and one not, so a bucket
+# that was global rather than per-document would pace requests this spec's operations never declared.
+info: { title: Unpaced API, version: 1.0.0 }
+servers:
+  - url: https://unpaced.example.com
+paths:
+  /echo/a:
+    get:
+      operationId: echoA
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /echo/b:
+    get:
+      operationId: echoB
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }

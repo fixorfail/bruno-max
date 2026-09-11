@@ -1,0 +1,17 @@
+# The flow's own profile of the same name wins, exactly as its own binding field or output does.
+version: 1
+
+meta:
+  name: R10 — overriding an inherited profile
+
+apis:
+  svc: ../../../../../specs/paced-session-v1.yml
+
+authProfiles:
+  session:
+    mode: bearer
+    token: tok-flow-local
+
+steps:
+  - id: call
+    operation: svc#sessionThing

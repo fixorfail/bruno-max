@@ -1,0 +1,27 @@
+# 004 §7's burst allowance: the bucket holds three tokens, so three of the four go out at once and
+# only the fourth waits. Identical to spacing.flow.yml apart from the burst.
+version: 1
+
+meta:
+  name: 004 — a burst allowance
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+      burst: 3
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: paced#pingA
+  - id: b
+    operation: paced#pingB
+  - id: c
+    operation: paced#pingC
+  - id: d
+    operation: paced#pingD

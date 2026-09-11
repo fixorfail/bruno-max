@@ -33,7 +33,7 @@ export type JsonSchema = Record<string, unknown>;
  * The union keeps `inherit` and so does `collectionAuthProfile`, which maps a *collection's* stored
  * `inherit` to `none` (§6.4). That is a host-supplied value and is not checked here.
  */
-const AUTH_MODES = [
+export const AUTH_MODES = [
   'none', 'awsv4', 'basic', 'bearer', 'digest', 'ntlm', 'oauth1', 'oauth2', 'wsse',
   'apikey', 'akamai-edgegrid'
 ];
@@ -64,6 +64,24 @@ const RETRY_PROPERTIES = {
   maxDelay: MILLISECONDS,
   jitter: { enum: ['none', 'full'] },
   shouldRetry: { type: 'string' }
+};
+
+/**
+ * §6.2's client-side pacing for a binding — 004. `per` defaults to `second` and `burst` to 1, which
+ * is strict even spacing; `requests` is the only key an author must write.
+ *
+ * `additionalProperties: false` is what turns a `requsts:` into a squiggle in the editor rather than
+ * a limit that silently never applied.
+ */
+const RATE_LIMIT = {
+  type: 'object',
+  properties: {
+    requests: { type: 'integer', minimum: 1 },
+    per: { enum: ['second', 'minute', 'hour'] },
+    burst: { type: 'integer', minimum: 1 }
+  },
+  required: ['requests'],
+  additionalProperties: false
 };
 
 /** §5.3's per-step overrides of §5.2's `config:` flags, which are the same booleans one level down. */
@@ -272,7 +290,9 @@ export const V1: JsonSchema = {
           defaultHeaders: OVERRIDES,
           defaultQuery: OVERRIDES,
           /** §6.2's presentation colour; a viewer falls back to its unpainted default. */
-          color: { type: 'string' }
+          color: { type: 'string' },
+          /** §6.2's pacing for every request through this binding (004). */
+          rateLimit: RATE_LIMIT
         },
         required: ['source'],
         additionalProperties: false

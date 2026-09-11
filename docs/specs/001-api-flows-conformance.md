@@ -2416,6 +2416,53 @@ where each was declared, inline, collection connector file or workspace connecto
 | a step declaring nothing over both files | `[thingId:workspace, title:collection, thingName:collection]` |
 | a `uses:` step | an empty list — its outputs are its sub-flow's exports, not declarations of its own |
 
+### R10.6 — A connector file supplies the binding, not only its outputs
+
+**Pins:** §8.5's binding defaults — the fields of an `apis:` entry that are true of the *service*
+rather than of one flow, declared once and inherited by every flow binding the same document.
+
+Matched on resolved spec identity, exactly as R10.2's entries are.
+
+| Case | Expected |
+|---|---|
+| a flow binding only `source:` | the connector file's `baseUrl`, `auth`, `defaultHeaders`, `defaultQuery`, `color` and `rateLimit` all apply |
+| an inherited `color` | reaches `describeFlow`, so a viewer draws the scope's colour |
+| a flow declaring some of those fields | its own win field by field; the fields it did not mention are still inherited |
+| `defaultHeaders` / `defaultQuery` | merge key by key rather than replacing, and `!...` drops an inherited key (§7.2's third merge layer) |
+| a flow with its own `config.baseUrl` | outranks an inherited `baseUrl` (§6.3) — a scope file never silently redirects a flow that named a host |
+| a connector file's own `color:` or `rateLimit:` being malformed | reported against **that file**, once, not against every flow binding the document |
+
+### R10.7 — Identity holds across directory depth
+
+**Pins:** §8.5's identity rule where it is load-bearing — a `flows/shared/` library sits one
+directory deeper than the connector file that configures it, so one document is a different relative
+path in each. Matching is on what each path resolves to against its own file.
+
+Together with §12.3: a library resolves connectors from its own scope, never its caller's.
+
+| Case | Expected |
+|---|---|
+| a workspace library binding `../../../../specs/x.yml`, configured by a file writing `../../../specs/x.yml` | the binding is inherited — the strings differ and the documents do not |
+| that library invoked from a collection | it inherits the *workspace* file's binding; the collection file's never reaches it |
+
+### R10.8 — A connector file declares the credential beside the binding
+
+**Pins:** §8.5's `authProfiles:` — §6.4's profiles declared once beside the API they authenticate,
+inherited by name, and resolved in the scope of the step that uses one.
+
+A connector file has no steps, so such a profile reads a **slot** (§9.1) rather than a step output:
+the token is produced by whichever step signed in. The using flow keeps the `shared:` declaration —
+which of *this* flow's steps may write it is a fact about this graph, not about the service.
+
+| Case | Expected |
+|---|---|
+| a flow using a profile only the connector file declares | authenticates with it; no `unknown-auth-profile` |
+| that profile's `{{shared.x}}` | resolves in the using flow's scope, from the value its own step wrote |
+| a flow declaring a profile of the same name | its own wins, as its own binding field or output does |
+| a flow that uses such a profile and declares no matching slot | `undeclared-slot` against the consuming step, before anything is sent |
+| a profile declaring no `mode:` or an unknown one | `invalid-auth-profile` against the **connector file**, once |
+| a step's `auth: none` | still opts out — an inherited profile is a default, not an imposition |
+
 ### R11.1 — The schema pass inside `bru flow validate`
 
 **Pins:** §14.3's ordering, and §5.4's versioning read from the command's side rather than the

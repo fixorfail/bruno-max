@@ -7,6 +7,8 @@
  * the validator does not warn about — or the reverse — is worse than either alone, since the drawing
  * is what makes §8.3's distinction enforceable by something the author looks at.
  */
+import * as path from 'path';
+
 import type { NormalizedFlow, NormalizedStep } from './document';
 
 const REFERENCE = /\{\{\s*(steps|shared)\.([^}\s.]+)(?:\.([^}\s]+))?\s*\}\}/g;
@@ -104,9 +106,18 @@ export const referencesOf = (step: NormalizedStep, flow: NormalizedFlow): Refere
   );
 
   const profileName = step.auth || (step.operation ? flow.apis[step.operation.alias]?.auth : undefined);
+  /**
+   * A profile a connector file supplied says where it was written (§8.5). A step that inherits its
+   * binding's `auth:` names neither the profile nor the file, so a `{{shared.x}}` inside one reads
+   * as a step depending on a slot nothing in the flow refers to — the file is the missing half.
+   */
+  const origin = profileName ? flow.authProfileOrigins[profileName] : undefined;
   const profile
     = profileName && profileName !== 'none' && flow.authProfiles[profileName]
-      ? referencesIn(flow.authProfiles[profileName], `${step.id}'s auth profile ${profileName}`)
+      ? referencesIn(
+          flow.authProfiles[profileName],
+          `${step.id}'s auth profile ${profileName}${origin ? ` (from ${path.basename(origin)})` : ''}`
+        )
       : [];
 
   const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
@@ -155,12 +166,23 @@ export const readsOf = (flow: NormalizedFlow): FlowReads => {
     // Publishing an output into a slot is a use of it, whoever reads the slot afterwards.
     for (const { output } of step.shared) read(step.id, output);
   }
-  // §12.1: an export is a read. A library whose slot leaves only through the boundary reads it
-  // nowhere else, and without this line that correct flow is warned `unused-slot`.
+  /**
+   * §12.1: an export is a read. A library whose slot leaves only through the boundary reads it
+   * nowhere else, and without this that correct flow is warned `unused-slot`.
+   *
+   * The interpolated spelling counts too. `token: "{{shared.x}}"` is not a valid export — §12.1
+   * takes a bare path, and `unknown-export` says so — but it is the mistake an author makes on the
+   * way to the right one, and following it with `unused-slot` reports the same misunderstanding
+   * twice while naming the wrong thing to fix. One mistake, one message.
+   */
   for (const exported of Object.values(flow.exports)) {
     const [root, target, ...rest] = exported.split('.');
     if (root === 'steps' && target) read(target, rest.join('.'));
     else if (root === 'shared' && target) slots.add(target);
+  }
+  for (const reference of referencesIn(Object.values(flow.exports), 'exports')) {
+    if (reference.root === 'shared') slots.add(reference.name);
+    else read(reference.name, reference.field);
   }
 
   return { outputs, wholeSteps, slots };

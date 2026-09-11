@@ -1,0 +1,27 @@
+# 004 §3's reason for keying on the resolved document: two aliases, one file. The second binding
+# declares no limit of its own, and is paced anyway — a limit describes the service, and naming it
+# twice does not buy a second allowance.
+version: 1
+
+meta:
+  name: 004 — two aliases, one document, one bucket
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+  same-thing:
+    source: ../../specs/paced-v1.yml
+
+config:
+  concurrency: 4
+
+steps:
+  - id: first
+    operation: paced#pingA
+  - id: second
+    operation: same-thing#pingB
+  - id: third
+    operation: paced#pingC

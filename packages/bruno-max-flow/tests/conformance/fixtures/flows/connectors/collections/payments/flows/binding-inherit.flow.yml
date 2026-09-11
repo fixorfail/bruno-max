@@ -1,0 +1,18 @@
+# §8.5: the flow binds a document and says nothing else. The host, the auth profile, the default
+# headers, the default query and the colour all come from the collection connector file.
+version: 1
+
+meta:
+  name: connector bindings — inherited whole
+
+apis:
+  svc: ../../../../../specs/paced-other-v1.yml
+
+authProfiles:
+  service-account:
+    mode: bearer
+    token: tok-shared
+
+steps:
+  - id: call
+    operation: svc#echoA

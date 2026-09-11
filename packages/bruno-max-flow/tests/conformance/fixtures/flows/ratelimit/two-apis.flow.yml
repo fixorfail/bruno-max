@@ -1,0 +1,28 @@
+# 004 §3: a bucket belongs to one API document. The unpaced binding's steps are dispatched alongside
+# the paced one's, and a limiter that was the run's rather than the document's would slow them too.
+version: 1
+
+meta:
+  name: 004 — one binding limited, one not
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+  open:
+    source: ../../specs/paced-other-v1.yml
+
+config:
+  concurrency: 4
+
+steps:
+  - id: paced_a
+    operation: paced#pingA
+  - id: paced_b
+    operation: paced#pingB
+  - id: open_a
+    operation: open#echoA
+  - id: open_b
+    operation: open#echoB

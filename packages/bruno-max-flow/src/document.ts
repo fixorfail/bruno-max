@@ -236,6 +236,24 @@ export type NormalizedStep = {
   position?: Position;
 };
 
+/**
+ * §6.2's declared pacing for a binding — how fast this flow is willing to call the service.
+ *
+ * A client-side politeness limit, and only that: nothing here reads a 429 or a `Retry-After`,
+ * because a limit inferred from rejections is a limit you only find by being rude first, and it
+ * would make a run's rate depend on what the server did the last time. 004 §4.
+ *
+ * `burst` is the bucket's capacity. At its default of 1 the bucket holds one token, which is strict
+ * even spacing — the shape an author means by "no faster than N per minute". A larger burst lets a
+ * flow open at full speed and settle to the rate, which is what an API that publishes a burst
+ * allowance is describing.
+ */
+export type RateLimit = {
+  requests: number;
+  per: 'second' | 'minute' | 'hour';
+  burst: number;
+};
+
 export type ApiBinding = {
   alias: string;
   source: string;
@@ -249,6 +267,22 @@ export type ApiBinding = {
    * so; 002 §5.1 is the reader.
    */
   color?: string;
+  /**
+   * §6.2's `rateLimit:`, as authored or as a connector file supplied it (§8.5). Absent means this
+   * binding declares no pacing — which is not the same as "unpaced": 004 §6 shares one bucket per
+   * resolved document across the run, so a binding without a limit is still paced when another
+   * binding in the same run declared one for the same document.
+   */
+  rateLimit?: RateLimit;
+  /**
+   * A `baseUrl:` a connector file supplied (§8.5) — **never authored**, and never written back out.
+   *
+   * It is a field of its own rather than filled into `baseUrl` because §6.3 ranks it differently: a
+   * scope file's host is a default for a flow that named none, and loses to the flow's own
+   * `config.baseUrl`. Everything else a connector file supplies has no flow-level counterpart to
+   * lose to, and is filled in place.
+   */
+  inheritedBaseUrl?: string;
 };
 
 /**
@@ -291,6 +325,16 @@ export type NormalizedFlow = {
   functions: FunctionLibrary;
   config: FlowConfig;
   authProfiles: Record<string, Record<string, unknown>>;
+  /**
+   * Where a profile came from, for the profiles a connector file supplied (§8.5) — keyed by name,
+   * absent for every profile the flow declared itself.
+   *
+   * It exists for one message. A step inheriting a binding's `auth:` never mentions the profile, and
+   * the profile never mentions the flow: a `{{shared.x}}` inside one surfaces as a diagnostic about
+   * a step that reads a slot nothing in the file it is in refers to. Naming the file that wrote the
+   * profile is the difference between that and a diagnostic the author can act on.
+   */
+  authProfileOrigins: Record<string, string>;
   vars: Record<string, unknown>;
   /** §9.1's slots, by name, with the rule a reader of each one answers to. */
   shared: Record<string, SlotDeclaration>;
@@ -469,6 +513,26 @@ const normalizeRetry = (raw: unknown, fallback?: Partial<RetryPolicy>): RetryPol
   };
 };
 
+/**
+ * §6.2's `rateLimit:`. Absent yields `undefined` rather than a policy of "unlimited", because a
+ * binding that declares nothing must not out-argue one that does (004 §6's strictest-wins merge).
+ *
+ * Numbers are read the way `normalizeRetry` reads its own — `Number()` and no further judgement.
+ * A `requests: "{{rps}}"` becomes `NaN` here and is named by `validate`'s `invalid-rate-limit`,
+ * which is where the author is told; normalization's job is the shape, not the verdict.
+ */
+const normalizeRateLimit = (raw: unknown): RateLimit | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+
+  const mapping = asRecord(raw);
+  const per = mapping.per === 'minute' || mapping.per === 'hour' ? mapping.per : 'second';
+  return {
+    requests: Number(mapping.requests),
+    per,
+    burst: mapping.burst === undefined ? 1 : Number(mapping.burst)
+  };
+};
+
 const flag = (step: Record<string, unknown>, config: StepFlags, key: keyof StepFlags): boolean =>
   step[key] === undefined ? config[key] : Boolean(step[key]);
 
@@ -478,6 +542,15 @@ const flag = (step: Record<string, unknown>, config: StepFlags, key: keyof StepF
  */
 const normalizeStages = (raw: unknown): StageBoundary[] =>
   Object.entries(asRecord(raw)).map(([name, from]) => ({ name, from: String(from) }));
+
+/**
+ * §6.4's profiles — a flow's, and a connector file's own (§8.5), read by the one rule.
+ *
+ * Fields are carried verbatim: §6.4's shape is flat and mode-specific, and the engine interprets
+ * only `mode`. Interpolation happens at materialization in the scope of whoever uses the profile.
+ */
+export const normalizeAuthProfiles = (raw: unknown): Record<string, Record<string, unknown>> =>
+  Object.fromEntries(Object.entries(asRecord(raw)).map(([name, value]) => [name, asRecord(value)]));
 
 /** §6.2's bindings — a flow's, and a connector file's own (§8.5), read by the one rule. */
 export const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
@@ -493,7 +566,8 @@ export const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
           auth: mapping.auth === undefined ? undefined : String(mapping.auth),
           defaultHeaders: asRecord(mapping.defaultHeaders),
           defaultQuery: asRecord(mapping.defaultQuery),
-          color: mapping.color === undefined ? undefined : String(mapping.color)
+          color: mapping.color === undefined ? undefined : String(mapping.color),
+          rateLimit: normalizeRateLimit(mapping.rateLimit)
         }
       ];
     })
@@ -749,9 +823,9 @@ export const normalizeFlow = (
     apis: normalizeApis(document.apis),
     functions: normalizeFunctions(document.functions),
     config,
-    authProfiles: Object.fromEntries(
-      Object.entries(asRecord(document.authProfiles)).map(([name, value]) => [name, asRecord(value)])
-    ),
+    authProfiles: normalizeAuthProfiles(document.authProfiles),
+    // Only `Connectors.apply` fills this: a profile read out of the document is the document's own.
+    authProfileOrigins: {},
     vars: asRecord(document.vars),
     shared: normalizeSlots(document.shared),
     dataset: normalizeDataset(document.dataset),

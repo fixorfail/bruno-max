@@ -1,0 +1,21 @@
+# §6.3's rank: a connector file's `baseUrl:` is a default for a flow that named no host, and loses to
+# the flow's own `config.baseUrl`. Everything else the file supplies still applies.
+version: 1
+
+meta:
+  name: connector bindings — config.baseUrl outranks the inherited host
+
+apis:
+  svc: ../../../../../specs/paced-other-v1.yml
+
+authProfiles:
+  service-account:
+    mode: bearer
+    token: tok-shared
+
+config:
+  baseUrl: https://flow-config.example.com
+
+steps:
+  - id: call
+    operation: svc#echoA

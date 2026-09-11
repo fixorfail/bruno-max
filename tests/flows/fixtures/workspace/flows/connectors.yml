@@ -1,0 +1,11 @@
+# 001 §8.5's connector file, for 002 §4.6a's sidebar row.
+#
+# It declares an `apis:` binding and no entries under it, so it adds nothing to any flow in this
+# workspace — the specs that read those flows are unaffected by its existence, and this one is about
+# the row and the editor rather than about what a connector file does to a run.
+version: 1
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+connectors: {}

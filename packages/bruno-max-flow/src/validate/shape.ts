@@ -22,6 +22,8 @@ const SUBFLOW_ERRORS = [
 
 /** §7.2's positions a value can be dropped from — the three merge layers and the path params. */
 const MERGEABLE = ['body', 'query', 'headers', 'pathParams'];
+/** §6.2's binding-level merge layers, beneath which §8.5's connector bindings sit. */
+const BINDING_MERGEABLE = ['defaultHeaders', 'defaultQuery'];
 
 /** §7.3's namespaces. A variable of any of these names is shadowed by the namespace, in every scope. */
 const RESERVED = ['steps', 'row', 'params', 'shared', 'flow', 'pre', 'process'];
@@ -174,8 +176,15 @@ const checkSubflowSteps = (flow: NormalizedFlow, report: Report, invoked: boolea
 };
 
 /**
- * §7.2: `!...` removes a key a seed introduced, so it means nothing outside a merge layer — and
- * §8.5's `outputs:`, where it removes an entry a connector file supplied.
+ * §7.2: `!...` removes a key a seed introduced, so it means nothing outside a merge layer — §8.5's
+ * `outputs:`, where it removes an entry a connector file supplied, and a binding's own
+ * `defaultHeaders:` / `defaultQuery:`, where it removes one a connector file's binding supplied.
+ *
+ * That last position is a merge layer for the same reason the first two are: a scope file states
+ * what is true of the service, and the one flow that must not send the scope's header needs a way to
+ * say so. It is resolved when the layers are applied, so a `!...` in a flow whose scope supplies
+ * nothing removes nothing and is gone before materialization — never a header whose value is a
+ * symbol.
  */
 const checkDropPlacement = (flow: NormalizedFlow, report: Report) => {
   const walk = (value: unknown, path: (string | number)[]) => {
@@ -183,11 +192,15 @@ const checkDropPlacement = (flow: NormalizedFlow, report: Report) => {
       const inStep = path[0] === 'steps' && typeof path[1] === 'number';
       const inMergeLayer = inStep && MERGEABLE.includes(String(path[2]));
       const inOutputs = inStep && path[2] === 'outputs' && path.length === 4;
-      if (!inMergeLayer && !inOutputs) {
+      const inBindingDefaults
+        = path[0] === 'apis' && BINDING_MERGEABLE.includes(String(path[2])) && path.length === 4;
+      if (!inMergeLayer && !inOutputs && !inBindingDefaults) {
         report.error(
           'misplaced-drop',
-          `!... removes a key the spec seeded or an output a connector supplied, so it belongs in a step's `
-          + `${MERGEABLE.join(', ')} or outputs — at ${path.join('.') || 'the top level'} it drops nothing and reads as null`,
+          `!... removes a key the spec seeded, an output a connector supplied, or an api binding's `
+          + `inherited default, so it belongs in a step's ${MERGEABLE.join(', ')} or outputs, or in an `
+          + `apis: binding's ${BINDING_MERGEABLE.join(' or ')} — at ${path.join('.') || 'the top level'} `
+          + 'it drops nothing and reads as null',
           typeof path[1] === 'number' ? flow.steps[path[1] as number]?.id : undefined,
           path
         );

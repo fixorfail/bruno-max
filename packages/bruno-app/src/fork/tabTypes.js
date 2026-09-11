@@ -16,6 +16,6 @@
  * open different files entirely — a `.js` helper and a data file, neither of which has a run view or
  * a graph.
  */
-export const FORK_TAB_TYPES = ['flow', 'flow-yaml', 'flow-script', 'flow-fixture'];
+export const FORK_TAB_TYPES = ['flow', 'flow-yaml', 'flow-script', 'flow-fixture', 'flow-connectors'];
 
 export const isForkTab = (tab) => FORK_TAB_TYPES.includes(tab?.type);

@@ -793,6 +793,69 @@ steps:
   });
 });
 
+/**
+ * 002 §4.6a — the connector file is editable through the same channel as a script and a fixture.
+ *
+ * It is neither of those and it is not a flow, so every existing guard on the channel refused it:
+ * the row opened and the editor reported that the file could not be read.
+ */
+describe('the connector file', () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { readFlowSourceHandler, writeFlowSourceHandler } = require('./index');
+
+  let scopeRoot;
+  let scope;
+  let flowsDir;
+  let entry;
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-connectors-')));
+    scope = { workspaceRoot: scopeRoot };
+    flowsDir = path.join(scopeRoot, 'flows');
+    fs.mkdirSync(flowsDir, { recursive: true });
+    entry = path.join(flowsDir, 'connectors.yml');
+    fs.writeFileSync(entry, 'version: 1\nconnectors: {}\n', 'utf8');
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  it('reads and writes it as text', async () => {
+    expect(await readFlowSourceHandler({ entry, scope })).toContain('connectors');
+
+    await writeFlowSourceHandler({ entry, scope, content: 'version: 1\napis: {}\n' });
+
+    expect(fs.readFileSync(entry, 'utf8')).toBe('version: 1\napis: {}\n');
+  });
+
+  /** Exactly that path: a `connectors.yml` deeper down is not the file a run reads. */
+  it('refuses one in a subdirectory', async () => {
+    const nested = path.join(flowsDir, 'nested', 'connectors.yml');
+    fs.mkdirSync(path.dirname(nested), { recursive: true });
+    fs.writeFileSync(nested, 'version: 1\n', 'utf8');
+
+    await expect(readFlowSourceHandler({ entry: nested, scope })).rejects.toThrow('not a flow file');
+  });
+
+  it('refuses one outside the scope', async () => {
+    await expect(
+      readFlowSourceHandler({ entry: path.join(scopeRoot, '..', 'flows', 'connectors.yml'), scope })
+    ).rejects.toThrow('not a flow file');
+  });
+
+  /** A `connectors.yml` under `flows/fixtures/` is a fixture, and stays one. */
+  it('leaves one under fixtures/ to the fixture guard', async () => {
+    const fixture = path.join(flowsDir, 'fixtures', 'connectors.yml');
+    fs.mkdirSync(path.dirname(fixture), { recursive: true });
+    fs.writeFileSync(fixture, 'rows: []\n', 'utf8');
+
+    expect(await readFlowSourceHandler({ entry: fixture, scope })).toContain('rows');
+  });
+});
+
 describe('a flow script', () => {
   const fs = require('fs');
   const os = require('os');

@@ -23,6 +23,9 @@ const SCRIPTS_DIRECTORY = 'scripts';
  */
 const FIXTURES_DIRECTORY = 'fixtures';
 
+/** 001 §8.5's connector file, by the convention the engine discovers it on. */
+const CONNECTOR_FILENAME = 'connectors.yml';
+
 const isFlowFile = (pathname) => pathname.endsWith(FLOW_SUFFIX);
 
 /** A collection-scoped flow lives under the collection, a workspace-scoped one under the workspace (001 §5.1). */
@@ -68,8 +71,26 @@ const isScriptFile = (pathname, scope) =>
 const isFixtureFile = (pathname, scope) =>
   !isFlowFile(pathname) && isInFlowsSubdirectory(pathname, scope, FIXTURES_DIRECTORY);
 
+/**
+ * 001 §8.5's connector file, at the one path the engine looks for it: `<scope>/flows/connectors.yml`.
+ *
+ * **Listed, unlike every other non-flow file beside a flow.** It is not a flow and does not run, but
+ * it decides what every flow in the scope extracts, which host each binding calls and which
+ * credential it carries — and until it was listed the only way to edit it was outside the app. A
+ * file with that much say over a scope's flows, reachable from nowhere in the app that shows them,
+ * is the gap this closes.
+ *
+ * Exactly that name at exactly that depth: a `connectors.yml` in a subdirectory is not the file the
+ * engine reads, and listing it would say otherwise.
+ */
+const isConnectorFile = (pathname, scope) =>
+  pathname === path.join(flowsDirectoryFor(scope), CONNECTOR_FILENAME);
+
 const isListedFile = (pathname, scope) =>
-  isFlowFile(pathname) || isScriptFile(pathname, scope) || isFixtureFile(pathname, scope);
+  isFlowFile(pathname)
+  || isScriptFile(pathname, scope)
+  || isFixtureFile(pathname, scope)
+  || isConnectorFile(pathname, scope);
 
 /**
  * What the sidebar knows about a flow nobody has opened: 002 §4.1's display name and library flag —
@@ -129,7 +150,9 @@ const buildEntry = (pathname, scope) => {
   // terms either, for the same reason: a script and a fixture are matched on their filename, which
   // the entry already carries.
   if (!isFlowFile(pathname)) {
-    if (isFixtureFile(pathname, scope)) {
+    if (isConnectorFile(pathname, scope)) {
+      entry.connectors = true;
+    } else if (isFixtureFile(pathname, scope)) {
       entry.fixture = true;
     } else {
       entry.script = true;
@@ -235,6 +258,13 @@ class FlowsWatcher {
       if (!isListedFile(pathname, scope)) {
         win.webContents.send('main:flow-dependency-changed', pathname);
         return;
+      }
+
+      // The connector file is the one listed file that is also a dependency of every open flow: it
+      // decides their outputs, bindings and credentials (§8.5), so an edit to it has to re-describe
+      // them as it always did. Being drawable did not stop it being depended on.
+      if (isConnectorFile(pathname, scope)) {
+        win.webContents.send('main:flow-dependency-changed', pathname);
       }
 
       const { entry, specs } = buildEntry(pathname, scope);

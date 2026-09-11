@@ -1,0 +1,10 @@
+# The caller is in the collection; the library is in the workspace. §12.3: the library resolves its
+# connectors from its own scope, so what it inherits is the workspace file's, never this collection's.
+version: 1
+
+meta:
+  name: R10 — uses shared binding
+
+steps:
+  - id: echo
+    uses: workspace:flows/shared/echo.flow.yml

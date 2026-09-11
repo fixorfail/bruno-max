@@ -318,6 +318,7 @@ export type AttemptRecord = {
   attempt: number;
   startedAt: string;
   durationMs: number;
+  rateLimitWaitMs?: number;
   request?: MaterializedRequest;
   response?: ExecutedResponse;
   assertions: AssertionResult[];
@@ -574,6 +575,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
         attempt: record.attempt,
         startedAt: record.startedAt,
         durationMs: record.durationMs,
+        rateLimitWaitMs: record.rateLimitWaitMs,
         request: record.request && capturedRequest(record.request, redactor, record.response?.requestHeaders),
         response: record.response && capturedResponse(record.response, redactor, artifact),
         assertions: record.assertions,

@@ -68,7 +68,10 @@ export type StepCapture = {
   /** 1-based, matching §11.1's numbering. */
   attempt: number;
   startedAt: string;
+  /** The request's, net of §6.2's pacing — a request held back by the limiter is not a slow one. */
   durationMs: number;
+  /** What this attempt waited at the API's bucket before it was sent (004 §7). Absent when nothing. */
+  rateLimitWaitMs?: number;
   /** Absent when nothing was sent — a step failing validateRequest never dispatches (§10.1). */
   request?: CapturedRequest;
   /** Absent on a transport error (§11.2) or an attempt aborted by maxDuration/cancel (§11.3). */

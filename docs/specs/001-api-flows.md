@@ -600,6 +600,10 @@ apis:
     baseUrl: "{{ledgerBaseUrl}}"                  # per-API base URL override
     auth: service-account                         # auth profile name — see §6.4
     color: "#8ab4f8"                              # optional; how a viewer marks this API
+    rateLimit:                                    # optional; how fast this flow will call it — 004
+      requests: 100
+      per: minute                                 # second | minute | hour — default second
+      burst: 10                                   # default 1, i.e. strict even spacing
     defaultHeaders:                               # applied to every step targeting this API
       X-Tenant-Id: "{{tenantId}}"
       X-Client: bruno-e2e
@@ -620,6 +624,16 @@ graph is drawn and never what a flow does. The warning is the point: a colour a 
 falls back to its unpainted default, which is indistinguishable from a binding that declared no
 colour at all, so silence would hide the typo rather than the consequence. A viewer with no colours
 ignores it, which is what makes it safe to add to a format older readers still parse (§5.4).
+
+**`rateLimit` is the flow's own politeness, not a reading of the API's.** It caps how fast requests
+leave the client for this binding's document, and nothing in it responds to a 429 or a `Retry-After`:
+a rate discovered from rejections is one you only find by being rude first. It is on the binding for
+the same reason `baseUrl` and `auth` are — it is true of the API rather than of a step — and
+`flows/connectors.yml` takes the identical key so a team can declare a service's rate once for every
+flow that calls it (§8.5). The bucket belongs to the *run* and to the resolved document, so two
+aliases for one file share it and a sub-flow cannot route around its caller's limit; where two flows
+in one run disagree, the run takes the stricter and `bru flow validate` warns. **004** has the whole
+of it, including where the token is taken and what a run does when a wait outlasts its budget.
 
 `defaultHeaders` and `defaultQuery` remove the cross-cutting values that would otherwise be
 repeated on every step of every flow — a tenant id or API version that the vendor's spec examples
@@ -644,7 +658,15 @@ hermetic CI should vendor the spec into the repo.
 
 Not expressed on the step. Resolution order, first match wins:
 
-the step's API binding `baseUrl` → flow `config.baseUrl` → the spec's `servers[0].url`.
+the step's API binding `baseUrl` → flow `config.baseUrl` → a connector file's binding `baseUrl`
+(§8.5) → the spec's `servers[0].url`.
+
+**A connector file's host ranks below `config.baseUrl`, not beside the binding's.** §8.5's layers are
+a *default* for what a flow did not say, and `config.baseUrl` is the flow saying it. An author
+reading a file that sets `config.baseUrl`, and watching requests go somewhere else entirely because
+of a file two directories up, is the worst version of the locality §8.5 already costs — so the rule
+is that anything the flow itself writes outranks anything a scope supplies. A binding with its own
+`baseUrl:` still wins outright, exactly as before.
 
 **`--env-var` is not a tier in this list.** It overrides a *variable*, so it reaches the base URL
 only through whatever `{{...}}` the winning tier contains: `--env-var apiBaseUrl=…` changes
@@ -961,7 +983,9 @@ exclusive, so the layer has one source either way.
 - Arrays **replace** wholesale. They are not concatenated or index-merged — element-wise merging
   of arrays is ambiguous and produces surprising results.
 - The **local tag `!...`** removes a key the seed introduced. `null` keeps its ordinary meaning and
-  sends a literal JSON null.
+  sends a literal JSON null. Three other positions are merge layers and take it for the same reason:
+  a step's `outputs:` over a connector entry, and a binding's `defaultHeaders:` / `defaultQuery:`
+  over a connector file's binding (§8.5).
 
 ```yaml
     body:
@@ -1775,7 +1799,12 @@ later just because a `null` output path happens to be useless.
 
 Connector-supplied outputs are declarations like any other: they satisfy §8.4's visibility rule,
 are drawn as graph edges, and their paths are checked against the operation's response schema by
-`bru flow validate`.
+`bru flow validate`. **Every form §8.1 gives an output is available here** — the short path, `from:
+headers | status | pre`, and `script:` — because a connector entry is read by the same rule a step's
+own block is. A `script:` output is the one a flow has to be careful with: §8.6's library belongs to
+the flow the script runs in, and a connector file supplies none, so a connector script calling a
+shared helper fails at run time (`script-error`, naming the identifier) in any flow that does not
+declare it.
 
 **`unused-output` (§14.3) warns on a step's own `outputs:` block only**, never on an output a
 connector file supplied. A connector entry is a menu, offered to every flow that targets the
@@ -1783,6 +1812,90 @@ operation, and most flows read a few of its entries — reading it partially is 
 there would put a warning on every correct flow in the collection and would push authors to redeclare
 inline what the connector file exists to state once. The typo the warning is for is an output the
 author wrote in *this* step and nothing reads, and that is exactly what the check now measures.
+
+#### The binding itself, declared once
+
+A connector file's `apis:` block is not only scaffolding for the entries beneath it: the fields on a
+binding — `baseUrl`, `auth`, `defaultHeaders`, `defaultQuery`, `color`, `rateLimit` (004) — are all
+facts about the **service**, and a team can state them once here instead of in every flow.
+
+```yaml
+# flows/connectors.yml
+apis:
+  payments-api:
+    source: ../../apispec/payments-v3.yml
+    baseUrl: "{{paymentsBaseUrl}}"
+    auth: service-account
+    color: "#8ab4f8"
+    defaultHeaders: { X-Tenant-Id: "{{tenantId}}" }
+    rateLimit: { requests: 100, per: minute }
+```
+
+A flow then binds the document and inherits the rest:
+
+```yaml
+apis:
+  payments: ../../apispec/payments-v3.yml    # host, auth, headers and rate come from the scope
+```
+
+**Matched on the same identity as an entry** — the document a `source:` resolves to, never the alias
+— so the flow above is served by a connector file that called it something else entirely.
+
+**The flow's own declaration wins, field by field.** Layer order (workspace → collection) decides
+which *default* applies, not which value the run uses. `defaultHeaders` and `defaultQuery` merge key
+by key through §7.2's rule rather than replacing wholesale, so a flow adds one header without
+restating the scope's, and drops an inherited one with `!...` — the same removal tag, in the third
+position that is a merge layer. `baseUrl` is the one field with a flow-level counterpart to lose to,
+and §6.3 ranks it below `config.baseUrl`.
+
+**`source:` is never inherited, and neither is an alias.** A binding with no `source:` names no
+document, so there is nothing to look up — and that is deliberate: a flow's `apis:` block still says
+which APIs it talks to, and a connector file fills in only *how* to talk to them. A file that could
+introduce an alias would mean a flow's `operation: payments#createPayment` named something the flow
+does not mention and could change meaning when a file two directories up is edited, which is a
+larger bite of the locality cost below than the outputs take.
+
+#### The credential, declared once
+
+An `auth:` on a binding names a profile, and the profile itself may be declared in the connector file
+too — a credential is a property of the service in the same way a host is, and the flows calling one
+API almost always authenticate to it identically.
+
+```yaml
+# flows/connectors.yml
+apis:
+  backend:
+    source: ../../apispec/backend-v1.yml
+    auth: session
+
+authProfiles:
+  session:
+    mode: apikey
+    key: Authorization
+    value: "Token {{shared.userAuthToken}}"
+    placement: header
+```
+
+**Profiles are inherited by name, not by document** — §6.4 addresses a profile by name everywhere
+else, and a profile is not attached to a binding. The using flow's own `authProfiles:` wins, then
+what a sub-flow inherited from its caller (§6.4's lexical rule), then the connector files, then
+§6.4's implicit `collection`. A flow naming a profile found in none of those still fails
+`unknown-auth-profile`.
+
+**Such a profile resolves in the scope of the step that uses it**, exactly as a host-supplied one
+does — a connector file has no run state, so `{{shared.x}}`, `{{params.x}}` and `{{steps.x}}` can
+only mean the using flow's. A profile a *flow* declares keeps carrying its own flow's scope (§12.3);
+nothing about that changes.
+
+**It reads a slot, and the flow still declares the slot.** A connector file has no steps to name, and
+the token is produced by whichever step signed in — which is the case §9.1's slots exist for. `shared:`
+states which of *this flow's* steps may write the value, a fact about this graph rather than about the
+service, and it is what keeps `{{shared.userAuthToken}}` traceable to something written in the file
+being read. A flow that forgets it is told so — `undeclared-slot`, against the consuming step, before
+anything is sent.
+
+A malformed profile — no `mode:`, or one that is not a scheme — is `invalid-auth-profile` against the
+connector file, reported once rather than against every flow that inherits it.
 
 **The cost is locality.** A step's available outputs are no longer visible by reading the step,
 which cuts against §8's premise that data paths are explicit. That is why `bru flow validate` and
@@ -2240,6 +2353,13 @@ hold no slot of their own while the work inside them runs — only the steps tha
 container that held one too would deadlock a sub-flow at `concurrency: 1`: the container would take
 the only slot and its first internal step could never acquire one, which is the setting recommended
 for debugging one sentence above.
+
+**`concurrency` bounds how many at once; §6.2's `rateLimit` bounds how fast.** They are two
+different limits and compose: a step must hold a slot *and* have a token before its request goes
+out. Both are per run, and both are one number describing what a run does to a test environment —
+the difference is that this one is about the whole flow and a rate is about one API, which is why it
+lives on the binding rather than here. A step waiting for a token holds its slot while it waits;
+**004** §7 records why, and what that costs.
 
 ### 9.3 Conditions
 
@@ -3572,6 +3692,7 @@ type RunOptions = {
       enabled?: boolean;                 // --no-capture (§14.5)
       dir?: string;                      // write runs directly here, no suite of their own (§14.5, §14.8.5)
     };
+    rateLimit?: { enabled?: boolean };   // --no-rate-limit: ignore every declared rateLimit (004 §8)
   };
   signal?: AbortSignal;
   onEvent?: (event: FlowEvent) => void;
@@ -3681,6 +3802,7 @@ type StepResult = {
   message?: string;                    // §14.6 — the occurrence, in human words
   attempts: number;
   durationMs: number;
+  rateLimitWaitMs?: number;            // 004 §7 — the share of durationMs spent waiting on §6.2's rateLimit
   assertions: { expr: string; passed: boolean; expected?: unknown; actual?: unknown }[];
   validation?: {                       // §10.1's automatic checks — absent when both are off
     request?:  SchemaResult;
@@ -4617,6 +4739,10 @@ ever tell the author.
 | `function-shadows-script-argument` *(warning)* | A `functions:` name shadows one of the arguments every script is handed (§8.2) |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report (§14.8.4) |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` (§6.2) |
+| `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 (§6.2, 004) |
+| `invalid-auth-profile` | A connector file's auth profile declares no `mode:`, or one that is not a scheme (§8.5) |
+| `duplicate-binding` *(warning)* | Two aliases in one connector file bind the same document, so only the later one's defaults apply (§8.5) |
+| `conflicting-rate-limit` *(warning)* | Two flows in the run bind the same API document at different rates — the run takes the stricter (004 §6) |
 | `unknown-stage-step` *(warning)* | A `stages:` boundary begins at a step the flow does not have (§5.5) |
 | `stage-boundary-order` *(warning)* | A boundary does not come after the one before it, so it covers no run of steps (§5.5) |
 | `stage-out-of-order` *(warning)* | A boundary cannot be drawn, because a step listed above it does not run before it (§5.5) |
@@ -4627,7 +4753,7 @@ ever tell the author.
 | `unknown-output-reference` | A `{{steps.*}}` reference names an output the ancestor does not produce (§8.1, §8.3) |
 | `invalid-shared-entry` | A step's `shared:` publishes into an undeclared slot, or publishes an output it does not produce (§9.1) |
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into, so every read of it resolves empty (§11.2) |
-| `unused-slot` *(warning)* | A declared slot nothing reads (§9.1) |
+| `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it is a read (§9.1, §12.1) |
 | `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Never a connector-supplied one — reading a connector file partially is the design (§8.1, §8.5) |
 | `unknown-export` | An `exports:` entry does not name an internal step's output or a declared slot, or reaches into a slot with a sub-path (§12.1) |
 | `unknown-operator` | An assertion or condition names an operator the dialect does not have, so the line is asserted for truthiness (§10.2) |
@@ -4640,7 +4766,7 @@ ever tell the author.
 | `missing-binary-body` | A single-payload media type with no `body: !file` and no `bodyFile:` (§7.5) |
 | `missing-binary-part` | A `format: binary` part supplied as text, or a required one not supplied at all (§7.5) |
 | `binary-file-options` | `filename:` or `contentType:` on a raw binary body — both are multipart-only (§7.5) |
-| `misplaced-drop` | `!...` outside a step's `body` / `query` / `headers` / `pathParams`, where it drops nothing and reads as `null` (§7.2) |
+| `misplaced-drop` | `!...` outside a step's `body` / `query` / `headers` / `pathParams` / `outputs` or an `apis:` binding's `defaultHeaders` / `defaultQuery`, where it drops nothing and reads as `null` (§7.2, §8.5) |
 | `path-outside-scope` | A `!file`, `bodyFile:` or `dataset:` path resolves outside the scope root (§7.4), or a `uses:` target does (§12.2) — one rule, because a sub-flow document is a file the flow reads |
 | `missing-file` | A statically-known file path names nothing that exists (§7.4) |
 | `ambiguous-operation` | The bound document declares the `operationId` more than once (§6.5) |

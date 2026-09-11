@@ -526,6 +526,11 @@ const builder = (yargs) =>
       default: true
     })
     .option('capture-dir', { describe: 'Write captures here instead of <scope>/.bruno-runs', type: 'string' })
+    .option('rate-limit', {
+      describe: 'Honour each apis.<alias>.rateLimit; --no-rate-limit ignores them',
+      type: 'boolean',
+      default: true
+    })
     .option('reporter', {
       describe: `Write a report with <module>[=<path>]; a built-in needs no path and lands in ${CAPTURE_DIRNAME}/suite-…/ (repeatable)`,
       type: 'string'
@@ -561,6 +566,7 @@ const builder = (yargs) =>
     .example('$0 flow run --retry-failed', 'Re-run the flows of the newest suite that did not pass')
     .example('$0 flow run flows/ --retries 2', 'Re-run a flow that did not pass, up to twice more')
     .example('$0 flow run checkout.flow.yml --dataset rows/eu.csv', 'Run a flow over a different dataset')
+    .example('$0 flow run checkout.flow.yml --no-rate-limit', 'Ignore declared API rate limits, e.g. against a local mock')
     .example('$0 flow validate flows/ --strict', 'Fail validation on warnings as well as errors')
     .example('$0 flow validate flows/', 'Validate every flow in a directory')
     .example('$0 flow list flows/', 'Print the flows a run of those paths would execute')
@@ -822,6 +828,10 @@ const handler = async (argv) => {
           // (§13.2). The engine still holds it to §7.4's scope root, so an absolute path from here
           // is checked exactly as a `dataset:` written in the file is.
           dataset: argv.dataset === undefined ? undefined : path.resolve(process.cwd(), argv.dataset),
+          // 004 §8. There is no flag that *imposes* a rate: a limit is a property of the service and
+          // belongs in the file, so this only ever turns the declared ones off — for the run pointed
+          // at a local mock that has no limit to be polite about.
+          rateLimit: { enabled: argv.rateLimit },
           capture: {
             enabled: argv.capture,
             // Named rather than left to default: the engine opens a suite of its own for a run that

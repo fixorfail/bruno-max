@@ -26,6 +26,7 @@ import * as path from 'path';
 import {
   asRecord,
   normalizeApis,
+  normalizeAuthProfiles,
   normalizeFlow,
   normalizeOutputs,
   parseDocument,
@@ -36,7 +37,15 @@ import {
   type ParseError,
   type Positions
 } from './document';
-import { endpointKey, resolveOperation, SpecLoader, type ResolvedOperation, type SpecIndex } from './openapi';
+import {
+  endpointKey,
+  resolveOperation,
+  resolveSpecSource,
+  SpecLoader,
+  type ResolvedOperation,
+  type SpecIndex
+} from './openapi';
+import { merge } from './materialize';
 import type { Scope, ValidateOptions } from './types/options';
 import type { FlowContext } from './types/ports';
 
@@ -67,6 +76,21 @@ export type ConnectorFile = {
   /** The scope root the file was found under, which decides the flows it applies to. */
   root: string;
   apis: Record<string, ApiBinding>;
+  /**
+   * §6.4's profiles, declared once beside the API they authenticate (§8.5).
+   *
+   * A credential is a property of the service in the same way a host is, and the flows that call one
+   * API almost always authenticate to it identically — so a scope that states the binding and stops
+   * short of the profile has moved four fields and left the fifth in every flow.
+   */
+  authProfiles: Record<string, Record<string, unknown>>;
+  /**
+   * The `apis:` block exactly as written, because normalization drops what it does not recognize and
+   * `validate` is the only thing that can tell a key it ignored from a key nobody wrote. A connector
+   * file is schema-checked nowhere — §5.4's schema describes a flow document, whose root forbids
+   * `connectors:` — so a misspelt `ratelimit:` here would otherwise be silence.
+   */
+  rawApis: Record<string, unknown>;
   entries: ConnectorEntry[];
   errors: ParseError[];
   positions: Positions;
@@ -75,6 +99,18 @@ export type ConnectorFile = {
 type Layer = { outputs: OutputSpec[]; suppressed: string[] };
 
 export const connectorFileIn = (root: string): string => path.join(root, 'flows', 'connectors.yml');
+
+/**
+ * A binding's fields minus the ones it did not declare, so a later layer's silence does not erase an
+ * earlier layer's value. `alias` and `source` go too: both are the connector file's own, and neither
+ * is inheritable — see `apisWith`.
+ */
+const omitUndefined = (binding: ApiBinding): Partial<ApiBinding> =>
+  Object.fromEntries(
+    Object.entries(binding).filter(
+      ([key, value]) => value !== undefined && key !== 'alias' && key !== 'source'
+    )
+  );
 
 const isWithin = (root: string, target: string): boolean => {
   const relative = path.relative(root, target);
@@ -103,7 +139,17 @@ const parseConnectorFile = (scope: ConnectorScope, root: string, file: string, t
     };
   });
 
-  return { scope, file, root, apis: normalizeApis(model.apis), entries, errors, positions };
+  return {
+    scope,
+    file,
+    root,
+    apis: normalizeApis(model.apis),
+    rawApis: asRecord(model.apis),
+    authProfiles: normalizeAuthProfiles(model.authProfiles),
+    entries,
+    errors,
+    positions
+  };
 };
 
 /**
@@ -122,7 +168,8 @@ export class Connectors {
   private constructor(
     readonly files: ConnectorFile[],
     private readonly specs: SpecLoader,
-    private readonly layers: Map<ConnectorFile, Map<string, Layer>>
+    private readonly layers: Map<ConnectorFile, Map<string, Layer>>,
+    private readonly bindings: Map<ConnectorFile, Map<string, ApiBinding>>
   ) {}
 
   /**
@@ -157,6 +204,7 @@ export class Connectors {
     }
 
     const layers = new Map<ConnectorFile, Map<string, Layer>>();
+    const bindings = new Map<ConnectorFile, Map<string, ApiBinding>>();
     for (const file of files) {
       const resolved = new Map<string, Layer>();
       for (const entry of file.entries) await Connectors.resolveEntry(file, entry, specs);
@@ -168,9 +216,23 @@ export class Connectors {
         });
       }
       layers.set(file, resolved);
+
+      /**
+       * §8.5's bindings, indexed by where their `source:` resolves to rather than by the alias the
+       * file chose — the same identity rule the outputs above are matched on, so a default reaches a
+       * flow that named the same document something else.
+       *
+       * Resolved rather than loaded: `resolveSpecSource` is the path `SpecLoader` will read, so a
+       * connector file may carry defaults for a document this scope never opens without costing a
+       * fetch, and a `source:` that does not resolve is still `validate`'s to report.
+       */
+      bindings.set(
+        file,
+        new Map(Object.values(file.apis).map((binding) => [resolveSpecSource(binding.source, file.file), binding]))
+      );
     }
 
-    return new Connectors(files, specs, layers);
+    return new Connectors(files, specs, layers, bindings);
   }
 
   /**
@@ -262,9 +324,109 @@ export class Connectors {
    * here on (§8.5), and nothing downstream has to know a connector file exists.
    */
   async apply(flow: NormalizedFlow): Promise<NormalizedFlow> {
-    if (!this.files.length) return flow;
+    // The bindings pass runs even with no connector files: it is also where a `!...` in a binding's
+    // own defaults is resolved, and a scope with nothing to inherit still has to resolve it.
+    const apis = this.apisWith(flow);
+    if (!this.files.length) return { ...flow, apis };
+
     const specs = await this.specsOf(flow);
-    return { ...flow, steps: flow.steps.map((step) => ({ ...step, outputs: this.outputsFor(step, flow, specs) })) };
+    return {
+      ...flow,
+      apis,
+      ...this.profilesWith(flow),
+      steps: flow.steps.map((step) => ({ ...step, outputs: this.outputsFor(step, flow, specs) }))
+    };
+  }
+
+  /**
+   * The flow's profiles over the scope's (§8.5), by name — the flow's own winning, and the
+   * collection's over the workspace's, exactly as an output or a binding field does.
+   *
+   * **Folded into the flow's own block rather than carried separately**, which is what makes the
+   * rest of the engine need no changes: `referencesOf` sweeps the profile a step uses, so a
+   * `{{shared.userAuthToken}}` written here is checked by `validate`, drawn as a data edge by
+   * `describe`, and counted as a read of the slot — none of which would happen for a profile the
+   * flow's model did not contain.
+   *
+   * **It resolves in the scope of the step that uses it**, since `run.ts` gives every profile in
+   * this block the using flow's scope. That is the only coherent reading: a connector file has no
+   * steps and no run state of its own, so `{{shared.x}}` and `{{params.x}}` can only mean the
+   * flow's. Matched by *name*, unlike a binding or an output — a profile is not attached to a
+   * document, and §6.4 already addresses profiles by name everywhere else.
+   *
+   * The flow still declares the slot such a profile reads. `shared:` states which of *this flow's*
+   * steps may write a value (§9.1), which is a fact about this graph and not about the service — and
+   * it is what keeps `{{shared.userAuthToken}}` traceable to something written in the file you are
+   * reading. A flow that forgets it is told so: `undeclared-slot`, before anything is sent.
+   */
+  private profilesWith(flow: NormalizedFlow): Pick<NormalizedFlow, 'authProfiles' | 'authProfileOrigins'> {
+    let inherited: Record<string, Record<string, unknown>> = {};
+    const origins: Record<string, string> = {};
+    for (const file of this.files) {
+      if (file.scope === 'collection' && !isWithin(file.root, flow.file)) continue;
+      inherited = { ...inherited, ...file.authProfiles };
+      for (const name of Object.keys(file.authProfiles)) origins[name] = file.file;
+    }
+
+    // A name the flow declares itself is the flow's, whatever a scope file also called it.
+    for (const name of Object.keys(flow.authProfiles)) delete origins[name];
+
+    return { authProfiles: { ...inherited, ...flow.authProfiles }, authProfileOrigins: origins };
+  }
+
+  /**
+   * The flow's bindings with a connector file's defaults filled in (§8.5) — the same layering the
+   * outputs above take, and for the same reason: `baseUrl`, `auth`, the default headers and query,
+   * the colour and the rate are all properties of the *service*, and a team should be able to state
+   * them once rather than in every flow that calls it.
+   *
+   * **The flow's own declaration wins outright, field by field.** Layer order (workspace →
+   * collection) decides which *default* applies, not which value the run uses; a flow that writes a
+   * field down has said what it wants. `defaultHeaders` and `defaultQuery` merge key by key instead
+   * of replacing, through the same `merge` a step's inline values take over a binding's (§7.2), so a
+   * flow adds one header without restating the scope's and drops an inherited one with `!...`.
+   *
+   * **`source:` is never inherited.** It is what the match is *on* — a binding with no source names
+   * no document and there is nothing to look up. That is what keeps a flow readable: the file still
+   * says which APIs it talks to, and a scope file fills in only how to talk to them.
+   *
+   * **`baseUrl` lands in `inheritedBaseUrl`**, because §6.3 ranks a scope file's host below the
+   * flow's own `config.baseUrl` — see `resolveBaseUrl`.
+   */
+  private apisWith(flow: NormalizedFlow): Record<string, ApiBinding> {
+    return Object.fromEntries(
+      Object.entries(flow.apis).map(([alias, binding]) => {
+        const identity = resolveSpecSource(binding.source, flow.file);
+
+        let inherited: Partial<ApiBinding> = {};
+        let defaultHeaders: unknown = {};
+        let defaultQuery: unknown = {};
+        for (const file of this.files) {
+          if (file.scope === 'collection' && !isWithin(file.root, flow.file)) continue;
+          const found = this.bindings.get(file)?.get(identity);
+          if (!found) continue;
+          inherited = { ...inherited, ...omitUndefined(found) };
+          defaultHeaders = merge(defaultHeaders, found.defaultHeaders);
+          defaultQuery = merge(defaultQuery, found.defaultQuery);
+        }
+
+        return [
+          alias,
+          {
+            ...binding,
+            inheritedBaseUrl: binding.inheritedBaseUrl || inherited.baseUrl,
+            auth: binding.auth || inherited.auth,
+            color: binding.color || inherited.color,
+            rateLimit: binding.rateLimit || inherited.rateLimit,
+            // Merged over a `{}` seed whether or not a layer supplied anything, so a `!...` in the
+            // flow's own defaults is *resolved* here rather than surviving into materialization,
+            // where it would be stringified into a header whose value reads `Symbol(bruno.flow.drop)`.
+            defaultHeaders: asRecord(merge(defaultHeaders, binding.defaultHeaders)),
+            defaultQuery: asRecord(merge(defaultQuery, binding.defaultQuery))
+          }
+        ];
+      })
+    );
   }
 
   /**

@@ -1,0 +1,28 @@
+# R10.8 — the credential comes from the connector file; this flow only says who fills the slot.
+#
+# The profile there reads `{{shared.userAuthToken}}`, and `shared:` is what says which of *this*
+# flow's steps may write it (§9.1). That line stays here on purpose: it is a fact about this graph,
+# and it keeps the reference traceable to something written in the file you are reading.
+version: 1
+
+meta:
+  name: R10 — inherited auth profile
+
+apis:
+  svc: ../../../../../specs/paced-session-v1.yml
+
+shared:
+  userAuthToken: { writers: any }
+
+steps:
+  - id: sign_in
+    operation: svc#sessionSignIn
+    auth: none
+    outputs:
+      token: data.token
+    shared:
+      userAuthToken: token
+
+  - id: call
+    operation: svc#sessionThing
+    depends: [sign_in]

@@ -1,0 +1,17 @@
+# The looser half of the disagreement conflict.flow.yml validates: the same document, half the rate.
+version: 1
+
+meta:
+  name: 004 — child declaring a looser rate
+  library: true
+
+apis:
+  inner:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 2
+      per: second
+
+steps:
+  - id: ping
+    operation: inner#pingC

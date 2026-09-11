@@ -918,6 +918,38 @@ directory before the extension for that reason; the two directories are disjoint
 changes hands. It is data a flow reads, and `use:` picks up nothing implicitly (001 §8.6) — putting a
 file in either folder does not make a flow see it.
 
+### 4.6a The connector file
+
+**`flows/connectors.yml` (001 §8.5) is a row**, listed with the libraries and opened as plain YAML.
+
+It is the only listed file that is not a flow, a script or a fixture, and until it was listed the
+only way to edit it was outside the app — which is a poor place to leave a file that decides what
+every flow in the scope extracts, which host each binding calls and which credential it carries. The
+sidebar shows a scope's flows; a file with that much say over them belongs where they are.
+
+**With the libraries**, because it answers their question: these are the parts the scope's flows are
+built from rather than things to run. A label of its own, over a section holding exactly one file and
+only in the scopes that have one, would be a heading per item — which §4.1 already declines for the
+flows themselves. A scope with a connector file and no library flows therefore shows a `Libraries`
+section holding just it, which reads correctly.
+
+**Opened as plain YAML, not through §4.3's pane.** That one describes its draft as a flow and draws
+the graph beside it; a connector file is neither. It shares §4.5's and §4.6's editor instead — the
+same session, the same save state, no graph — with no validity gate, because `bru flow validate` and
+the sidebar's own diagnostics already read this file as part of every flow in the scope, and report a
+half-typed line against the flows it actually breaks.
+
+**No menu, and no rename.** There is no `meta:` to edit, and the engine finds this file by its exact
+path — a renamed one is a file the run no longer reads.
+
+**Exactly `<scope>/flows/connectors.yml`.** A `connectors.yml` deeper down is not the file the engine
+reads, and stays what it was: an unlisted dependency that re-describes the open flows when it changes.
+
+**It goes out on both of §6's channels.** It is the one listed file that is also a dependency of every
+flow in the scope, so an edit draws the row *and* re-describes what is open. Either alone is a bug:
+without the row it is uneditable in the app, and without the dependency every open flow keeps
+reporting the outputs and bindings the old file gave it.
+
 ### 4.7 Duplicating a flow
 
 **A flow's row menu carries `Duplicate`**, which opens §4.1c's create form over the flow that was
@@ -2326,7 +2358,8 @@ type StepCapture = {
   iteration: number;
   attempt: number;                     // 1-based, matching 001 §11.1's numbering
   startedAt: string;
-  durationMs: number;
+  durationMs: number;                  // the request's, net of 004 §6.2's pacing
+  rateLimitWaitMs?: number;            // what this attempt waited at the API's bucket (004 §7)
   request?: CapturedRequest;           // absent when nothing was sent — see below
   response?: CapturedResponse;         // absent on a transport error or an aborted attempt
   assertions: StepResult['assertions'];         // 001 §13.2, as recorded for this attempt

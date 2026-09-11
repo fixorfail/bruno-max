@@ -611,6 +611,34 @@ describe('R8.8 — Declared and never used', () => {
 
     expect(of(await validate(entry, { files }), 'unused-slot')).toHaveLength(1);
   });
+
+  /**
+   * §12.1: an export is a read. A slot that leaves through the boundary is read by whoever invoked
+   * the flow, which is exactly what a library exists to do and not something this flow can see.
+   */
+  it('stays quiet about a slot nothing reads but the flow exports', async () => {
+    const { entry, files } = variant(flow('graph.flow.yml'), (document) => {
+      document.steps[2].pathParams.id = 'thing-1';
+      document.exports = { thingId: 'shared.thingId' };
+    });
+
+    expect(of(await validate(entry, { files }), 'unused-slot')).toEqual([]);
+  });
+
+  /**
+   * The interpolated spelling is not a valid export — `unknown-export` says so — but reporting the
+   * slot as unused beside it names the wrong thing to fix. One mistake, one message.
+   */
+  it('does not also call the slot unused when the export that reads it is malformed', async () => {
+    const { entry, files } = variant(flow('graph.flow.yml'), (document) => {
+      document.steps[2].pathParams.id = 'thing-1';
+      document.exports = { thingId: '{{shared.thingId}}' };
+    });
+    const diagnostics = await validate(entry, { files });
+
+    expect(of(diagnostics, 'unknown-export')).toHaveLength(1);
+    expect(of(diagnostics, 'unused-slot')).toEqual([]);
+  });
 });
 
 describe('R8.9 — Reserved names and the library flag', () => {

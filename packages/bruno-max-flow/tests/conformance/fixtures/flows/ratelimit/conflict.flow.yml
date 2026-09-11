@@ -1,0 +1,23 @@
+# 004 §6: two flows in one call graph, one document, two rates. The run takes the stricter and
+# `bru flow validate` says so — a warning, because a disagreement about politeness is not a reason
+# to refuse to run.
+version: 1
+
+meta:
+  name: 004 — disagreeing rates
+
+apis:
+  paced:
+    source: ../../specs/paced-v1.yml
+    rateLimit:
+      requests: 1
+      per: second
+
+config:
+  concurrency: 4
+
+steps:
+  - id: a
+    operation: paced#pingA
+  - id: child
+    uses: ./conflict-child.flow.yml

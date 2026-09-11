@@ -129,8 +129,14 @@ const seedFromSchema = (
   }
 };
 
-/** §7.2: objects deep-merge, arrays replace wholesale, `!...` removes a key the seed introduced. */
-const merge = (base: unknown, override: unknown): unknown => {
+/**
+ * §7.2: objects deep-merge, arrays replace wholesale, `!...` removes a key the seed introduced.
+ *
+ * Exported for the other place a layer sits beneath a binding's defaults: §8.5's connector files,
+ * where a flow's own `defaultHeaders:` overrides the scope's key by key. One implementation, because
+ * two layerings of the same block that disagreed about `!...` would be indistinguishable from a bug.
+ */
+export const merge = (base: unknown, override: unknown): unknown => {
   if (override === undefined) return base;
   if (!isMapping(base) || !isMapping(override)) return override;
 
@@ -276,14 +282,24 @@ const assembleBinary = async (
   };
 };
 
-/** §6.3, first match wins: the binding's `baseUrl`, then `config.baseUrl`, then `servers[0]`. */
+/**
+ * §6.3, first match wins: the binding's `baseUrl`, then `config.baseUrl`, then a connector file's
+ * (§8.5), then `servers[0]`.
+ *
+ * **A connector file's host ranks below the flow's own `config.baseUrl`, not beside the binding's.**
+ * §8.5's layers are a *default* for what a flow did not say, and `config.baseUrl` is the flow
+ * saying it — an author reading a file that sets `config.baseUrl` and watching requests go somewhere
+ * else entirely, because of a file two directories up, is the worst version of the locality §8.5
+ * already costs. A binding that writes its own `baseUrl:` still outranks both, exactly as before.
+ */
 const resolveBaseUrl = (
   binding: ApiBinding | undefined,
   config: FlowConfig,
   resolved: ResolvedOperation,
   scope: Scope
 ): string => {
-  const candidate = binding?.baseUrl || config.baseUrl || resolved.servers[0] || '';
+  const candidate
+    = binding?.baseUrl || config.baseUrl || binding?.inheritedBaseUrl || resolved.servers[0] || '';
   return interpolateScalar(candidate, scope).replace(/\/$/, '');
 };
 
