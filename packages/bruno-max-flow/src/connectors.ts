@@ -112,6 +112,17 @@ const omitUndefined = (binding: ApiBinding): Partial<ApiBinding> =>
     )
   );
 
+/**
+ * §10.1's null tolerance for one step: its own `strictNulls:` where it wrote one, otherwise the
+ * binding it talks through (§6.2, or a connector file's), otherwise strict.
+ *
+ * A sub-flow step reads nothing here — it sends no request of its own, so there is no response to
+ * check and no binding to read the default from. Its own steps resolve against their own flow's
+ * bindings when that flow is applied.
+ */
+const strictNullsFor = (step: NormalizedStep, apis: Record<string, ApiBinding>): boolean =>
+  step.strictNulls ?? (step.operation ? apis[step.operation.alias]?.strictNulls : undefined) ?? true;
+
 const isWithin = (root: string, target: string): boolean => {
   const relative = path.relative(root, target);
   return !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -327,14 +338,17 @@ export class Connectors {
     // The bindings pass runs even with no connector files: it is also where a `!...` in a binding's
     // own defaults is resolved, and a scope with nothing to inherit still has to resolve it.
     const apis = this.apisWith(flow);
-    if (!this.files.length) return { ...flow, apis };
+    // §10.1's null tolerance likewise: it is settled from the binding whether or not a connector file
+    // supplied the binding, so the step carries one answer and `runAttempt` reads no further.
+    const settled = flow.steps.map((step) => ({ ...step, strictNulls: strictNullsFor(step, apis) }));
+    if (!this.files.length) return { ...flow, apis, steps: settled };
 
     const specs = await this.specsOf(flow);
     return {
       ...flow,
       apis,
       ...this.profilesWith(flow),
-      steps: flow.steps.map((step) => ({ ...step, outputs: this.outputsFor(step, flow, specs) }))
+      steps: settled.map((step) => ({ ...step, outputs: this.outputsFor(step, flow, specs) }))
     };
   }
 
@@ -418,6 +432,9 @@ export class Connectors {
             auth: binding.auth || inherited.auth,
             color: binding.color || inherited.color,
             rateLimit: binding.rateLimit || inherited.rateLimit,
+            // `??`, not `||`: the flow's own value is a boolean whose meaningful setting is `false`,
+            // and `||` would silently fall through to the scope's every time a flow said so.
+            strictNulls: binding.strictNulls ?? inherited.strictNulls,
             // Merged over a `{}` seed whether or not a layer supplied anything, so a `!...` in the
             // flow's own defaults is *resolved* here rather than surviving into materialization,
             // where it would be stringified into a header whose value reads `Symbol(bruno.flow.drop)`.

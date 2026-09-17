@@ -32,6 +32,7 @@ apis:                          # alias -> OpenAPI document; required to send any
       requests: 100
       per: minute                      # second (default) | minute | hour
       burst: 10                        # default 1 = strict even spacing
+    strictNulls: false                 # optional: this API sends `"field": null`
 
 config:
   baseUrl: "{{apiBaseUrl}}"    # default: the document's servers[0]
@@ -132,6 +133,7 @@ steps:
     validateRequest: true
     validateSchema: true
     strictSchema: false
+    strictNulls: true                        # overrides the *binding*, not config:
     timeout: 30000                           # ms per attempt
     maxDuration: 120000                      # ms for the step including retries
 ```
@@ -319,6 +321,23 @@ retries are paced too. Nothing reads `Retry-After` or adapts: `rateLimit` keeps 
 Two flows in one run declaring different rates for one document: the stricter wins, with a
 `conflicting-rate-limit` warning.
 
+### `strictNulls:` — an API that sends nulls the document does not declare
+
+`strictNulls: false` on an **`apis:` binding** makes a `null` satisfy any schema the document
+declares for a property, for every step through that binding. Write it when the API serializes absent
+values as `"field": null` and the spec says `string` or `$ref` — the alternative is `nullable: true`
+at hundreds of fields, and it cannot be written at all beside a `$ref` or an `allOf` (ajv refuses
+`nullable` without a sibling `type`) nor does it rescue an `enum`.
+
+It is **not** a `config:` key: nullability belongs to the document, and a flow may bind two APIs.
+A step's own `strictNulls:` overrides its binding's, and `flows/connectors.yml` takes the same key so
+a scope declares it once.
+
+What it does not change: `required` still means required; request bodies stay strict; array
+*elements* stay strict (objects inside an array have their properties relaxed); and a wrong-typed
+value reports the same message and path it always did. For a field that must never be null, assert
+it — `res.body.id != null` — because no OpenAPI version can say that in a schema.
+
 Matching is by the document and `operationId` a reference **resolves to**, not by the alias string —
 the connector file's aliases are its own. Layers, later winning: workspace file → collection file →
 the step's `outputs:`. A step **extends** what it inherits; a same-named entry overrides, and `!...`
@@ -331,7 +350,7 @@ drops one:
 ```
 
 **A connector file's `apis:` block supplies the binding, not just the alias.** `baseUrl`, `auth`,
-`defaultHeaders`, `defaultQuery`, `color` and `rateLimit` are inherited by every flow binding the same
+`defaultHeaders`, `defaultQuery`, `color`, `rateLimit` and `strictNulls` are inherited by every flow binding the same
 document — matched on the resolved document, so the aliases need not agree. The flow's own value wins
 field by field; `defaultHeaders`/`defaultQuery` merge key by key and take `!...` to drop an inherited
 one. `source:` and the alias are never inherited — a flow still names the APIs it talks to.

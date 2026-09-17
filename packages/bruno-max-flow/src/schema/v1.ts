@@ -44,7 +44,8 @@ const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
 /** §12.4's table, error column: the fields addressing one response, which a sub-flow does not have. */
 const SUBFLOW_ERRORS = [
   'retry', 'timeout', 'failOnStatusCode', 'validateRequest', 'validateSchema', 'strictSchema',
-  'failOnUnresolved', 'body', 'bodyFile', 'query', 'headers', 'pathParams', 'contentType', 'auth'
+  'strictNulls', 'failOnUnresolved', 'body', 'bodyFile', 'query', 'headers', 'pathParams',
+  'contentType', 'auth'
 ];
 
 /**
@@ -249,6 +250,13 @@ const STEP = {
     assert: { type: 'array', items: ASSERTION },
     retry: { type: 'object', properties: RETRY_PROPERTIES, additionalProperties: false },
     ...STEP_FLAGS,
+    /**
+     * §10.1's null tolerance for this step's response check — **not** one of `STEP_FLAGS`, which are
+     * the `config:` booleans one level down. This one overrides the *binding* (§6.2), because whether
+     * an API serializes absent values as `null` is a property of the document and a flow may bind
+     * more than one.
+     */
+    strictNulls: BOOLEAN,
     timeout: MILLISECONDS,
     maxDuration: MILLISECONDS
   },
@@ -292,7 +300,9 @@ export const V1: JsonSchema = {
           /** §6.2's presentation colour; a viewer falls back to its unpainted default. */
           color: { type: 'string' },
           /** §6.2's pacing for every request through this binding (004). */
-          rateLimit: RATE_LIMIT
+          rateLimit: RATE_LIMIT,
+          /** §10.1: whether a `null` where this document declares a typed field fails the check. */
+          strictNulls: BOOLEAN
         },
         required: ['source'],
         additionalProperties: false

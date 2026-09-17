@@ -337,6 +337,7 @@ describe('R4m — The document schema', () => {
       ['timeout', 5000],
       ['body', { name: 'widget' }],
       ['validateSchema', false],
+      ['strictNulls', false],
       ['auth', 'user-token']
     ])('refuses %s on it, rather than ignoring it', (field, value) => {
       const { issues } = edit((document) => {

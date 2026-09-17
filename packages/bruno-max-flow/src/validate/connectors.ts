@@ -88,7 +88,9 @@ const checkEntry = (
 };
 
 /** The keys §6.2 gives a binding. A connector file's `apis:` is the same block, read by one rule. */
-const BINDING_KEYS = ['source', 'baseUrl', 'auth', 'defaultHeaders', 'defaultQuery', 'color', 'rateLimit'];
+const BINDING_KEYS = [
+  'source', 'baseUrl', 'auth', 'defaultHeaders', 'defaultQuery', 'color', 'rateLimit', 'strictNulls'
+];
 
 /**
  * §8.5's `apis:` block, which exists so an entry has an alias to hang on — and which 004 §5 gave a

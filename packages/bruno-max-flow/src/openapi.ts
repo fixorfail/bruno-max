@@ -18,6 +18,17 @@ const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
 import { normalizeApis, parseDocument } from './document';
 import type { FlowContext, ReadSpec } from './types/ports';
 
+/**
+ * The JSON Schema dialect a document's schemas are written in — §10.1's validator selection.
+ *
+ * OpenAPI 3.0 schemas are a modified subset of draft-04 that a draft-07 validator reads; 3.1's are
+ * JSON Schema 2020-12. The difference is not cosmetic in either direction: a 2020-12 document read
+ * by a draft-07 validator has its `prefixItems` *silently ignored* — a tuple schema that checks
+ * nothing — and a subschema carrying its own `$schema` refuses to compile at all. Swagger 2 has no
+ * `openapi:` key and takes the draft-07 reader, which is what it has always had here.
+ */
+export type SchemaDialect = 'draft-07' | '2020-12';
+
 export type ResolvedOperation = {
   /** Absent where the document declares none, which is what §6.1's method+path fallback exists for. */
   operationId?: string;
@@ -39,6 +50,8 @@ export type ResolvedOperation = {
    * and it fails by refusing to compile rather than by validating loosely.
    */
   definitions: Record<string, any>;
+  /** Which validator §10.1's checks compile this operation's schemas with. */
+  dialect: SchemaDialect;
 };
 
 /**
@@ -111,6 +124,8 @@ const indexDocument = (document: Record<string, any>, source: string): SpecIndex
   const definitions: Record<string, any> = {};
   if (document.components) definitions.components = document.components;
   if (document.definitions) definitions.definitions = document.definitions;
+  // A property of the document, so it is read once here rather than at each schema it governs.
+  const dialect: SchemaDialect = String(document.openapi || '').startsWith('3.1') ? '2020-12' : 'draft-07';
 
   for (const [template, item] of Object.entries<Record<string, any>>(document.paths || {})) {
     for (const method of METHODS) {
@@ -123,6 +138,7 @@ const indexDocument = (document: Record<string, any>, source: string): SpecIndex
         operation,
         parameters: [...(item.parameters || []), ...(operation.parameters || [])],
         definitions,
+        dialect,
         servers: (operation.servers || item.servers || document.servers || []).map((server: Record<string, any>) =>
           String(server.url)
         )
@@ -242,11 +258,26 @@ export const deref = (
 /**
  * A schema fragment rooted in its own document, so the `$ref`s it is written with resolve. Ajv reads
  * `#/...` against the root of the schema it was handed, so the definition sections travel with it.
+ *
+ * **Memoized on the fragment**, which every caller reaches through the same document object, so one
+ * schema roots to one object for the life of the process. A fresh object each call defeats every
+ * cache downstream that is keyed on schema identity — Ajv's compiled-validator cache, and §10.1's
+ * relaxed variant — and a step that runs a hundred times paid for a hundred compiles of the same
+ * document. A `WeakMap` because the key is the document's own node and outlives nothing.
  */
+const roots = new WeakMap<Record<string, any>, Record<string, any>>();
+
 const rooted = (
   schema: Record<string, any> | undefined,
   definitions: Record<string, any>
-): Record<string, any> | undefined => (schema ? { ...schema, ...definitions } : undefined);
+): Record<string, any> | undefined => {
+  if (!schema || typeof schema !== 'object') return schema;
+  const cached = roots.get(schema);
+  if (cached) return cached;
+  const result = { ...schema, ...definitions };
+  roots.set(schema, result);
+  return result;
+};
 
 export const requestSchema = (resolved: ResolvedOperation, mediaType: string): Record<string, any> | undefined =>
   rooted(resolved.operation.requestBody?.content?.[mediaType]?.schema, resolved.definitions);

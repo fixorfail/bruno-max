@@ -1,0 +1,24 @@
+# §10.1 through §8.5: the flow declares no tolerance and takes the workspace connector file's, which
+# states it once for the document. The alias differs from the one that file uses on purpose —
+# matching is by the document the source resolves to, never by the alias.
+version: 1
+
+meta:
+  name: §10.1 — inheriting a connector file's null tolerance
+
+apis:
+  profiles:
+    source: ../../../../../specs/nulls-v1.yml
+    baseUrl: https://nulls.example.com
+
+steps:
+  - id: read
+    operation: profiles#getProfile
+    pathParams: { profile_id: profile-1 }
+
+  # The step's own word over the binding's — the one response in this flow whose document is trusted.
+  - id: read_strictly
+    operation: profiles#getProfile
+    pathParams: { profile_id: profile-2 }
+    strictNulls: true
+    depends: [{ on: read, status: [success, failed] }]

@@ -14,6 +14,12 @@ apis:
     defaultHeaders:
       X-Scope: workspace
 
+  # §10.1: a service that serializes an absent value as `null`, said once for every flow in the
+  # scope rather than as `nullable: true` at each of the document's fields.
+  nulls-api:
+    source: ../../../specs/nulls-v1.yml
+    strictNulls: false
+
 connectors:
   regress-api#signIn:
     token: data.token

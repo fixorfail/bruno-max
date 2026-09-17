@@ -270,6 +270,7 @@ apis:
       X-Tenant-Id: "{{tenantId}}"
     defaultQuery:
       api_version: "2026-01"
+    strictNulls: false                            # this API sends `"field": null` — see below
 ```
 
 Paths are relative to the flow file. A step then names an operation as `alias#operationId`:
@@ -340,6 +341,68 @@ apis:
 
 A flow that writes its own `rateLimit:` overrides that default. If two flows in one run disagree
 about a rate, the run uses the stricter and `bru flow validate` warns you the two files differ.
+
+#### `strictNulls:` — when the API sends nulls the document does not mention
+
+Plenty of APIs serialize an absent value as `"field": null` while their OpenAPI document describes
+the field as a plain `string` or `$ref`. Every one of those responses fails schema validation, and
+the fix the format offers is `nullable: true` written at each of hundreds of fields.
+
+A binding can say it once instead:
+
+```yaml
+apis:
+  core-api:
+    source: ../../apispec/core-v2.yml
+    strictNulls: false      # a null satisfies any field this document declares
+```
+
+With that, a `null` anywhere a *property* is declared passes the response check for every step
+through the binding. What it does **not** change:
+
+- **`required` still means required.** A null is a value; a missing key is still a missing key.
+- **Request bodies stay strict.** A body this flow writes is not a report of what the API does, so a
+  null the document forbids there is your bug and the check still says so.
+- **Array elements stay strict.** `[null]` is a different claim about an API than `"field": null`.
+  The objects *inside* an array have their own properties relaxed, which is the case that comes up.
+- **Real mismatches read exactly as before.** A string where the document says number still reports
+  `must be number`, at the same path.
+
+It belongs to the binding because it is a property of the *document*: whether a service sends nulls
+is true of the API, not of the flow that happens to call it — and a flow may bind two APIs, only one
+of which does this. There is no `config:` setting for it.
+
+A single step can take it back, which is how a response you *do* trust the document for keeps its
+full check:
+
+```yaml
+  - id: read_ledger
+    operation: core-api#getLedger
+    strictNulls: true       # this one response is described accurately
+```
+
+And for a field that must never be null anywhere, assert it where it matters — that says something
+the schema cannot, because a document has no way to write "not null" in either OpenAPI version:
+
+```yaml
+    assert:
+      - res.body.id != null
+```
+
+**The same key works in `flows/connectors.yml`**, which is where an API-wide fact like this belongs:
+
+```yaml
+# flows/connectors.yml
+version: 1
+
+apis:
+  core-api:
+    source: ../../apispec/core-v2.yml
+    strictNulls: false
+```
+
+Matching is by the document the `source:` resolves to, not by the alias, so every flow in the scope
+inherits it whatever it calls the API. A flow that writes its own `strictNulls:` overrides the scope.
 
 ### `authProfiles:` — naming credentials once
 
@@ -2350,6 +2413,7 @@ still the authority.
 | `validateRequest` | `true` | config, overridable per step |
 | `validateSchema` | `true` | config, overridable per step |
 | `strictSchema` | `false` | config, overridable per step |
+| `strictNulls` | `true` | `apis:` binding (or a connector file), overridable per step |
 | `concurrency` | `5` | config |
 | `cleanupGrace` | `30000` ms | config |
 | `maxRunDuration` | unset | config |

@@ -1,0 +1,51 @@
+openapi: 3.1.0
+# The same feature against a 3.1 document, whose schemas are JSON Schema 2020-12.
+#
+# `coordinates` is the dialect's own witness: `prefixItems` is not a draft-07 keyword, so a
+# draft-07 reader *ignores* it and the tuple checks nothing at all. `label` is 3.1's way of writing
+# what 3.0 writes as `nullable: true`, and needs no relaxing in either mode.
+info: { title: Nulls API 3.1, version: 1.0.0 }
+servers:
+  - url: https://nulls31.example.com
+paths:
+  /places/{place_id}:
+    get:
+      operationId: getPlace
+      parameters:
+        - name: place_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: One place
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Place'
+components:
+  schemas:
+    Place:
+      type: object
+      required: [id, region, coordinates]
+      properties:
+        id: { type: string }
+        region:
+          $ref: '#/components/schemas/Region'
+        label:
+          type: [string, 'null']
+        coordinates:
+          $ref: '#/components/schemas/Coordinates'
+      additionalProperties: false
+    Region:
+      type: object
+      required: [code]
+      properties:
+        code: { type: string }
+    # Carries its own `$schema`, as a 3.1 document's schemas may.
+    Coordinates:
+      $schema: https://json-schema.org/draft/2020-12/schema
+      type: array
+      prefixItems:
+        - { type: number }
+        - { type: number }

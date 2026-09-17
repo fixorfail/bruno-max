@@ -8,20 +8,43 @@
  * when an earlier check failed: the reason names what to fix, the array is what happened.
  */
 import Ajv, { type ErrorObject } from 'ajv';
+import Ajv2020 from 'ajv/dist/2020';
 import addFormats from 'ajv-formats';
 import { get } from '@usebruno/query';
 
 import type { NormalizedStep, OutputSpec, PreSpec, RetryPolicy } from './document';
 import { evaluateAssertion, evaluationContext, type EvaluationContext } from './expression';
 import type { Scope } from './interpolate';
-import { requestSchema, responseSchema, type ResolvedOperation } from './openapi';
+import { requestSchema, responseSchema, type ResolvedOperation, type SchemaDialect } from './openapi';
 import type { Materialized } from './materialize';
 import type { Clock } from './types/ports';
 import type { ExecutedResponse, MaterializedRequest } from './types/request';
 import type { AssertionResult, SchemaResult, StepReason } from './types/result';
 
-const ajv = new Ajv({ allErrors: true, strict: false });
-addFormats(ajv);
+/**
+ * One validator per dialect — §10.1.
+ *
+ * `Ajv` reads draft-07, which is what an OpenAPI 3.0 document's schemas are close enough to; 3.1's
+ * are JSON Schema 2020-12 and need the reader built for them. Handing a 2020-12 schema to the
+ * draft-07 instance does not fail loudly: `prefixItems` is an unknown keyword there and is
+ * *ignored*, so a tuple schema silently checks nothing. Which one a document takes is decided once,
+ * where the document is read — `ResolvedOperation.dialect`.
+ *
+ * Both are long-lived because Ajv caches compiled validators by schema identity, and `rooted()`
+ * hands back the same object for the same fragment every time.
+ */
+const validators: Record<SchemaDialect, Ajv> = {
+  'draft-07': new Ajv({ allErrors: true, strict: false, verbose: true }),
+  '2020-12': new Ajv2020({ allErrors: true, strict: false, verbose: true })
+};
+addFormats(validators['draft-07']);
+addFormats(validators['2020-12']);
+
+/** A throwaway instance of the right reader, for the compile that is *expected* to fail. */
+const freshValidator = (dialect: SchemaDialect): Ajv =>
+  dialect === '2020-12'
+    ? new Ajv2020({ allErrors: true, strict: false })
+    : new Ajv({ allErrors: true, strict: false });
 
 /**
  * A validator's message, made actionable where it is not.
@@ -59,7 +82,7 @@ const explain = (error: ErrorObject): string => {
 const MAX_SCHEMA_NODES = 5000;
 const MAX_REPORTED_PATHS = 5;
 
-const locateCompileFault = (schema: Record<string, any>, message: string): string[] => {
+const locateCompileFault = (schema: Record<string, any>, message: string, dialect: SchemaDialect): string[] => {
   const failing: string[] = [];
   let visited = 0;
 
@@ -74,9 +97,9 @@ const locateCompileFault = (schema: Record<string, any>, message: string): strin
     visited += 1;
     if (path) {
       try {
-        // A fresh instance each time: `ajv` above caches by schema identity, and a failed compile
-        // there would poison the validator every later step shares.
-        new Ajv({ allErrors: true, strict: false }).compile(node as Record<string, any>);
+        // A fresh instance each time: the shared validators above cache by schema identity, and a
+        // failed compile there would poison the one every later step shares.
+        freshValidator(dialect).compile(node as Record<string, any>);
       } catch (cause) {
         if (cause instanceof Error && cause.message === message) failing.push(path);
       }
@@ -91,12 +114,150 @@ const locateCompileFault = (schema: Record<string, any>, message: string): strin
   return deepest.length ? deepest : failing;
 };
 
-const validateAgainst = (schema: Record<string, any> | undefined, value: unknown): SchemaResult => {
+/**
+ * §10.1's `strictNulls: false` — a null anywhere a property is declared satisfies that property.
+ *
+ * An API that serializes an absent value as `"field": null` makes a document that does not say so
+ * wrong at nearly every field, and the fix the format offers is `nullable: true` written hundreds of
+ * times. The binding says it once instead (§6.2), and the schema is relaxed here on the way to the
+ * validator — the document on disk is untouched, and so is the spec every other consumer reads.
+ *
+ * **Wrapped, not annotated.** `nullable: true` is not a keyword a schema may carry anywhere: Ajv
+ * refuses to compile it without a sibling `type`, which is exactly the shape of the nodes that need
+ * it most — a bare `$ref`, an `allOf`, an `enum`. It does not rescue an `enum` even where it does
+ * compile, because `enum` is checked on its own. `anyOf: [<the schema>, {type: null}]` holds for
+ * every node shape and for both dialects, and 3.1's own `type: [..., 'null']` needs no help at all.
+ *
+ * **Only where a property is declared.** `properties`, `patternProperties` and a schema-valued
+ * `additionalProperties` — the positions a *field* of a response object is described in. Array
+ * elements are not relaxed: `[null]` is a different claim about an API than `"field": null`, and
+ * the objects inside an array have their own properties relaxed by the descent.
+ *
+ * Recursion follows the schema keywords by name and copies everything else through, so a value that
+ * merely looks like a schema — an `example:` with a `properties` key, an `enum` of objects — is
+ * carried verbatim.
+ */
+const INJECTED = 'x-bruno-flow-nullable';
+
+/** Keywords whose value is one schema. */
+const SCHEMA_VALUED = [
+  'not', 'if', 'then', 'else', 'contains', 'propertyNames', 'additionalItems', 'unevaluatedItems'
+];
+/** Keywords whose value is a list of schemas — `items` is either, and is handled as both. */
+const SCHEMA_LISTS = ['allOf', 'anyOf', 'oneOf', 'prefixItems'];
+/** Keywords whose value is a map of schemas that are *not* properties, so are descended but not relaxed. */
+const SCHEMA_MAPS = ['$defs', 'definitions'];
+/** The positions a field is declared in, which are the ones that gain the null. */
+const PROPERTY_MAPS = ['properties', 'patternProperties'];
+
+/** Already admits a null, so wrapping it would add a branch that changes nothing. */
+const admitsNull = (schema: unknown): boolean => {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return true;
+  const node = schema as Record<string, any>;
+  if (node.nullable === true || node[INJECTED]) return true;
+  return node.type === 'null' || (Array.isArray(node.type) && node.type.includes('null'));
+};
+
+const orNull = (schema: unknown): unknown =>
+  admitsNull(schema) ? schema : { [INJECTED]: true, anyOf: [schema, { type: 'null' }] };
+
+const relaxSchema = (node: unknown): unknown => {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
+
+  const source = node as Record<string, any>;
+  const out: Record<string, any> = {};
+
+  for (const [key, value] of Object.entries(source)) {
+    if (PROPERTY_MAPS.includes(key) && value && typeof value === 'object') {
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, any>).map(([name, entry]) => [name, orNull(relaxSchema(entry))])
+      );
+    } else if (SCHEMA_MAPS.includes(key) && value && typeof value === 'object') {
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, any>).map(([name, entry]) => [name, relaxSchema(entry)])
+      );
+    } else if (key === 'additionalProperties' || key === 'unevaluatedProperties') {
+      // `true`/`false` say what may appear, not what shape it takes, and are carried through.
+      out[key] = typeof value === 'object' ? orNull(relaxSchema(value)) : value;
+    } else if (SCHEMA_LISTS.includes(key) || key === 'items') {
+      out[key] = Array.isArray(value) ? value.map(relaxSchema) : relaxSchema(value);
+    } else if (SCHEMA_VALUED.includes(key)) {
+      out[key] = relaxSchema(value);
+    } else if (key === 'components' && value && typeof value === 'object') {
+      // `rooted()` carries the document's definition sections along, and `$ref`s inside a response
+      // schema resolve into `components.schemas` — so relaxing only the fragment would relax
+      // nothing at all for the documents that write their schemas once and reference them.
+      const components = value as Record<string, any>;
+      out[key] = components.schemas
+        ? {
+            ...components,
+            schemas: Object.fromEntries(
+              Object.entries(components.schemas as Record<string, any>).map(([name, entry]) => [name, relaxSchema(entry)])
+            )
+          }
+        : components;
+    } else {
+      out[key] = value;
+    }
+  }
+
+  return out;
+};
+
+/**
+ * The relaxed form of a rooted schema, memoized on it — `rooted()` returns the same object for the
+ * same fragment, so this walk and the compile behind it happen once per document, not per step.
+ */
+const relaxed = new WeakMap<Record<string, any>, Record<string, any>>();
+
+const withNullsRelaxed = (schema: Record<string, any>): Record<string, any> => {
+  const cached = relaxed.get(schema);
+  if (cached) return cached;
+  const result = relaxSchema(schema) as Record<string, any>;
+  relaxed.set(schema, result);
+  return result;
+};
+
+/**
+ * The errors that exist only because of a wrapper this engine injected.
+ *
+ * A wrapped node that fails for a real reason reports three times at one path: the original schema's
+ * complaint, `must be null` from the injected branch, and the wrapper's own `must match a schema in
+ * anyOf`. The first is the message the author would have seen without the flag, and the other two
+ * describe machinery they did not write — so they go, and what is reported is byte-identical to what
+ * a strict run would have said.
+ *
+ * The wrapper is recognized by the marker on the node the error came from (`verbose`), never by its
+ * message or its path: an `anyOf` the *document* declares keeps every error it produces, and a
+ * `schemaPath` is relative to whichever `$ref`'d resource the failure was inside, which is not a
+ * pointer into the schema that was compiled.
+ */
+const withoutWrapperNoise = (errors: ErrorObject[]): ErrorObject[] => {
+  const noise = new Set<string>();
+
+  for (const error of errors) {
+    if (error.keyword !== 'anyOf') continue;
+    if (!(error.parentSchema as Record<string, any> | undefined)?.[INJECTED]) continue;
+    noise.add(error.schemaPath);
+    // The injected branch is always the second, and always `{type: 'null'}`.
+    noise.add(`${error.schemaPath}/1/type`);
+  }
+
+  return noise.size ? errors.filter((error) => !noise.has(error.schemaPath)) : errors;
+};
+
+const validateAgainst = (
+  schema: Record<string, any> | undefined,
+  value: unknown,
+  dialect: SchemaDialect,
+  relaxNulls = false
+): SchemaResult => {
   if (!schema) return { valid: true, errors: [] };
 
+  const effective = relaxNulls ? withNullsRelaxed(schema) : schema;
   let validate;
   try {
-    validate = ajv.compile(schema);
+    validate = validators[dialect].compile(effective);
   } catch (cause) {
     /**
      * A schema the validator will not compile is a statement about the *document*, not about the
@@ -105,7 +266,9 @@ const validateAgainst = (schema: Record<string, any> | undefined, value: unknown
      * became a run that ended with nothing to say about any step.
      */
     const reason = cause instanceof Error ? cause.message : String(cause);
-    const at = locateCompileFault(schema, reason);
+    // Located in the schema as *authored*: a relaxed copy cannot introduce a compile fault, and a
+    // path through it would be offset by wrapper segments the document does not contain.
+    const at = locateCompileFault(schema, reason, dialect);
     const where = at.length
       ? ` — at ${at.slice(0, MAX_REPORTED_PATHS).join(', ')}${
         at.length > MAX_REPORTED_PATHS ? `, and ${at.length - MAX_REPORTED_PATHS} more` : ''}`
@@ -118,9 +281,15 @@ const validateAgainst = (schema: Record<string, any> | undefined, value: unknown
   }
 
   const valid = validate(value) as boolean;
+  const raw = validate.errors || [];
+  const reported = relaxNulls ? withoutWrapperNoise(raw) : raw;
+
   return {
     valid,
-    errors: (validate.errors || []).map((error) => ({
+    // Validity is Ajv's answer and is never recomputed from what is left: the filter decides what a
+    // reader is shown, not what passed. Where it would leave a failure with nothing to say — which
+    // takes a wrapper failing with no complaint of its own — the unfiltered set is shown instead.
+    errors: (reported.length || valid ? reported : raw).map((error) => ({
       path: error.instancePath || '/',
       message: explain(error),
       keyword: error.keyword
@@ -308,7 +477,9 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
       requestSchema(resolved, materialized.mediaType),
       materialized.validatableBody
     );
-    validation.request = validateAgainst(checkable.schema, checkable.value);
+    // Requests are not relaxed. A body this flow wrote is not a report of what the API does with
+    // nulls, and accepting one the document forbids would hide the bug rather than the divergence.
+    validation.request = validateAgainst(checkable.schema, checkable.value, resolved.dialect);
     if (!validation.request.valid) {
       return {
         assertions,
@@ -390,7 +561,12 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
       };
     }
     if (declared.schema) {
-      validation.response = validateAgainst(declared.schema, response.body);
+      validation.response = validateAgainst(
+        declared.schema,
+        response.body,
+        resolved.dialect,
+        step.strictNulls === false
+      );
       if (!validation.response.valid) {
         return {
           response,

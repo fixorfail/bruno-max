@@ -609,6 +609,7 @@ apis:
       X-Client: bruno-e2e
     defaultQuery:
       api_version: "2026-01"
+    strictNulls: false                            # optional; this document's nulls — §10.1
 ```
 
 **`color` is the one field here that changes nothing about what a flow does.** It is presentation —
@@ -634,6 +635,14 @@ flow that calls it (§8.5). The bucket belongs to the *run* and to the resolved 
 aliases for one file share it and a sub-flow cannot route around its caller's limit; where two flows
 in one run disagree, the run takes the stricter and `bru flow validate` warns. **004** has the whole
 of it, including where the token is taken and what a run does when a wait outlasts its budget.
+
+**`strictNulls` is on the binding because nullability is a property of the document.** Whether an API
+serializes an absent value as `"field": null` is true of the service, not of the flow that calls it,
+and a flow may bind two APIs of which only one does it — so a file-wide `config:` setting would be a
+statement about no document in particular, and there is deliberately none. It takes the identical key
+in `flows/connectors.yml` (§8.5), matched by the resolved document rather than by the alias, which is
+how a team states it once for every flow in the scope. A step may override it either way. §10.1 has
+what it relaxes and what it leaves alone.
 
 `defaultHeaders` and `defaultQuery` remove the cross-cutting values that would otherwise be
 repeated on every step of every flow — a tenant id or API version that the vendor's spec examples
@@ -2538,6 +2547,37 @@ writing an assertion.
   catching undocumented status codes, off by default because most real specs are incomplete.
 - Validation uses **ajv 8**, already a dependency of both `bruno-filestore` and `bruno-js`.
 - Disable per step with `validateSchema: false`.
+
+**The validator is chosen by the document's own version.** OpenAPI 3.0's schemas are read with ajv's
+draft-07 reader and 3.1's with its 2020-12 one, decided once from the `openapi:` key; a document with
+no such key (Swagger 2) takes the draft-07 reader. Reading a 3.1 document with the older reader does
+not fail loudly — `prefixItems` is simply an unknown keyword there and is ignored, so a tuple schema
+checks nothing at all — which is why the choice is made from the document rather than left at one
+default.
+
+**Nulls: `strictNulls`, default `true`, declared on the binding (§6.2).** An API that serializes an
+absent value as `"field": null` against a document that declares a plain `string` or `$ref` fails
+this check at nearly every field, and the format's own remedy is `nullable: true` written at each of
+them — which cannot even be written on two of the shapes that need it, since ajv refuses `nullable`
+without a sibling `type` (a bare `$ref`, an `allOf`) and it does not rescue an `enum` where it is
+accepted. `strictNulls: false` on the binding says it once: a `null` satisfies any schema the
+document declares for a **property**.
+
+Four boundaries, each of which is the point of the setting rather than a limitation of it:
+
+- **`required` is untouched.** A null is a value; an absent key is still absent.
+- **Requests are never relaxed.** A body the flow writes is not a report of what the API does, so a
+  null the document forbids there is the flow's own bug and `validateRequest` still says so.
+- **Array elements are not relaxed.** `[null]` is a different claim about an API than `"field":
+  null`. The objects *inside* an array have their own properties relaxed by the descent.
+- **Errors are unchanged for everything else.** A value of the wrong type reports the message and the
+  path the document would have produced with the setting off.
+
+The schema on disk is never rewritten: the relaxation is applied to the copy handed to the validator,
+so every other consumer of that spec — code generators, other validators, a reviewer reading it —
+sees exactly what the team wrote. A field that must never be null is asserted where that is true
+(§10.2, `res.body.id != null`), because neither OpenAPI version has a way to write "not null" and an
+assertion says it about the one response where it holds.
 
 ### 10.2 Explicit assertions
 

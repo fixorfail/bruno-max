@@ -1,0 +1,15 @@
+# The same feature against an OpenAPI 3.1 document, whose schemas take the 2020-12 reader.
+version: 1
+
+meta:
+  name: Nulls — a 3.1 document
+
+apis:
+  places:
+    source: ../../specs/nulls-31-v1.yml
+    baseUrl: https://nulls31.example.com
+
+steps:
+  - id: read
+    operation: places#getPlace
+    pathParams: { place_id: place-1 }

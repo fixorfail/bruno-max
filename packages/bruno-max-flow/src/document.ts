@@ -230,6 +230,17 @@ export type NormalizedStep = {
   assert: AssertionSpec[];
   retry: RetryPolicy;
   flags: StepFlags;
+  /**
+   * §10.1's null tolerance for this step's response check, resolved — the step's own `strictNulls:`
+   * where it wrote one, otherwise its binding's (§6.2), otherwise strict.
+   *
+   * Not one of `flags`, because it is not resolved the way those are. A flag is the step's own value
+   * over the flow's `config:`; this one is the step's over the *binding's*, and a binding is
+   * whichever API the step talks to — a flow may bind two, and one file-wide answer for both would
+   * be a statement about no document in particular. `Connectors.apply` resolves it, so `undefined`
+   * here means a flow that was read but never applied, which is strict.
+   */
+  strictNulls?: boolean;
   timeout?: number;
   maxDuration?: number;
   /** Where the step's node starts, so a diagnostic and a graph node can point at it. */
@@ -274,6 +285,15 @@ export type ApiBinding = {
    * binding in the same run declared one for the same document.
    */
   rateLimit?: RateLimit;
+  /**
+   * §10.1's `strictNulls:` for every step through this binding — authored here, or supplied once for
+   * every flow in a scope by a connector file (§8.5).
+   *
+   * It belongs to the binding because it is a property of the *service*: whether an API serializes
+   * an absent value as `null` is true of the document, not of the flow that happens to call it.
+   * Absent means strict, which is what a document that says nothing about null already means.
+   */
+  strictNulls?: boolean;
   /**
    * A `baseUrl:` a connector file supplied (§8.5) — **never authored**, and never written back out.
    *
@@ -567,7 +587,8 @@ export const normalizeApis = (raw: unknown): Record<string, ApiBinding> =>
           defaultHeaders: asRecord(mapping.defaultHeaders),
           defaultQuery: asRecord(mapping.defaultQuery),
           color: mapping.color === undefined ? undefined : String(mapping.color),
-          rateLimit: normalizeRateLimit(mapping.rateLimit)
+          rateLimit: normalizeRateLimit(mapping.rateLimit),
+          strictNulls: mapping.strictNulls === undefined ? undefined : Boolean(mapping.strictNulls)
         }
       ];
     })
@@ -801,6 +822,9 @@ export const normalizeFlow = (
         validateSchema: flag(raw, config, 'validateSchema'),
         strictSchema: flag(raw, config, 'strictSchema')
       },
+      // Left as authored — `undefined` where the step said nothing — because the value it falls back
+      // to is the binding's, which is resolved a layer up.
+      strictNulls: raw.strictNulls === undefined ? undefined : Boolean(raw.strictNulls),
       timeout: raw.timeout === undefined ? undefined : Number(raw.timeout),
       maxDuration: raw.maxDuration === undefined ? undefined : Number(raw.maxDuration),
       position: positions.at(['steps', index])

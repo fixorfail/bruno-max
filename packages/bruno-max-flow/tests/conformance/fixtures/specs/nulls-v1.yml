@@ -1,0 +1,76 @@
+openapi: 3.0.3
+# §10.1's null tolerance, against the document shape the feature exists for: schemas written once
+# under `components` and referenced, with the three node shapes `nullable: true` cannot help —
+# a `$ref` property, an `enum`, and a field the document marks `required`.
+info: { title: Nulls API, version: 1.0.0 }
+servers:
+  - url: https://nulls.example.com
+paths:
+  /profiles/{profile_id}:
+    get:
+      operationId: getProfile
+      parameters:
+        - name: profile_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: One profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+  /profiles:
+    post:
+      operationId: createProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Profile'
+components:
+  schemas:
+    ProfileRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+    Profile:
+      type: object
+      required: [id, company, status]
+      properties:
+        id: { type: string }
+        # A `$ref` property: `nullable: true` beside a `$ref` does not compile at all, so this is the
+        # shape the document cannot state a tolerance for even if every field were annotated by hand.
+        company:
+          $ref: '#/components/schemas/Company'
+        # An `enum`: `nullable: true` compiles here and still rejects a null, because `enum` is
+        # checked on its own account.
+        status: { type: string, enum: [active, closed] }
+        # The one field the document does annotate — it must keep passing with the flag off.
+        note: { type: string, nullable: true }
+        tags:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tag'
+      additionalProperties: false
+    Company:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        name: { type: string }
+    Tag:
+      type: object
+      required: [label]
+      properties:
+        label: { type: string }

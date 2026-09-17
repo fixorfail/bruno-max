@@ -1,0 +1,22 @@
+# §10.1's null tolerance — the flow every variant of it is cut from. Strict as written, which is
+# what a document that says nothing about null already means.
+version: 1
+
+meta:
+  name: Nulls — a document whose API sends them
+
+apis:
+  profiles:
+    source: ../../specs/nulls-v1.yml
+    baseUrl: https://nulls.example.com
+
+steps:
+  - id: create
+    operation: profiles#createProfile
+    body:
+      name: widget
+
+  - id: read
+    operation: profiles#getProfile
+    pathParams: { profile_id: profile-1 }
+    depends: [{ on: create, status: [success, failed] }]

@@ -17,7 +17,8 @@ const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
 /** §12.4's table, error column: the fields that address a response, which a sub-flow does not have. */
 const SUBFLOW_ERRORS = [
   'retry', 'timeout', 'failOnStatusCode', 'validateRequest', 'validateSchema', 'strictSchema',
-  'failOnUnresolved', 'body', 'bodyFile', 'query', 'headers', 'pathParams', 'contentType', 'auth'
+  'strictNulls', 'failOnUnresolved', 'body', 'bodyFile', 'query', 'headers', 'pathParams',
+  'contentType', 'auth'
 ];
 
 /** §7.2's positions a value can be dropped from — the three merge layers and the path params. */
