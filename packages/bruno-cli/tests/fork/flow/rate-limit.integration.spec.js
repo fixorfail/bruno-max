@@ -7,6 +7,12 @@
  *
  * Every timing assertion is a lower bound with slack. This is the real clock, and a machine under
  * load will always be slower than the schedule — never faster, which is the whole guarantee.
+ *
+ * That guarantee covers the times the limiter *releases* requests, which is not quite what the
+ * server below sees. The first request of a run also pays connection setup, and that cost lands on
+ * its arrival rather than its release: arrival 0 is late, so the gap behind it reads short — by ~7ms
+ * on an idle machine and ~70ms on a contended CI runner, which is enough to cross the slack. Pacing
+ * is therefore asserted on the warm gaps only; see `pacedGaps`.
  */
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -44,6 +50,16 @@ const run = (args, cwd) =>
 
 /** The gaps between consecutive arrivals at one route, in order. */
 const gaps = (times) => times.slice(1).map((at, index) => at - times[index]);
+
+/**
+ * The gaps pacing is measured on: every one but the first.
+ *
+ * Only the first request of a run pays connection setup, so that cost skews arrival 0 alone and
+ * shortens gap 0 alone. Every later request reuses the socket and arrives a near-constant hop after
+ * it was released, which is the spacing worth asserting. Dropping gap 0 costs no coverage: a run
+ * that paced nothing leaves every remaining gap at roughly zero.
+ */
+const pacedGaps = (times) => gaps(times).slice(1);
 
 jest.setTimeout(60000);
 
@@ -136,7 +152,7 @@ describe('bru flow run with a declared rateLimit', () => {
 
     expect(status).toBe(0);
     expect(arrivals.paced).toHaveLength(4);
-    for (const gap of gaps(arrivals.paced)) expect(gap).toBeGreaterThanOrEqual(INTERVAL - SLACK);
+    for (const gap of pacedGaps(arrivals.paced)) expect(gap).toBeGreaterThanOrEqual(INTERVAL - SLACK);
   });
 
   it('sends them as fast as it can under --no-rate-limit', async () => {
@@ -182,7 +198,7 @@ describe('bru flow run with a declared rateLimit', () => {
     expect(status).toBe(0);
     expect(arrivals.paced).toHaveLength(4);
     expect(arrivals.open).toHaveLength(4);
-    for (const gap of gaps(arrivals.paced)) expect(gap).toBeGreaterThanOrEqual(INTERVAL - SLACK);
+    for (const gap of pacedGaps(arrivals.paced)) expect(gap).toBeGreaterThanOrEqual(INTERVAL - SLACK);
     // A bucket shared across documents would have paced these too.
     expect(arrivals.open[arrivals.open.length - 1] - arrivals.open[0]).toBeLessThan(INTERVAL);
   });
