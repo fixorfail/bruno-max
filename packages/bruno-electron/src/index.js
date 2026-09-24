@@ -53,6 +53,7 @@ const registerAiIpc = require('./ipc/ai');
 const registerAiAutocompleteIpc = require('./ipc/ai/autocomplete');
 const { registerMountIpc } = require('./ipc/mount');
 const { registerSqliteIpc } = require('./ipc/sqlite');
+const { registerWsdlIpc } = require('./ipc/wsdl');
 const collectionWatcher = require('./app/collection-watcher');
 const WorkspaceWatcher = require('./app/workspace-watcher');
 const ApiSpecWatcher = require('./app/apiSpecsWatcher');
@@ -61,6 +62,8 @@ const { preferencesUtil, getPreferences, savePreferences } = require('./store/pr
 const { globalEnvironmentsManager } = require('./store/workspace-environments');
 const registerNotificationsIpc = require('./ipc/notifications');
 const registerGlobalEnvironmentsIpc = require('./ipc/global-environments');
+const registerAppDocumentIpc = require('./ipc/app-document');
+const AppDocuments = require('./app/app-documents');
 const TerminalManager = require('./ipc/terminal');
 const { safeParseJSON, safeStringifyJSON } = require('./utils/common');
 const { getDomainsWithCookies } = require('./utils/cookies');
@@ -74,6 +77,10 @@ const terminalManager = new TerminalManager();
 
 const workspaceWatcher = new WorkspaceWatcher();
 const apiSpecWatcher = new ApiSpecWatcher();
+const appDocuments = new AppDocuments();
+
+// Scheme privileges are only honoured when registered before `app.ready`.
+AppDocuments.registerScheme();
 
 // Reference: https://content-security-policy.com/
 const contentSecurityPolicy = [
@@ -531,6 +538,9 @@ app.on('ready', async () => {
   registerAiAutocompleteIpc(mainWindow);
   registerMountIpc();
   registerSqliteIpc(mainWindow);
+  appDocuments.handleProtocol();
+  registerAppDocumentIpc(appDocuments, mainWindow);
+  registerWsdlIpc();
 
   // Internal delegator
   ipcMain.handle('main:cache-clear', async () => {
@@ -559,7 +569,9 @@ app.on('before-quit', (event) => {
       ]);
     } catch {}
 
-    try { await require('./ipc/mount').shutdown(); } catch { }
+    try { await require('./ipc/mount').shutdown({ force: true }); } catch { }
+
+    try { await require('./ipc/sqlite').reclaimDiskSpace(); } catch {}
 
     try { await require('./ipc/flow').shutdown(); } catch {}
 
