@@ -428,6 +428,16 @@ const validate = async (file, options = {}) => {
   });
 };
 
+/** 001 §8.6's listing — what a flow's scripts may call, over the same two ports. */
+const resolveFunctions = async (file, options = {}) => {
+  const { ports } = createPorts(options);
+  return engine.resolveFunctions({
+    entry: flowPath(file),
+    scope: options.scope || { workspaceRoot: FIXTURES },
+    ports: { readFile: ports.readFile, readSpec: ports.readSpec }
+  });
+};
+
 /** 002 §11.1's read-only entry, over the same two ports for the same reason. */
 const describe_ = async (file, options = {}) => {
   const { ports } = createPorts(options);
@@ -462,4 +472,4 @@ const variant = (file, mutate) => {
   return { entry, files: { [entry]: stringify(document) } };
 };
 
-module.exports = { runFlow, validate, describeFlow: describe_, variant, FLOWS };
+module.exports = { runFlow, validate, resolveFunctions, describeFlow: describe_, variant, FLOWS };

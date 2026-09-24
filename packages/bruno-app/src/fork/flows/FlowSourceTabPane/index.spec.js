@@ -268,6 +268,28 @@ describe('FlowSourceTabPane', () => {
     });
   });
 
+  /**
+   * U4.22 — §4.3's revert, which this pane gets by reading the same save state the flow surfaces do
+   * rather than by keeping a second copy of it.
+   */
+  it('U4.22 reverts the draft to the text the session opened with, after asking', async () => {
+    const { store } = renderPane();
+    await act(async () => {});
+    const opened = store.getState().flows.sources[pathname].content;
+
+    type('const a = 1;\n');
+    expect(store.getState().flows.sources[pathname].content).toEqual('const a = 1;\n');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('flow-script-revert'));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('confirm-flow-revert-discard'));
+    });
+
+    expect(store.getState().flows.sources[pathname].content).toEqual(opened);
+  });
+
   it('says the draft and the file diverged when the file moved underneath it', async () => {
     const { store } = renderPane();
     await act(async () => {});

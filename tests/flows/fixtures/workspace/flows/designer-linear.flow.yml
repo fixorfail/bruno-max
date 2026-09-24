@@ -1,0 +1,21 @@
+version: 1
+
+meta:
+  name: Designer linear
+  tags: [designer]
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+steps:
+  - id: a
+    operation: orders#createOrder
+    body:
+      id: ord_a
+      sku: WIDGET-1
+
+  - id: b
+    operation: orders#getOrder
+
+  - id: c
+    operation: orders#getOrder

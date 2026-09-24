@@ -1152,6 +1152,17 @@ action only for a roster the engine did not have to rebuild hides the retry in e
 the app writes for itself (§11.2), and one that hides the item rather than disabling it answers
 "nothing to retry" with no answer at all.
 
+### U4.22 A draft is reverted to the text its session opened with
+
+Open a script, edit it, and save — by hand or by auto-save. **Revert** beside the save state asks
+first, then restores the text the session opened with, not the text of the last save; the file is not
+written, so the buffer is left unsaved. The control is offered whenever the draft differs from the
+opening text, including while the buffer reads *Saved*.
+
+*Pins 002 §4.3, §4.5.* The control is one component across the YAML editor, the designer and this
+pane — [005](./005-api-flow-builder.md) §7.4 and B5.9 — because three surfaces answering *is this
+saved* separately is how they come to disagree.
+
 ---
 
 ## 7. U5 — The host boundary

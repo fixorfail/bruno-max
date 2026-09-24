@@ -190,7 +190,8 @@ Paths are relative to the flow file and confined to the workspace/collection roo
 ## Bodies
 
 The engine seeds the body from the operation's request schema and layers your `body:` on top, key
-by key. Arrays replace wholesale. You usually write only what you change.
+by key. Arrays replace wholesale; an array item written `!...` is removed. You usually write only
+what you change.
 
 | Operation declares | You write | Sent as |
 |---|---|---|
@@ -762,8 +763,10 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `conflicting-rate-limit` *(warning)* | Two flows in the run bind the same API document at different rates — the run takes the stricter |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report |
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
+| `unknown-function` *(warning)* | A script calls a helper nothing declares — a typo, or a missing `functions.use:` entry. It throws when the script runs |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them |
 | `interpolation-in-output-path` *(warning)* | An output path contains `{{…}}` — it is a path into the response, not an interpolation, and selects nothing |
+| `script-in-output-path` *(warning)* | An output path contains `=>` — the string form is a path, and a script has to be written as `script:` |
 | `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion — the step accepts any status, including the 500 it did not mean |
 | `undeclared-dependency` *(warning)* | Reads `steps.x.body…` rather than a declared output |
 | `duplicate-step-id` | Two steps share an id; the second overwrites the first |
@@ -793,6 +796,7 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `bru-unavailable` *(warning)* | A script mentions `bru`, which flow scripts do not have — read through `ctx`, and hand a value to a later step with `outputs:` or a `shared:` slot |
 | `unknown-dataset-format` | `dataset:` names something that is not `.csv`, `.json` or `.yml`/`.yaml` |
 | `external-schema-ref` *(warning)* | The operation's schema `$ref`s another file; only the bound document is read, so the body is unchecked and the run will fail the step |
+| `unseeded-drop` *(warning)* | A body `!...` on a key the seed never produces, so it removes nothing |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
 | `unused-output` *(warning)* | An output nothing in the flow reads |
 | `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it counts as a read |

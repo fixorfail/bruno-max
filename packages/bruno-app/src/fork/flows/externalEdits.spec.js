@@ -94,9 +94,9 @@ describe('a flow changed on disk', () => {
     expect(current.sources[pathname].staleOnDisk).toBe(true);
   });
 
-  /** Nothing has read this flow's text, so there is no editor to refresh and nothing to put in the
-   *  store for a tab nobody opened. */
-  it('does nothing for a flow whose raw editor was never opened', async () => {
+  /** Nothing has read this flow's text — no tab of it has been opened, since under 005 §7.1 the
+   *  flow tab reads it too — so there is no draft to refresh and nothing to put in the store. */
+  it('does nothing for a flow no tab has opened', async () => {
     const { state, invoke } = await run(reducer(undefined, { type: 'init' }), 'version: 2\n');
 
     expect(state.sources[pathname]).toBeUndefined();

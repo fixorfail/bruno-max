@@ -10,6 +10,7 @@
 import { DROP, FileRef, OPERATORS, asRecord, type NormalizedFlow, type NormalizedStep } from '../document';
 import { readsOutput, referenceKind, type FlowReads, type Reference } from '../references';
 import { suggest, type Report } from './report';
+import { scriptPositions } from './scripts';
 
 /** §9.1's four outcomes, which is the whole of what a `status:` may name. */
 const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
@@ -285,36 +286,7 @@ const checkReservedNames = (flow: NormalizedFlow, report: Report) => {
 const BRU_REFERENCE = /\bbru\s*\./;
 
 const checkBruUsage = (flow: NormalizedFlow, report: Report) => {
-  const scripts: { source: string; stepId?: string; node: (string | number)[] }[] = [];
-
-  for (const [name, source] of Object.entries(flow.functions.define)) {
-    scripts.push({ source, node: ['functions', 'define', name] });
-  }
-
-  flow.steps.forEach((step, index) => {
-    step.pre.forEach((entry, at) => {
-      scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'pre', at] });
-    });
-    step.when.forEach((entry, at) => {
-      if (typeof entry !== 'string') {
-        scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'when', at] });
-      }
-    });
-    step.outputs.forEach((entry, at) => {
-      if (entry.script) {
-        scripts.push({ source: entry.script, stepId: step.id, node: ['steps', index, 'outputs', at] });
-      }
-    });
-    if (step.retry.shouldRetry) {
-      scripts.push({
-        source: step.retry.shouldRetry,
-        stepId: step.id,
-        node: ['steps', index, 'retry', 'shouldRetry']
-      });
-    }
-  });
-
-  for (const { source, stepId, node } of scripts) {
+  for (const { source, stepId, node } of scriptPositions(flow)) {
     if (!BRU_REFERENCE.test(source)) continue;
     report.warn(
       'bru-unavailable',
@@ -500,7 +472,7 @@ const checkUnused = (flow: NormalizedFlow, report: Report, reads: FlowReads) => 
         'unused-output',
         `${step.id}.${output.name} is declared and nothing in this flow reads it`,
         step.id,
-        ['outputs', output.name]
+        ['steps', index, 'outputs', output.name]
       );
     }
   });

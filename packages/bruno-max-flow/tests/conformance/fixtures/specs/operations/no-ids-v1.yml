@@ -1,0 +1,16 @@
+openapi: 3.0.3
+# B7.4: a document that names none of its operations, so §6.1's method+path identity is the only
+# reference `listOperations` can offer back.
+info: { title: Unnamed legacy operations, version: 1.0.0 }
+servers:
+  - url: https://legacy.example.com
+paths:
+  /legacy/widgets:
+    get:
+      summary: List widgets
+      responses:
+        '200': { description: OK }
+    post:
+      summary: Create a widget
+      responses:
+        '201': { description: Created }

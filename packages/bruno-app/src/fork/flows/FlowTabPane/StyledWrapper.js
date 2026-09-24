@@ -33,6 +33,33 @@ const StyledWrapper = styled.div`
     cursor: default;
   }
 
+  /* 005 §4: the draft's save state, or why the graph is not editable, at the end of the row the
+     other controls are on — pushed there by the row, beside the warnings count. */
+  .flow-designer-state,
+  .flow-designer-readonly {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-left: auto;
+    white-space: nowrap;
+  }
+
+  .flow-designer-readonly {
+    color: ${(props) => props.theme.colors.text.muted};
+  }
+
+  .flow-designer-save,
+  .flow-designer-edit {
+    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
+    border-radius: 3px;
+    padding: 0.125rem 0.5rem;
+
+    &:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+  }
+
   .flow-loading,
   .flow-error {
     padding: 0.5rem 1rem;

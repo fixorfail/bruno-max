@@ -22,7 +22,7 @@ import {
   type RateLimit
 } from './document';
 import { resolveSubflowTarget } from './files';
-import { collectLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
+import { collectLibrary, declaredNames, effectiveLibrary, resolveLibrary, IDENTIFIER, SCRIPT_ARGUMENTS } from './functions';
 import { ranksOf, resolveStages } from './graph';
 import { SpecLoader, resolveOperation, resolveSpecSource } from './openapi';
 import {
@@ -37,6 +37,7 @@ import { checkSignedHeaders } from './validate/auth';
 import { checkConnectors } from './validate/connectors';
 import { checkOperation } from './validate/operation';
 import { checkPaths } from './validate/paths';
+import { checkFunctionCalls } from './validate/scripts';
 import { createReport, suggest } from './validate/report';
 import { checkShape } from './validate/shape';
 import type { Scope, ValidateOptions } from './types/options';
@@ -237,7 +238,13 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
     for (const { slot } of step.shared) slotWriters.set(slot, [...(slotWriters.get(slot) || []), step.id]);
   }
 
-  for (const step of flow.steps) {
+  /**
+   * `index` is here for the anchors below: `Positions.at` resolves a path from the *document root*,
+   * and the report takes the path it is given without falling back to the step — so a path naming a
+   * step's own field without saying which step resolves to nothing, and the diagnostic reaches the
+   * author with no line at all.
+   */
+  for (const [index, step] of flow.steps.entries()) {
     for (const entry of step.depends.entries) {
       if (!ids.has(entry.on)) error('unknown-dependency', `${step.id} depends on ${entry.on}, which is not a step`, step.id);
     }
@@ -263,7 +270,7 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
           'unknown-pre-value',
           `${step.id}: outputs.${output.name} takes from: pre ${output.path}, which the step does not compute`,
           step.id,
-          ['outputs', output.name]
+          ['steps', index, 'outputs', output.name]
         );
       }
 
@@ -278,7 +285,24 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
           `${step.id}: outputs.${output.name} is a path into the response, not an interpolation`
           + ` — ${output.path} selects nothing`,
           step.id,
-          ['outputs', output.name]
+          ['steps', index, 'outputs', output.name]
+        );
+      }
+
+      /**
+       * The same mistake from the other side: a script written as the string form is a *path* whose
+       * text happens to be a function, so it selects nothing and the output is quietly unset. It is
+       * what §8.1's shorthand invites — `pre:` values are scripts, and an author who has written one
+       * there reasonably expects the same here — and a path can never contain `=>`, so saying so
+       * costs no false report.
+       */
+      if (output.path && output.path.includes('=>')) {
+        warn(
+          'script-in-output-path',
+          `${step.id}: outputs.${output.name} is a path into the response, not a script`
+          + ' — write it as `script: ...` for it to run',
+          step.id,
+          ['steps', index, 'outputs', output.name]
         );
       }
     }
@@ -309,7 +333,7 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
           `${step.id}: pre.${entry.name} reads ctx.pre, which is empty in every pre: script`
           + ' — compute both halves in one entry, or share a functions: helper',
           step.id,
-          ['pre', entry.name]
+          ['steps', index, 'pre', entry.name]
         );
       }
     }
@@ -370,6 +394,20 @@ const validateDocument = async (flow: NormalizedFlow, tools: Tools, visit: Visit
       );
     }
   }
+
+  /**
+   * §8.6 — a script calling a helper nothing puts in scope. Checked here rather than in `shape.ts`
+   * because the answer is only knowable once the library's files have been read, which is the one
+   * thing the shape checks are defined not to need.
+   *
+   * A raw file contributes the names it declares, which is the same reading `resolveLibrary` gives a
+   * host — so what the check believes is in scope is what the listing prints and the editor offers.
+   */
+  checkFunctionCalls(
+    flow,
+    effectiveLibrary(library).flatMap((entry) => (entry.name ? [entry.name] : declaredNames(entry.source))),
+    report
+  );
 
   const specs = new Map<string, Awaited<ReturnType<SpecLoader['load']>>>();
   /**

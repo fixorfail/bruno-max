@@ -31,6 +31,33 @@ const toError = (dumped) => {
   return error;
 };
 
+/**
+ * `marshallToVm` (`sandbox/quickjs/utils`) has no branch for a `symbol` or a `bigint`: it returns
+ * nothing, and `vm.setProp` then throws on the missing handle. One such value anywhere in an argument
+ * would fail the whole script, so it is removed first — a key is skipped, as `JSON.stringify` skips a
+ * symbol, and an array member becomes `undefined` so the members after it keep their index.
+ */
+const isUnmarshallable = (value) => typeof value === 'symbol' || typeof value === 'bigint';
+
+const withoutUnmarshallable = (value) => {
+  if (isUnmarshallable(value)) {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value.map(withoutUnmarshallable);
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  const copy = {};
+  for (const key in value) {
+    if (!isUnmarshallable(value[key])) {
+      copy[key] = withoutUnmarshallable(value[key]);
+    }
+  }
+  return copy;
+};
+
 const settle = async (vm, handle) => {
   for (;;) {
     while (vm.runtime.hasPendingJob()) {
@@ -72,7 +99,7 @@ const runScriptInQuickJsForValue = async ({ source, args = [], console: consoleF
 
     const fnHandle = evaluated.value;
     try {
-      const argHandles = args.map((value) => marshallToVm(value, vm));
+      const argHandles = args.map((value) => marshallToVm(withoutUnmarshallable(value), vm));
       const called = vm.callFunction(fnHandle, vm.global, ...argHandles);
       if (called.error) {
         const error = toError(vm.dump(called.error));

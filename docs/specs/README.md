@@ -41,10 +41,12 @@ to document this.
 
 | Spec | Title | Status |
 |---|---|---|
-| [001](./001-api-flows.md) | API Flows — sequenced, spec-driven request execution | Implemented; §18 holds two questions, neither about how a flow runs |
+| [001](./001-api-flows.md) | API Flows — sequenced, spec-driven request execution | Implemented; §18 holds one question, and it waits on scheduled work |
 | [001-C](./001-api-flows-conformance.md) | API Flows — conformance scenarios | Implemented — every scenario has a test |
-| [002](./002-api-flows-ui.md) | API Flows UI — run & observe in the app | Implemented; §15 holds what is deferred, the builder above all |
+| [002](./002-api-flows-ui.md) | API Flows UI — run & observe in the app | Implemented; §15 holds what is deferred |
 | [002-C](./002-api-flows-ui-conformance.md) | API Flows UI — conformance scenarios | Implemented — see `ui-registry.spec.js` for which scenarios cite their id |
+| [005](./005-api-flow-builder.md) | API Flow Builder — edit a flow in its graph | Implemented; §9 is the writer every other part depends on |
+| [005-C](./005-api-flow-builder-conformance.md) | API Flow Builder — conformance scenarios | Implemented — round-trip asserted on bytes, canvas asserted on the file |
 
 **Start with [001's "How to read this"](./001-api-flows.md#how-to-read-this)** — it routes by what
 you are doing and marks which sections are contracts rather than reasoning.

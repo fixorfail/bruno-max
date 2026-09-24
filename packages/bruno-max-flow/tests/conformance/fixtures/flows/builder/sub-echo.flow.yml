@@ -1,0 +1,18 @@
+# The sub-flow `tag-with.flow.yml` invokes, declaring the one param a `!file` is passed to.
+version: 1
+
+meta:
+  name: Builder — a sub-flow with one param
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+params:
+  payload:
+    required: true
+
+steps:
+  - id: echo
+    operation: regress-api#createThing
+    body: "{{payload}}"

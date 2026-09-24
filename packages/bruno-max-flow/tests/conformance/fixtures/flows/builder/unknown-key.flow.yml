@@ -1,0 +1,23 @@
+# B1.15 — a step carrying a key this build does not model, which 001 §15 says must survive.
+#
+# `retryPolicy:` is what a newer Bruno might write. The schema reports it as a *warning* and the
+# editor lists it as opaque; what must not happen is an edit to the timeout beside it taking the key
+# with it, which is the failure nothing tested before 005.
+version: 1
+
+meta:
+  name: Builder — a key from the future
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    retryPolicy: aggressive
+    maxDuration: 120000
+
+  - id: read_back
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1

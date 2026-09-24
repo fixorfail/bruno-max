@@ -39,7 +39,7 @@ export const AUTH_MODES = [
 ];
 
 /** §9.1's four outcomes, which is the whole of what a `depends.status` may name. */
-const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
+export const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
 
 /** §12.4's table, error column: the fields addressing one response, which a sub-flow does not have. */
 const SUBFLOW_ERRORS = [
@@ -58,7 +58,7 @@ const TEXT = { type: ['string', 'null'] };
 const BOOLEAN = { type: 'boolean' };
 const MILLISECONDS = { type: 'integer', minimum: 0 };
 
-const RETRY_PROPERTIES = {
+export const RETRY_PROPERTIES = {
   maxAttempts: { type: 'integer', minimum: 1 },
   delay: MILLISECONDS,
   backoff: { enum: ['fixed', 'exponential'] },
@@ -92,6 +92,24 @@ const STEP_FLAGS = {
   validateRequest: BOOLEAN,
   validateSchema: BOOLEAN,
   strictSchema: BOOLEAN
+};
+
+/** §5.2's `config:` block — the flow-wide defaults, of which five are `STEP_FLAGS` one level up. */
+const CONFIG = {
+  type: 'object',
+  properties: {
+    baseUrl: { type: 'string' },
+    ...STEP_FLAGS,
+    concurrency: { type: 'integer', minimum: 1 },
+    maxRunDuration: MILLISECONDS,
+    cleanupGrace: MILLISECONDS,
+    retry: { type: 'object', properties: RETRY_PROPERTIES, additionalProperties: false },
+    /** §14.4's additions to the built-in denylist. */
+    redactHeaders: { type: 'array', items: { type: 'string' } },
+    /** §14.5's inline preview cap, in bytes. */
+    capturePreviewBytes: { type: 'integer', minimum: 0 }
+  },
+  additionalProperties: false
 };
 
 /**
@@ -314,22 +332,7 @@ export const V1: JsonSchema = {
       properties: { use: { type: ['string', 'array'], items: { type: 'string' } } },
       additionalProperties: { type: 'string' }
     },
-    config: {
-      type: 'object',
-      properties: {
-        baseUrl: { type: 'string' },
-        ...STEP_FLAGS,
-        concurrency: { type: 'integer', minimum: 1 },
-        maxRunDuration: MILLISECONDS,
-        cleanupGrace: MILLISECONDS,
-        retry: { type: 'object', properties: RETRY_PROPERTIES, additionalProperties: false },
-        /** §14.4's additions to the built-in denylist. */
-        redactHeaders: { type: 'array', items: { type: 'string' } },
-        /** §14.5's inline preview cap, in bytes. */
-        capturePreviewBytes: { type: 'integer', minimum: 0 }
-      },
-      additionalProperties: false
-    },
+    config: CONFIG,
     /**
      * §6.4: authored flat and delivered nested. Beyond `mode` a profile carries the fields of the
      * mode it names, which belong to `@usebruno/schema-types`' `Auth` union rather than to this
@@ -389,3 +392,27 @@ export const V1: JsonSchema = {
   additionalProperties: false,
   $defs: { named: NAMED }
 };
+
+/**
+ * The step block's keys in §5.3's order, which a writer splices a new one into (005 §9.1).
+ *
+ * Taken from the schema rather than written out beside it, so the order the writer uses cannot drift
+ * from the set ajv accepts: a key added to `STEP` above is a key the builder can write, in the
+ * position the format reads it, with no second list to remember.
+ */
+export const STEP_KEY_ORDER = Object.keys(STEP.properties);
+
+/**
+ * The root keys in §5.2's order — where a block the file does not yet declare is created (005 §9.1).
+ */
+export const ROOT_KEY_ORDER = Object.keys(V1.properties as Record<string, unknown>);
+
+/** §5.2's `config:` keys, in the order a writer that adds one puts it (005 §9.1). */
+export const CONFIG_KEY_ORDER = Object.keys(CONFIG.properties);
+
+/**
+ * §8.1's kinds of output, as a control over one has to offer them: the four `from` values the schema
+ * names, and `script`, which is a key of its own rather than a fifth `from`. One list, because a row
+ * is one of the five and never two of them.
+ */
+export const OUTPUT_SOURCES = [...(OUTPUT.properties.from.enum as string[]), 'script'];

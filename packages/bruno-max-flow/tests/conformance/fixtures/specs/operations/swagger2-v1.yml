@@ -1,0 +1,21 @@
+# B7.5: a Swagger 2 document — `host`/`basePath`/`schemes` in place of `servers:`, and otherwise the
+# same `paths`/`operationId`/`summary`/`tags`/`deprecated` shape `indexDocument` reads for OpenAPI 3.
+swagger: '2.0'
+info: { title: Legacy invoices, version: 1.0.0 }
+host: swagger.example.com
+basePath: /v1
+schemes: [https]
+paths:
+  /invoices:
+    get:
+      operationId: listInvoices
+      summary: List invoices
+      tags: [invoices]
+      responses:
+        '200': { description: OK }
+    post:
+      operationId: createInvoice
+      deprecated: true
+      tags: [invoices]
+      responses:
+        '201': { description: Created }

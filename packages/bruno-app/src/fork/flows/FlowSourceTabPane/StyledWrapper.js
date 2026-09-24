@@ -39,10 +39,6 @@ const StyledWrapper = styled.div`
   .script-state {
     color: ${(props) => props.theme.colors.text.muted};
 
-    &.dirty {
-      color: ${(props) => props.theme.colors.text.yellow};
-    }
-
     &.error {
       color: ${(props) => props.theme.colors.text.danger};
     }

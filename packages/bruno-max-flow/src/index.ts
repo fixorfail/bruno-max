@@ -63,6 +63,25 @@ export { flowSearchTerms, flowMatches } from './search';
 // 002 §6 refreshes on a watcher change, and `apis:` targets live outside the directory watched.
 export { flowSpecSources } from './openapi';
 export { describeFlow } from './describe';
+
+// 005 §9 — the builder's writer and reads. The format still has one author: a host assembling a
+// step out of strings would be the second, and it would have to know §5.4's local tags to leave a
+// fixture alone. `listFlowOperations` is what the picker offers, computed where §6.1's reference
+// identity lives.
+export { applyFlowEdits, readFlowEditModel } from './edit';
+export type {
+  EditValue,
+  StepPatch,
+  StepDraft,
+  ApiBindingDraft,
+  FlowEdit,
+  FlowEditRefusal,
+  FlowEditResult,
+  StepFields,
+  FlowEditModel
+} from './edit';
+export { listOperations, listFlowOperations, stepRequestExample } from './openapi';
+export type { OperationSummary, FlowOperations, StepRequestExample } from './openapi';
 export { listRuns, readRun, readCapture } from './history';
 // §14.5's `suite.json` — the invocation-level index the run directories cannot supply on their own,
 // since a flow that never ran leaves no directory to be found. Read here and written by the host

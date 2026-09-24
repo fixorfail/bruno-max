@@ -33,6 +33,23 @@ describe('runScriptInQuickJsForValue', () => {
     ).resolves.toEqual({ sum: 3, parts: [1, 2] });
   });
 
+  it('drops a symbol or bigint in an argument rather than failing the script', async () => {
+    const req = { body: { keep: 1, gone: Symbol('drop'), big: 10n, list: [Symbol('drop'), 2] } };
+
+    await expect(
+      runScriptInQuickJsForValue({
+        source: '(req) => ({ keys: Object.keys(req.body), first: typeof req.body.list[0], second: req.body.list[1] })',
+        args: [req]
+      })
+    ).resolves.toEqual({ keys: ['keep', 'list'], first: 'undefined', second: 2 });
+  });
+
+  it('passes a top-level symbol or bigint argument as undefined', async () => {
+    await expect(
+      runScriptInQuickJsForValue({ source: '(a, b) => [typeof a, typeof b]', args: [Symbol('drop'), 1n] })
+    ).resolves.toEqual(['undefined', 'undefined']);
+  });
+
   it('rejects with the script error when the function throws synchronously', async () => {
     await expect(
       runScriptInQuickJsForValue({ source: '() => { throw new Error("boom"); }', args: [] })

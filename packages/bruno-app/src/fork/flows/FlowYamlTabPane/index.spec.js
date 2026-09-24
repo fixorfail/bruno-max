@@ -306,6 +306,29 @@ describe('FlowYamlTabPane', () => {
       expect(invoked('renderer:flow-write-source')).toHaveLength(1);
     });
 
+    /**
+     * B5.9 — §7.4's revert, from this surface. It reaches past the save, which is the whole point:
+     * with auto-save on the buffer reads *Saved* and the edits are still there to discard.
+     */
+    it('reverts the draft to the text the session opened with, after auto-save wrote it', async () => {
+      const { store } = renderPane({ autoSave: { enabled: true, interval: 500 } });
+      await act(async () => {});
+
+      type(`${VALID}  - id: pay\n`);
+      await settle(400);
+      await settle(600);
+      expect(await screen.findByText('Saved')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('flow-yaml-revert'));
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('confirm-flow-revert-discard'));
+      });
+
+      expect(store.getState().flows.sources[flow.pathname].content).toEqual(VALID);
+    });
+
     /** Two answers to "is this saved" is one too many, and the timer already owns it. */
     it('offers a save button only when auto-save is off', async () => {
       const { unmount } = renderPane();
@@ -340,10 +363,11 @@ describe('FlowYamlTabPane', () => {
   });
 
   /**
-   * The run view draws the file a run would execute. An unsaved draft is not that file, and the
-   * editor's own graph is kept out of the description the run view reads.
+   * The description of the file on disk — what a run would execute — is kept apart from the draft's.
+   * The flow tab draws the draft's while no run is open (005 §7.1), and the run's while one is; the
+   * file's own entry is what a run is started from, and a keystroke here must not move it.
    */
-  it('leaves the run view describing the file on disk', async () => {
+  it('keeps the draft\'s description apart from the file\'s', async () => {
     const { store } = renderPane();
     await act(async () => {});
 

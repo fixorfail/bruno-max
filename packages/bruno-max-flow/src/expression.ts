@@ -106,6 +106,18 @@ const OPERATORS: Record<string, (actual: unknown, expected: unknown) => boolean>
   'isJson': (actual) => typeof actual === 'object' && actual !== null
 };
 
+/**
+ * The operators that take no operand — §10.2's `isEmpty`, `isNull` and the rest.
+ *
+ * **Derived from the table above by arity**, not listed again beside it: a comparison that reads one
+ * argument is a comparison that has nothing to compare against, and a second list would be right
+ * until the next operator is added. 005 §9.2 sends it to the editor, which uses it to decide whether
+ * a row has a value to type into at all.
+ */
+export const UNARY_OPERATORS = Object.entries(OPERATORS)
+  .filter(([, compare]) => compare.length === 1)
+  .map(([name]) => name);
+
 export const evaluateAssertion = (
   assertion: AssertionSpec,
   context: EvaluationContext,

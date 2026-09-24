@@ -1,18 +1,28 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import find from 'lodash/find';
 import { usePersistedState } from 'hooks/usePersistedState';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { useVerticalSplit } from 'fork/hooks/useVerticalSplit';
-import { describeFlow, scopeRootOf } from '../actions';
-import { documentAnchored, stepSelected, iterationSelected, configurationChanged } from '../slice';
+import { useAutoSave } from 'fork/hooks/useAutoSave';
+import { useDraftDescribe } from 'fork/hooks/useDraftDescribe';
+import { useEditModel } from 'fork/hooks/useEditModel';
+import { applyFlowEdit, describeFlow, readFlowSource, saveFlowSource, scopeRootOf } from '../actions';
+import { documentAnchored, stepSelected, iterationSelected, configurationChanged, runClosed, sourceReverted, editUndone, editRedone } from '../slice';
 import { collectionUidForScope } from '../collectionScope';
+import SaveState from '../SaveState';
 import FlowGraph from './FlowGraph';
 import IterationStrip from './IterationStrip';
 import SuiteStrip from './SuiteStrip';
 import RunControls from './RunControls';
+import FlowSettings from './FlowSettings';
 import StepDetail from './StepDetail';
+import StepEditor from './StepEditor';
+import OperationPicker from './OperationPicker';
+import { reachableLibraries, reachableScripts } from './OperationPicker/libraries';
+import ApiBindingDialog from './ApiLegend/ApiBindingDialog';
+import { readDepends, writeDepends } from './StepEditor/DependsEditor';
 import RunSelector from './RunSelector';
 import StyledWrapper from './StyledWrapper';
 
@@ -175,6 +185,79 @@ const RunOrigin = ({ origin }) => (
   </span>
 );
 
+/**
+ * 005 §4 — what the tab is, said in words: the draft's save state while the flow is editable, and
+ * why it is not while it is not.
+ *
+ * The save state is stated here as well as in the YAML tab because a designer may never open that
+ * tab, and 002 §4.3's divergence notice — *the file also changed on disk* — is the one message that
+ * must not be missed by whoever is about to overwrite it. The Save button follows the same rule the
+ * YAML tab keeps: absent while auto-save owns the writing, since two controls answering "is this
+ * saved" would disagree the moment one was mid-flight.
+ *
+ * A run open in the tab — live, finished, or stored — is a record rather than a document, and the
+ * way back to editing is the same act as choosing `current` in §10's selector: closing the run.
+ * Offered here as **Edit flow** so the return is one click and is named; refused while the run is
+ * executing, as `runClosed` refuses it, because a running flow's results are still arriving.
+ */
+const DesignerState = ({ run, source, name, valid, dirty, autoSaveEnabled, onSave, onRevert, onEditFlow }) => {
+  if (run) {
+    const running = run.state === 'running';
+    return (
+      <span className="flow-designer-readonly" data-testid="flow-designer-readonly">
+        {running ? 'Running — editing resumes when the run is closed' : 'Reviewing a run — the graph is the one it executed'}
+        <button
+          type="button"
+          className="flow-designer-edit"
+          onClick={onEditFlow}
+          disabled={running}
+          data-testid="flow-designer-edit"
+        >
+          Edit flow
+        </button>
+      </span>
+    );
+  }
+
+  if (!source || source.loading) {
+    return null;
+  }
+
+  if (source.error && source.content === '' && source.saved === '') {
+    return (
+      <span className="flow-designer-readonly" data-testid="flow-designer-readonly">
+        {`The flow could not be read — ${source.error}`}
+      </span>
+    );
+  }
+
+  if (valid === false) {
+    return (
+      <span className="flow-designer-readonly" data-testid="flow-designer-readonly">
+        The file does not parse — fix it in the YAML tab to edit here
+      </span>
+    );
+  }
+
+  return (
+    <span className="flow-designer-state">
+      <SaveState
+        source={source}
+        name={name}
+        testId="flow-designer-state"
+        divergedTestId="flow-designer-diverged"
+        revertTestId="flow-designer-revert"
+        onRevert={onRevert}
+      />
+      {autoSaveEnabled ? null : (
+        <button type="button" className="flow-designer-save" onClick={onSave} disabled={!dirty} data-testid="flow-designer-save">
+          Save
+        </button>
+      )}
+    </span>
+  );
+};
+
 const FlowTabPane = ({ tab }) => {
   const dispatch = useDispatch();
   // §7.1 decides capture per run rather than storing it here: this is what the run *panel* keeps
@@ -194,8 +277,22 @@ const FlowTabPane = ({ tab }) => {
    * draws that step's own slots whatever this says.
    */
   const [showSlotEdges, setShowSlotEdges] = useState(false);
+  /**
+   * 005 §5.1: the picker is open for one place in the flow — after the step named, the end when
+   * none is, or (§6.2) in place of the operation a selected step already calls — and closes when
+   * the step has been written or the author changes their mind. Local because it is a gesture in
+   * progress rather than state of the flow.
+   */
+  const [picker, setPicker] = useState(null);
+  /** 005 §5.5: the legend's dialog — adding a binding, or editing the one named. */
+  const [bindingDialog, setBindingDialog] = useState(null);
 
-  const flow = useSelector((state) => find(state.flows.flows, (entry) => entry.pathname === tab.pathname));
+  const flows = useSelector((state) => state.flows.flows);
+  const flow = find(flows, (entry) => entry.pathname === tab.pathname);
+  /** 005 §5.1: the picker's last rail entry — the libraries this flow could `uses:`. */
+  const libraries = useMemo(() => reachableLibraries(flows, flow), [flows, flow]);
+  /** 005 §6.2: the shared scripts a step's Scripts tab may add to the flow's `functions.use:`. */
+  const scripts = useMemo(() => reachableScripts(flows, flow), [flows, flow]);
   const suiteRun = useSelector((state) => state.flows.suiteRun);
   const collections = useSelector((state) => state.collections.collections);
   const workspaces = useSelector((state) => state.workspaces.workspaces);
@@ -223,16 +320,32 @@ const FlowTabPane = ({ tab }) => {
   const described = useSelector((state) => state.flows.descriptions[tab.pathname]);
   const run = useSelector((state) => state.flows.runs[tab.pathname]);
   const selectedStep = useSelector((state) => state.flows.selectedStep[tab.pathname]);
+  const source = useSelector((state) => state.flows.sources[tab.pathname]);
+  const autoSaveEnabled = useSelector((state) => Boolean(state.app.preferences?.autoSave?.enabled));
+
+  /**
+   * §10: a run open in the tab — live or restored — is a record, so its inputs are shown rather than
+   * edited and its graph is the one it executed (below). Returning to `current` drops the run
+   * (`runClosed`) and the tab shows the flow as it stands, which under 005 §4 is the editable state.
+   */
+  const viewingRun = Boolean(run);
 
   /**
    * §10: a past run draws the graph **it** executed, not the flow's current one. 001 §14.5 records
    * the description at run start precisely so a run stays readable after the file moves on — without
    * it, a step renamed since loses its outcome silently and one added since reads as never-started.
-   *
-   * A live run has no snapshot in the slice and falls through to the current description, which is
+   * A live run has no snapshot in the slice and falls through to the file's description, which is
    * the same file it is executing.
+   *
+   * With no run open the tab draws the **draft's** description (005 §7.1): this is where the draft
+   * is being made, and a canvas showing the last saved graph while its author adds a step to it
+   * would be drawing the wrong document. The file's own description keeps its place in the store —
+   * it is what a run would execute — and stands in until the draft has been read and described,
+   * during which the two are the same graph.
    */
-  const description = run?.description || described?.description;
+  const description = viewingRun
+    ? run.description || described?.description
+    : source?.description || described?.description;
 
   const splitRef = useRef(null);
   const [detailHeight, setDetailHeight] = usePersistedState({
@@ -256,18 +369,152 @@ const FlowTabPane = ({ tab }) => {
     }
   }, [dispatch, flow, described]);
 
+  // 005 §7.1: the designer edits 002 §4.3's draft, so the tab reads the flow's text as the YAML tab
+  // does when it opens — and keeps the engine's description of that text in step with it.
+  useEffect(() => {
+    if (flow && !source) {
+      dispatch(readFlowSource(flow));
+    }
+  }, [dispatch, flow, source]);
+
+  const { valid } = useDraftDescribe({ flow, source, immediate: true });
+  // §9.2's model, for the legend's dialog: the bindings as written, and the auth profiles it offers.
+  const { model } = useEditModel({ flow, source });
+  const dirty = Boolean(source) && source.content !== source.saved;
+
+  /**
+   * 002 §4.3's auto-save, from this surface too. The draft is one buffer, and the timer that writes
+   * it lives in whichever pane is showing it — a draft typed in the YAML tab and then looked at
+   * here would otherwise never reach disk, since switching tabs unmounts the pane whose timer it
+   * was. Same gate: only a draft that parses.
+   */
+  useAutoSave({
+    trigger: source?.content,
+    armed: dirty && valid === true && !source?.saving,
+    onSave: () => dispatch(saveFlowSource(flow)).catch(() => undefined)
+  });
+
   if (!flow) {
     return <div className="pb-4 px-4">This flow is no longer on disk.</div>;
   }
 
   const iteration = run?.selectedIteration || 0;
   const isRunning = run?.state === 'running';
-  /**
-   * §10: a run open in the tab — live or restored — is a record, so its inputs are shown rather than
-   * edited. Returning to `current` drops the run (`runClosed`) and the boxes come back.
-   */
-  const viewingRun = Boolean(run);
   const nodeStates = run?.steps?.[iteration] || {};
+
+  const save = () => dispatch(saveFlowSource(flow)).catch(() => undefined);
+
+  /**
+   * 005 §4's predicate, in full: no run open, the text read, and the engine not having said it does
+   * not parse — with not-yet-answered counting as not-yet-valid, the direction 002 §4.3 chose.
+   */
+  const editable = !viewingRun && Boolean(source) && !source.loading && !source.error && valid === true;
+
+  /**
+   * 005 §5.2: the step's entry is removed and nothing else — the sequence closes over the gap, and
+   * what referenced the step is the engine's to report. A step removed while selected takes the
+   * selection with it, or the pane below would be describing a step that is no longer drawn.
+   */
+  const deleteStep = async (stepId) => {
+    const result = await dispatch(applyFlowEdit(flow, [{ kind: 'step.remove', id: stepId }]));
+    if (result.ok && selectedStep === stepId) {
+      dispatch(stepSelected({ pathname: flow.pathname, stepId: null }));
+    }
+  };
+
+  /**
+   * 005 §5.1: two lines, spliced where the `+` was — the position is the whole of the edit, and
+   * 001 §9.1's implicit sequence does the wiring. The step is what the picker handed back, an
+   * `operation:` or a library's `uses:`, and the engine derives the id from it. §6.2's *Change…*
+   * reaches the same picker and writes the `operation:` line alone; the id does not follow it,
+   * since an id is the author's once written.
+   */
+  const pickStep = async (step) => {
+    const { after, before, replace } = picker;
+    setPicker(null);
+    const edit = replace
+      ? { kind: 'step.patch', id: replace, patch: { set: { operation: step.operation } } }
+      : { kind: 'step.insert', step, ...(after ? { after } : {}), ...(before ? { before } : {}) };
+    const result = await dispatch(applyFlowEdit(flow, [edit]));
+    // The step just added is the one the author is about to fill in, so it is selected and §6's
+    // editor opens on it — by the id the engine derived and reported, which nothing here could know.
+    if (!replace && result.ok && result.inserted?.length) {
+      dispatch(stepSelected({ pathname: flow.pathname, stepId: result.inserted[0] }));
+    }
+  };
+
+  /**
+   * 005 §5.4: a connector dragged between two steps writes the source into the target's `depends:`,
+   * in whatever form the target already uses; a declared edge's control takes it out again, and the
+   * last one out leaves the step to the implicit sequence. Both read the target's `depends:` off
+   * §9.2's model — the graph knows the edge, the model knows the spelling.
+   */
+  const dependsOf = (stepId) => readDepends(model?.steps.find((entry) => entry.id === stepId)?.fields.depends);
+  const writeDependsOf = (stepId, next) => {
+    const depends = writeDepends(next);
+    return dispatch(applyFlowEdit(flow, [{ kind: 'step.patch', id: stepId, patch: depends === undefined ? { unset: ['depends'] } : { set: { depends } } }]));
+  };
+  const connectSteps = ({ from, to }) => {
+    const current = dependsOf(to);
+    if (current.entries.some((entry) => entry.on === from)) {
+      return;
+    }
+    writeDependsOf(to, { ...current, root: false, entries: [...current.entries, { on: from, status: [] }] });
+  };
+  const disconnectSteps = ({ from, to }) => {
+    const current = dependsOf(to);
+    writeDependsOf(to, { ...current, entries: current.entries.filter((entry) => entry.on !== from) });
+  };
+
+  /**
+   * 005 §5.5: the legend's edits. Removing a binding a step still calls is refused by the engine
+   * with the steps named, and the refusal is shown where every other one is. An edit keeps the
+   * alias's key when the alias is unchanged and renames it otherwise — one edit either way.
+   */
+  const removeApi = (alias) => dispatch(applyFlowEdit(flow, [{ kind: 'api.remove', alias }]));
+  const submitBinding = async (binding) => {
+    const { mode, alias } = bindingDialog;
+    setBindingDialog(null);
+    await dispatch(applyFlowEdit(flow, [mode === 'edit' ? { kind: 'api.update', alias, binding } : { kind: 'api.add', binding }]));
+  };
+
+  /**
+   * The same binding the YAML tab makes for ⌘S, for the same reason: the app's keybindings have no
+   * single-tab `save` action to join, so every editing surface binds its own. Delete removes the
+   * selected step while the graph is editable — and only when the key was not meant for a field,
+   * since the pane below is full of them. ⌘Z and ⌘⇧Z are 005 §7.3's structured undo and redo, bound
+   * here rather than in the YAML tab, whose ⌘Z is the code editor's own; the two are never ambiguous
+   * because a keystroke lands in one tab. A field's own undo is left to the field.
+   */
+  const onKeyDown = (event) => {
+    const command = event.metaKey || event.ctrlKey;
+    const inField = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName) || event.target.isContentEditable;
+
+    if (command && event.key.toLowerCase() === 's') {
+      event.preventDefault();
+      save();
+      return;
+    }
+
+    if (command && event.key.toLowerCase() === 'z' && editable && !inField) {
+      event.preventDefault();
+      dispatch(event.shiftKey ? editRedone({ pathname: flow.pathname }) : editUndone({ pathname: flow.pathname }));
+      return;
+    }
+
+    if ((event.key === 'Delete' || event.key === 'Backspace') && editable && selectedStep && !inField && !picker) {
+      event.preventDefault();
+      deleteStep(selectedStep);
+      return;
+    }
+
+    // §6.8: clearing the selection is what opens the pane over the flow's own settings, so it has a
+    // key as well as the drawing's background. Not while a dialog is up — Escape is that dialog's.
+    if (event.key === 'Escape' && selectedStep && !inField && !picker && !bindingDialog) {
+      event.preventDefault();
+      dispatch(stepSelected({ pathname: flow.pathname, stepId: null }));
+    }
+  };
   const selectedNode = selectedStep ? nodeStates[selectedStep] : undefined;
 
   const toggleSubflow = (id) =>
@@ -299,7 +546,7 @@ const FlowTabPane = ({ tab }) => {
   };
 
   return (
-    <StyledWrapper>
+    <StyledWrapper onKeyDownCapture={onKeyDown}>
       <RunControls
         flow={flow}
         description={description}
@@ -307,6 +554,7 @@ const FlowTabPane = ({ tab }) => {
         configuration={configuration}
         onConfigurationChange={(next) =>
           dispatch(configurationChanged({ pathname: tab.pathname, configuration: next }))}
+        draft={{ dirty, parses: valid, save: () => dispatch(saveFlowSource(flow)) }}
       />
 
       {/* §5.3: data edges are toggleable and on by default — on a flow where most steps consume the
@@ -354,6 +602,18 @@ const FlowTabPane = ({ tab }) => {
           </label>
         ) : null}
 
+        <DesignerState
+          run={run}
+          source={source}
+          name={flow.filename}
+          valid={valid}
+          dirty={dirty}
+          autoSaveEnabled={autoSaveEnabled}
+          onSave={save}
+          onRevert={() => dispatch(sourceReverted({ pathname: flow.pathname }))}
+          onEditFlow={() => dispatch(runClosed({ pathname: flow.pathname }))}
+        />
+
         {/* At the end of the row the flow's other controls are on, rather than over the drawing:
             they are the same kind of thing — what this view is showing and what it is showing about
             — and a count that floated over the graph was the only one of them that moved with it. */}
@@ -375,6 +635,14 @@ const FlowTabPane = ({ tab }) => {
 
       {described?.loading ? <div className="flow-loading">Reading the flow…</div> : null}
       {described?.error ? <div className="flow-error">{described.error}</div> : null}
+      {/* 005 §6.3: an edit the engine declined, in the engine's words. The document is unchanged,
+          which the save state beside the toolbar confirms. The editor carries the refusal beside the
+          step it was about while one is open; this is for a refusal with no step selected. */}
+      {source?.editError && !(editable && selectedStep) ? (
+        <div className="flow-error" data-testid="flow-designer-refusal">
+          {source.editError}
+        </div>
+      ) : null}
 
       {description ? (
         <Errors
@@ -428,10 +696,21 @@ const FlowTabPane = ({ tab }) => {
             }
             onSelectStep={(stepId) => dispatch(stepSelected({ pathname: flow.pathname, stepId }))}
             onToggleSubflow={toggleSubflow}
+            editable={editable}
+            onInsertStep={setPicker}
+            onDeleteStep={deleteStep}
+            onAddApi={() => setBindingDialog({ mode: 'add' })}
+            onEditApi={(alias) => setBindingDialog({ mode: 'edit', alias })}
+            onRemoveApi={removeApi}
+            onConnect={connectSteps}
+            onDisconnect={disconnectSteps}
           />
         ) : null}
 
-        {selectedStep ? (
+        {/* §6.8: the sheet is the selected step's, and the flow's own `config:` when nothing is
+            selected — one space, showing whichever of the two the author is looking at. A stored run
+            with no selection has neither, and keeps the whole tab for the drawing. */}
+        {selectedStep || editable ? (
           <>
             <div
               className="flow-split-handle"
@@ -441,27 +720,70 @@ const FlowTabPane = ({ tab }) => {
               data-testid="flow-split-handle"
               {...dragbarProps}
             />
-            <StepDetail
-              stepId={selectedStep}
-              node={selectedNode}
-              running={isRunning}
-              scopeRoot={flow ? scopeRootOf(flow) : undefined}
-              runDir={run?.dir}
-              /* 001 §14.5 nests captures under `iteration-N` only for a `dataset:` flow, so the
+            {/* 005 §6.1: the same selection opens the run's record while a run is open and the
+                editor while the flow is editable — one predicate deciding which, so a step
+                selected while reading a run stays selected when the run is closed. */}
+            {editable && !selectedStep ? (
+              <FlowSettings flow={flow} source={source} height={appliedDetailHeight} />
+            ) : null}
+            {editable && selectedStep ? (
+              <StepEditor
+                flow={flow}
+                source={source}
+                stepId={selectedStep}
+                height={appliedDetailHeight}
+                scripts={scripts}
+                onOpenDocument={(position) => openDocumentAt(position)}
+                onPickOperation={() => setPicker({ replace: selectedStep })}
+              />
+            ) : null}
+            {!editable && selectedStep ? (
+              <StepDetail
+                stepId={selectedStep}
+                node={selectedNode}
+                /* §8.1's declared names, so an output that resolved to nothing is a row saying so
+                   rather than a row that never appears. The run's own record carries only what was
+                   extracted; what the step *declares* is the description's. */
+                declaredOutputs={description?.nodes?.find((entry) => entry.id === selectedStep)?.outputs}
+                running={isRunning}
+                scopeRoot={flow ? scopeRootOf(flow) : undefined}
+                runDir={run?.dir}
+                /* 001 §14.5 nests captures under `iteration-N` only for a `dataset:` flow, so the
                  reader has to ask the same way the writer wrote — naming an iteration for a flow
                  that has none looks in a directory that was never created. */
-              iteration={description?.dataset ? iteration : undefined}
-              /* §5.4 draws a sub-flow's steps only while its container is expanded, and a `uses:`
+                iteration={description?.dataset ? iteration : undefined}
+                /* §5.4 draws a sub-flow's steps only while its container is expanded, and a `uses:`
                  step's pane has nothing of its own to show — so the pane offers the expansion, and
                  stops offering it once the steps are on the drawing. */
-              onExpandSubflow={
-                expandedSubflows.includes(selectedStep) ? undefined : () => toggleSubflow(selectedStep)
-              }
-              height={appliedDetailHeight}
-            />
+                onExpandSubflow={
+                  expandedSubflows.includes(selectedStep) ? undefined : () => toggleSubflow(selectedStep)
+                }
+                height={appliedDetailHeight}
+              />
+            ) : null}
           </>
         ) : null}
       </div>
+
+      {picker ? (
+        <OperationPicker
+          flow={flow}
+          content={source.content}
+          libraries={picker.replace ? [] : libraries}
+          onPick={pickStep}
+          onClose={() => setPicker(null)}
+        />
+      ) : null}
+
+      {bindingDialog ? (
+        <ApiBindingDialog
+          binding={bindingDialog.mode === 'edit' ? (model?.apis || []).find((entry) => entry.alias === bindingDialog.alias) : undefined}
+          taken={(description?.apis || []).map((entry) => entry.alias)}
+          authProfiles={model?.authProfiles || []}
+          onSubmit={submitBinding}
+          onClose={() => setBindingDialog(null)}
+        />
+      ) : null}
     </StyledWrapper>
   );
 };

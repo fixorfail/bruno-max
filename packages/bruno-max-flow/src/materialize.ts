@@ -130,6 +130,27 @@ const seedFromSchema = (
 };
 
 /**
+ * An override subtree that `merge` returns as-is has no seed under it, so a `!...` in it has nothing
+ * to remove — the key is absent. It must not stay in as the `DROP` symbol: `JSON.stringify` hides it
+ * on the wire, but the body is also handed to scripts as `req.body`, where the symbol cannot go.
+ *
+ * An array replaces the seed's wholesale, so the same holds for each of its items: one that is
+ * `!...` is removed, not sent as the `null` `JSON.stringify` makes of a symbol in an array.
+ *
+ * Only plain objects are rebuilt: a `FileRef` is a mapping to `isMapping` but must reach stage 5 as
+ * itself.
+ */
+const stripDrops = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.filter((entry) => entry !== DROP).map(stripDrops);
+  if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return value;
+  const stripped: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry !== DROP) stripped[key] = stripDrops(entry);
+  }
+  return stripped;
+};
+
+/**
  * §7.2: objects deep-merge, arrays replace wholesale, `!...` removes a key the seed introduced.
  *
  * Exported for the other place a layer sits beneath a binding's defaults: §8.5's connector files,
@@ -138,7 +159,7 @@ const seedFromSchema = (
  */
 export const merge = (base: unknown, override: unknown): unknown => {
   if (override === undefined) return base;
-  if (!isMapping(base) || !isMapping(override)) return override;
+  if (!isMapping(base) || !isMapping(override)) return stripDrops(override);
 
   const merged: Record<string, unknown> = { ...base };
   for (const [key, value] of Object.entries(override)) {
@@ -471,6 +492,15 @@ export type Materialized = {
  * The order for a file is: interpolate the path, read it, merge the contents, then interpolate the
  * contents, which is what makes a fixture selectable by something an earlier step produced.
  */
+/**
+ * §7.1's seed for a structured or multipart body: the schema's, with the operation's example over it.
+ *
+ * Exported for validation, which asks whether a step's `!...` names a key this produces. One
+ * implementation, because a check that seeded differently would warn about the wrong keys.
+ */
+export const seedBody = (resolved: ResolvedOperation, mediaType: string): unknown =>
+  merge(seedFromSchema(requestSchema(resolved, mediaType), resolved.definitions), requestExample(resolved.operation, mediaType));
+
 const inlineLayer = async (step: NormalizedStep, scope: Scope, read: FileReader): Promise<unknown> => {
   if (!step.bodyFile) return step.body;
   const source = interpolateScalar(step.bodyFile, scope);
@@ -489,12 +519,7 @@ export const materialize = async (
   const mediaType = selectMediaType(step, resolved.operation);
   const raw = mediaType !== undefined && !isStructured(mediaType) && mediaType !== 'multipart/form-data';
 
-  const seed = mediaType && !raw
-    ? merge(
-        seedFromSchema(requestSchema(resolved, mediaType), resolved.definitions),
-        requestExample(resolved.operation, mediaType)
-      )
-    : undefined;
+  const seed = mediaType && !raw ? seedBody(resolved, mediaType) : undefined;
 
   const authored = {
     // A raw payload takes no merge layer at all, so the seed and the step's value never meet.

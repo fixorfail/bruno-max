@@ -664,6 +664,12 @@ present. `!...` removes one:
 
 `null` and `!...` are different: `null` sends `null`, `!...` sends nothing.
 
+`!...` removes only a key the seed put there. The engine seeds a required field, and an optional
+field only when it has an `example` or `default`. On any other key, `!...` removes nothing, and
+`bru flow validate` warns with `unseeded-drop`.
+
+In an array, `!...` as an item removes that item: `tags: [a, !..., c]` sends `["a", "c"]`.
+
 ---
 
 ## Values computed before the request
@@ -1787,6 +1793,57 @@ did not open, on a guess about which paths meant this one, is the alternative �
 The dialog refuses to open over a raw YAML editor with unsaved changes. It edits the text on disk,
 which a dirty editor is already ahead of; save or discard first.
 
+### The flow's own settings
+
+The pane below the graph shows whichever step is selected. **With nothing selected it shows the
+flow's `config:`** — so click the drawing's background, or press Escape, to get to it.
+
+It is two tabs. The first is the five flags every step inherits — `failOnStatusCode`,
+`failOnUnresolved`, `validateRequest`, `validateSchema`, `strictSchema` — each reading *default* ·
+*on* · *off*, with the format's own default named on the option so you can see what *default* costs
+you before you leave it there. The second is every run of the flow: `baseUrl`, `concurrency`,
+`maxRunDuration`, `cleanupGrace`, `redactHeaders`, `capturePreviewBytes`, and the flow-wide `retry`
+defaults a step's own `retry:` overrides. None of it is about a particular run — the run panel above
+the graph is where you set what *one* run starts with.
+
+**A cleared field deletes its key**, the same way the properties dialog treats `meta:`: the format
+writes a default as an absence, so emptying `concurrency` removes the line rather than writing `5`,
+and clearing the last setting removes the `config:` block itself.
+
+This is the block the step editor's *inherit* points at, which is why it is here. The rest of a
+flow's file — `vars:`, `stages:`, `params:`, `exports:`, `dataset:`, `shared:`, `authProfiles:` — is
+still the YAML tab's.
+
+**A condition says whether it is an expression or a script.** `when:` is one row per condition — all
+of them have to hold — and each picks its kind: an expression goes in a field, a script in an editor
+with the flow's shared functions in scope.
+
+**An output says where its value comes from.** Each row in the Outputs table picks a source — a body
+path, a header, the status, a value computed in `pre:`, or a script — and the value box changes to
+suit: a path for the first four (empty and disabled for the status) and a script box for the last.
+A bare value in the YAML is a body path, which is why the script case needs saying out loud.
+
+**A marker beside a field says what it takes.** A script marker means the flow's shared functions
+(`functions.use:`) are in scope there — `pre:`, an output's `script:`, *Retry when*. An expression
+marker means they are not: assertions and `when:` are evaluated on their own, and a shared function
+called there resolves to nothing and simply fails the assertion. Compute that value in an output
+first and assert on the output.
+
+**Assertions are edited as their three parts** — expression, operator, value — the same table the
+collections request pane uses, with the operator list coming from the flow engine so `==` and `!=`
+are there and an operator that takes no operand (`isEmpty`, `isNull`) leaves the value box empty.
+Rows you do not touch keep the exact form the file wrote them in.
+
+**The body box sizes itself to the body.** A two-line body gets a small box, a forty-line one gets
+as much room as the tab will give it, and a payload pasted as a single long line is measured by the
+rows it actually takes on screen rather than by the one line it is. Past the ceiling the body scrolls
+inside the box.
+
+The API bindings have their own form, on the legend above the graph: `source`, alias, base URL, auth
+profile, colour, `rateLimit` and `strictNulls`. `defaultHeaders:` and `defaultQuery:` are not in it
+yet, but an edit made there keeps them — the form carries every field the binding declares, whether
+or not it draws it.
+
 ### The raw YAML editor
 
 `Edit Yaml` on the same menu opens the file as text, with the graph above it redrawing from the draft
@@ -2309,8 +2366,10 @@ What it reports:
 | `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
 | `undeclared-dependency` *(warning)* | A step reads `steps.x.body…` rather than a declared output — see [the note above](#declared-outputs-not-raw-response-access) |
 | `interpolation-in-output-path` *(warning)* | An output path contains `{{...}}` — it is a path into the response, not an interpolation, and selects nothing |
+| `script-in-output-path` *(warning)* | An output path contains `=>` — the string form is a path, and a script has to be written as `script:` |
 | `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion, so the step accepts any status |
 | `function-shadows-script-argument` *(warning)* | A function named `res` or `ctx`, which every script is handed |
+| `unknown-function` *(warning)* | A script calls a helper nothing puts in scope — usually a typo, or a `use:` entry you meant to add. It throws when the script runs |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them — the sibling's value is not visible |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
 | `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 |
@@ -2345,6 +2404,7 @@ What it reports:
 | `bru-unavailable` *(warning)* | A script mentions `bru`. There is no `bru` in a flow script — reading is `ctx`, and writing a value for a later step is `outputs:` or a `shared:` slot |
 | `unknown-dataset-format` | Your `dataset:` is not a `.csv`, `.json` or `.yml`. Convert it, or rename it if it is really one of those |
 | `external-schema-ref` *(warning)* | The operation's schema lives in a second OpenAPI file. Bruno reads only the document you bound, so nothing here checks your body and the run will fail the step. Inline the schema, or bind the document that holds it |
+| `unseeded-drop` *(warning)* | A body `!...` on a key the spec never seeds — an optional field with no `example` or `default`, or a key inside an array item. The key is already absent, so the `!...` removes nothing |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow that is not marked `meta.library: true`, so a directory run fires it |
 | `unused-output` *(warning)* | An output a step declares in its own `outputs:` block and nothing in the flow reads. Connector-supplied outputs are never warned about |
 | `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it counts as a read |

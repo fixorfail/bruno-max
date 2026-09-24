@@ -11,7 +11,8 @@
  * otherwise refuse mid-run, one dispatched step later, which is the difference between a spec edit
  * that fails a review and one that fails a nightly.
  */
-import { FileRef, type NormalizedStep } from '../document';
+import { DROP, FileRef, type NormalizedStep } from '../document';
+import { seedBody } from '../materialize';
 import { deref, requestMediaTypes, type ResolvedOperation } from '../openapi';
 import { suggest, type Report } from './report';
 
@@ -292,6 +293,44 @@ const checkExternalRefs = (step: NormalizedStep, resolved: ResolvedOperation, me
   );
 };
 
+/**
+ * §7.2: `!...` removes a key the seed introduced, or an array item. Under a key the seed never
+ * produces — an optional property with no `example` or `default`, or any key inside an array item,
+ * since an array replaces the seed's wholesale — it removes nothing, and the author most often
+ * expected it to.
+ *
+ * A warning, not an error: the request is the same with or without it. A `bodyFile:` replaces
+ * `body:` and is not read here, so a step that has one is not checked.
+ */
+const checkUnseededDrops = (step: NormalizedStep, resolved: ResolvedOperation, mediaType: string, report: Report) => {
+  if (step.bodyFile) return;
+
+  const walk = (value: unknown, seed: unknown, where: string, seeded: boolean) => {
+    if (value === DROP) {
+      if (!seeded) {
+        report.warn(
+          'unseeded-drop',
+          `${step.id}: ${where} is !..., but the operation's seed has no such key, so it removes nothing (§7.2)`,
+          step.id
+        );
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      // An item that is `!...` is itself what gets removed, so only the keys inside one can miss.
+      value.forEach((entry, index) => walk(entry, undefined, `${where}[${index}]`, true));
+      return;
+    }
+    if (!isMapping(value)) return;
+    for (const [key, entry] of Object.entries(value)) {
+      const inSeed = isMapping(seed) && Object.prototype.hasOwnProperty.call(seed, key);
+      walk(entry, inSeed ? seed[key] : undefined, `${where}.${key}`, inSeed);
+    }
+  };
+
+  walk(step.body, seedBody(resolved, mediaType), 'body', true);
+};
+
 export const checkOperation = (step: NormalizedStep, resolved: ResolvedOperation, report: Report) => {
   const mediaType = selectMediaType(step, resolved, report);
   if (mediaType) checkExternalRefs(step, resolved, mediaType, report);
@@ -299,6 +338,9 @@ export const checkOperation = (step: NormalizedStep, resolved: ResolvedOperation
   if (mediaType === 'multipart/form-data') checkMultipart(step, resolved, report);
   else if (mediaType && !isStructured(mediaType)) checkBinaryBody(step, mediaType, report);
   else if (mediaType) checkStructuredBody(step, resolved, mediaType, report);
+  if (mediaType === 'multipart/form-data' || (mediaType && isStructured(mediaType))) {
+    checkUnseededDrops(step, resolved, mediaType, report);
+  }
 
   const query = parameterNames(resolved, 'query');
   for (const key of Object.keys(step.query)) {

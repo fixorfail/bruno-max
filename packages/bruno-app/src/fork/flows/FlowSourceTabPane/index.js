@@ -7,7 +7,8 @@ import CodeEditor from 'components/CodeEditor';
 import { useTheme } from 'providers/Theme';
 import { useAutoSave } from 'fork/hooks/useAutoSave';
 import { readFlowSource, saveFlowSource } from '../actions';
-import { sourceEdited } from '../slice';
+import { sourceEdited, sourceReverted } from '../slice';
+import SaveState from '../SaveState';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -17,7 +18,8 @@ import StyledWrapper from './StyledWrapper';
  * **The same editing session §4.3's raw editor has, without the half that has no meaning here.** The
  * text lives in the flows slice keyed by path, so an unsaved edit survives a tab switch; saving,
  * auto-save, the dirty comparison and the close prompt are all the ones the YAML editor already
- * uses. What is missing is the graph: neither file is a flow, neither has a `describeFlow` to draw
+ * uses — including the save state itself and 005 §7.4's revert beside it, which is `SaveState`, the
+ * same component the two flow surfaces read from. What is missing is the graph: neither file is a flow, neither has a `describeFlow` to draw
  * and no steps to draw it from, and a pane that showed one would be answering a question nobody
  * asked of this file.
  *
@@ -137,25 +139,6 @@ const KINDS = {
   }
 };
 
-const SaveState = ({ source, testId }) => {
-  if (source.saving) {
-    return <span className="script-state">Saving…</span>;
-  }
-  if (source.error) {
-    return <span className="script-state error">{`Not saved — ${source.error}`}</span>;
-  }
-  if (source.content !== source.saved) {
-    return source.staleOnDisk ? (
-      <span className="script-state error" data-testid={`${testId}-diverged`}>
-        Unsaved changes — the file also changed on disk
-      </span>
-    ) : (
-      <span className="script-state dirty">Unsaved changes</span>
-    );
-  }
-  return <span className="script-state">Saved</span>;
-};
-
 const FlowSourceTabPane = ({ tab }) => {
   const dispatch = useDispatch();
   const { displayedTheme } = useTheme();
@@ -231,7 +214,13 @@ const FlowSourceTabPane = ({ tab }) => {
         )}
 
         <div className="script-toolbar-right">
-          <SaveState source={source} testId={tab.type} />
+          <SaveState
+            source={source}
+            name={entry.filename}
+            divergedTestId={`${tab.type}-diverged`}
+            revertTestId={`${tab.type}-revert`}
+            onRevert={() => dispatch(sourceReverted({ pathname: tab.pathname }))}
+          />
           {autoSaveEnabled ? null : (
             <button
               type="button"

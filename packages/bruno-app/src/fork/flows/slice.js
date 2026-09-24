@@ -104,8 +104,31 @@ const initialState = {
  * 002 §4.3's editing session. `saved` is what is believed to be on disk, so *dirty* is a comparison
  * rather than a flag — a flag has to be cleared by every path that changes either side, and the one
  * that forgets leaves the tab claiming an edit that was written minutes ago.
+ *
+ * `opened` is the text this session started from, and it is what 005 §7.4's revert goes back to. It
+ * is a third text rather than `saved` because the two part company at the first save: with auto-save
+ * on they part company within a second, and a revert to `saved` would then discard nothing. It moves
+ * only when the buffer is replaced from disk, since text the file no longer holds is not something
+ * to offer to restore.
  */
-const emptySource = () => ({ content: '', saved: '', loading: true, saving: false });
+const emptySource = () => ({ content: '', saved: '', opened: '', loading: true, saving: false });
+
+/**
+ * 005 §7.3 — how much of a draft's past the designer keeps. Texts rather than edits, because the
+ * engine owns what an edit *means* and the renderer holds only what it produced; a count and a byte
+ * cap so a long session over a large flow does not grow the store without bound.
+ */
+const HISTORY_ENTRIES = 50;
+const HISTORY_BYTES = 2 * 1024 * 1024;
+
+const pushHistory = (source, previous) => {
+  const past = [...(source.history?.past || []), previous];
+  let bytes = past.reduce((total, text) => total + text.length, 0);
+  while (past.length > HISTORY_ENTRIES || (bytes > HISTORY_BYTES && past.length > 1)) {
+    bytes -= past.shift().length;
+  }
+  source.history = { past, future: [] };
+};
 
 const emptyRun = ({ runId, iterationCount, captureDir, description, params, origin }) => ({
   runId,
@@ -418,10 +441,22 @@ const slice = createSlice({
       const { pathname, content } = action.payload;
       const source = state.sources[pathname];
       if (source) {
+        // Text from disk that differs from the buffer is text nobody here has checked; the same text
+        // — Bruno's own save coming back through the watcher — keeps the verdict it already has, or
+        // every save would drop the editor for the length of a describe.
+        if (source.content !== content) {
+          source.parses = undefined;
+        }
         source.content = content;
         source.saved = content;
+        // §7.4: the session starts again from what the file now says. Reverting to the text it held
+        // before would put back a document the file has moved away from, which is not a revert.
+        source.opened = content;
         source.staleOnDisk = false;
         source.error = undefined;
+        // The buffer was replaced from disk; a structured undo restoring text from before that
+        // would discard what the file now says (005 §7.3).
+        delete source.history;
       }
     },
 
@@ -685,7 +720,7 @@ const slice = createSlice({
     /** 002 §4.3 — the file's text, read when the raw editor opens. */
     sourceLoaded: (state, action) => {
       const { pathname, content } = action.payload;
-      state.sources[pathname] = { ...emptySource(), content, saved: content, loading: false };
+      state.sources[pathname] = { ...emptySource(), content, saved: content, opened: content, loading: false };
     },
 
     sourceLoadFailed: (state, action) => {
@@ -705,8 +740,116 @@ const slice = createSlice({
      */
     sourceEdited: (state, action) => {
       const { pathname, content } = action.payload;
-      const source = state.sources[pathname] || emptySource();
-      state.sources[pathname] = { ...source, content, error: undefined };
+      /**
+       * A keystroke is text nobody has checked, so the verdict on the previous text does not carry
+       * to this one — `parses` is unknown until the engine answers (002 §4.3). A *structured* edit
+       * below keeps the verdict: the engine wrote that text and refused it if it did not parse, so
+       * the draft is known to parse before the describe confirms it, and nothing that is gated on
+       * the verdict — the affordances, the step editor — drops out while the answer is in flight.
+       */
+      const source = { ...(state.sources[pathname] || emptySource()), content, error: undefined, parses: undefined };
+      // 005 §7.3: a hand-typed line ends the structured history. An undo that restored text from
+      // before it would silently discard the line — the one loss an editor is not allowed.
+      delete source.history;
+      state.sources[pathname] = source;
+    },
+
+    /**
+     * 005 §7.1 — the engine applied a structured edit to the draft, and this is the text it produced.
+     *
+     * The same move a keystroke makes, with two differences: the text it replaces goes onto §7.3's
+     * history, and the last refusal is cleared, since an edit that landed answers whatever the
+     * previous one was refused for.
+     */
+    structuredEdit: (state, action) => {
+      const { pathname, content, previous } = action.payload;
+      const source = state.sources[pathname];
+      if (!source) {
+        return;
+      }
+      pushHistory(source, previous);
+      source.content = content;
+      source.error = undefined;
+      source.editError = undefined;
+      source.parses = true;
+    },
+
+    /** The engine declined an edit, or the buffer moved while one was in flight (005 §7.2). */
+    editRefused: (state, action) => {
+      const { pathname, message } = action.payload;
+      const source = state.sources[pathname];
+      if (source) {
+        source.editError = message;
+      }
+    },
+
+    /**
+     * 005 §9.2's model of the draft, kept beside the text it was read from — `modelContent` is to
+     * the model what `describedContent` is to the description: the way a pane tells an answer about
+     * the text on screen from one about the text three edits ago.
+     */
+    editModelRead: (state, action) => {
+      const { pathname, model, content } = action.payload;
+      const source = state.sources[pathname];
+      // Dropped when the buffer has moved on, for `sourceDescribed`'s reason — and here the cost of
+      // recording it is worse: the editor re-seeds its fields from the model, so a stale one landing
+      // last would take a row the author just typed back out of the table.
+      if (source && source.content === content) {
+        source.model = model;
+        source.modelContent = content;
+      }
+    },
+
+    /**
+     * 005 §7.4 — the draft goes back to the text the session started from.
+     *
+     * The text is restored into the *draft*, and the file is not written: that is §7.3's rule for
+     * undoing past a save, and a revert is the same move over a longer reach. Where auto-save is on
+     * it writes the restored text the way it writes any other edit, so the one path that touches the
+     * file stays the one path that touches the file.
+     *
+     * The discarded draft goes onto the history, so ⌘Z takes a revert back like any other edit — as
+     * far as the history still reaches, which a hand-typed line ends (§7.3). That is why the surface
+     * asks before doing this.
+     */
+    sourceReverted: (state, action) => {
+      const source = state.sources[action.payload.pathname];
+      if (!source || source.content === source.opened) {
+        return;
+      }
+      pushHistory(source, source.content);
+      source.content = source.opened;
+      source.error = undefined;
+      source.editError = undefined;
+      // Every text the session started from was read from the file, which the engine had parsed.
+      source.parses = true;
+    },
+
+    editUndone: (state, action) => {
+      const source = state.sources[action.payload.pathname];
+      const past = source?.history?.past || [];
+      if (!past.length) {
+        return;
+      }
+      const previous = past[past.length - 1];
+      source.history = { past: past.slice(0, -1), future: [...source.history.future, source.content] };
+      source.content = previous;
+      source.editError = undefined;
+      // Every text on the history was a draft the engine wrote or one it answered for.
+      source.parses = true;
+    },
+
+    editRedone: (state, action) => {
+      const source = state.sources[action.payload.pathname];
+      const future = source?.history?.future || [];
+      if (!future.length) {
+        return;
+      }
+      const next = future[future.length - 1];
+      source.history = { past: [...source.history.past, source.content], future: future.slice(0, -1) };
+      source.content = next;
+      source.editError = undefined;
+      source.parses = true;
     },
 
     /**
@@ -721,7 +864,10 @@ const slice = createSlice({
     sourceDescribed: (state, action) => {
       const { pathname, description, content } = action.payload;
       const source = state.sources[pathname];
-      if (!source) {
+      // An answer about text no longer in the buffer is dropped, not recorded: two surfaces can ask
+      // about successive drafts, and the older answer landing last would draw the older graph and
+      // mark the newer text as unanswered.
+      if (!source || source.content !== content) {
         return;
       }
 
@@ -882,7 +1028,13 @@ export const {
   sourceDescribeFailed,
   sourceSaving,
   sourceSaved,
-  sourceSaveFailed
+  sourceSaveFailed,
+  sourceReverted,
+  structuredEdit,
+  editRefused,
+  editModelRead,
+  editUndone,
+  editRedone
 } = slice.actions;
 
 export default slice.reducer;

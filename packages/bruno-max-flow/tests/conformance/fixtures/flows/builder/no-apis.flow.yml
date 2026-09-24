@@ -1,0 +1,10 @@
+# B1.11 — a flow that names itself and binds nothing, so `api.add` has a `meta:` to land after and a
+# `config:` it must land above. Appending would put the bindings below the configuration that reads
+# them, which is §5.2's structure inverted by the first click on the legend.
+version: 1
+
+meta:
+  name: Builder — a flow with no bindings
+
+config:
+  failOnStatusCode: false

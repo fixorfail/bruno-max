@@ -11,7 +11,7 @@
  * the engine refuses to guess, and each of them is a request never sent.
  */
 const { DROP, FileRef } = require('../../src/document');
-const { MaterializationError, collectionAuthProfile, materialize } = require('../../src/materialize');
+const { MaterializationError, collectionAuthProfile, materialize, merge } = require('../../src/materialize');
 
 const CONFIG = { concurrency: 1, cleanupGrace: 0, redactHeaders: [], capturePreviewBytes: 8192 };
 
@@ -124,6 +124,31 @@ describe('§7.2 merge semantics', () => {
     const body = (await run({ operation, stepOver: { body: { name: DROP } } })).request.body.value;
 
     expect(body).toEqual({ address: { city: '', zip: '' } });
+  });
+
+  it('treats a `!...` under a key the seed never introduced as absent, not as a value', async () => {
+    const body = (await run({ operation, stepOver: { body: { partner: { data: { id: 'p1', name: DROP } } } } }))
+      .request.body.value;
+
+    expect(body).toEqual({ name: '', address: { city: '', zip: '' }, partner: { data: { id: 'p1' } } });
+  });
+
+  it('treats a `!...` in a mapping inside an array as absent', async () => {
+    const body = (await run({ operation, stepOver: { body: { tags: [{ id: 't1', note: DROP }] } } })).request.body.value;
+
+    expect(body.tags).toEqual([{ id: 't1' }]);
+  });
+
+  it('removes an array item that is `!...`, rather than sending it as null', async () => {
+    const body = (await run({ operation, stepOver: { body: { tags: ['a', DROP, 'c'] } } })).request.body.value;
+
+    expect(body.tags).toEqual(['a', 'c']);
+  });
+
+  it('keeps a file reference as itself under a key the seed never introduced', () => {
+    const file = new FileRef('./a.txt');
+
+    expect(merge({}, { attachment: { file } }).attachment.file).toBe(file);
   });
 
   it('layers the step over the binding over the seed, for query and headers alike', async () => {

@@ -1,0 +1,4 @@
+# B1.11's second case: a flow declaring nothing but its format version, so `api.add` has only
+# `version:` to land after. `writeNewFlowDocument` emits exactly this for a create form with no
+# properties and no bindings, so it is a shape the app really produces.
+version: 1

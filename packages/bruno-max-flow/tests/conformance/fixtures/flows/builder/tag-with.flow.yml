@@ -1,0 +1,23 @@
+# B3.3 — a `!file` under a `uses:` step's `with:` (001 §12.1).
+#
+# §12 believes the list of positions a tag can appear in is complete, and this family is where a
+# missing one would show up. Each fixture carries the tag in one position and an untouched step
+# beside it, so a patch to the neighbour is the assertion that the tag survived.
+version: 1
+
+meta:
+  name: Builder — a tagged sub-flow argument
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: call_sub
+    uses: ./sub-echo.flow.yml
+    with:
+      payload: !file ./fixtures/payload.json
+
+  - id: read_back
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1

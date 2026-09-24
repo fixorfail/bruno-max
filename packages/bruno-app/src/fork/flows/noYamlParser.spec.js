@@ -66,4 +66,18 @@ describe('the renderer has no parser of its own', () => {
 
     expect(bundled).toEqual([]);
   });
+
+  /**
+   * 005-C R7 — the writing half, now that the app edits flows: no module here assembles a document
+   * out of strings. Every edit crosses `renderer:flow-apply-edit` as data and comes back as text the
+   * engine wrote; a renderer that spelled out `steps:` itself would be the second author 005 §9.1
+   * rules out. Specs are exempt, since a fixture is exactly a document spelled out.
+   */
+  it('writes no flow document of its own', () => {
+    const offenders = modulesUnder(FLOWS_ROOT)
+      .filter((pathname) => !/\.spec\.jsx?$/.test(pathname))
+      .filter((pathname) => /^\s*(version: 1|steps:|apis:)\s*$/m.test(fs.readFileSync(pathname, 'utf8')));
+
+    expect(offenders).toEqual([]);
+  });
 });

@@ -2,7 +2,8 @@
 
 **Status:** **Implemented.** The sidebar, the flow tab, the graph, the run controls, the step
 detail pane and the run history are built on [001](./001-api-flows.md)'s engine boundary; §15 holds
-what is deliberately deferred, the visual builder above all.
+what is deliberately deferred. The builder this document left to its own spec is
+[005](./005-api-flow-builder.md), which narrows two rules here and says so in its §9.5.
 **Owner:** Jake Campbell
 **Last revised:** 2026-09-09
 
@@ -649,12 +650,23 @@ disk is the one thing it must not be coy about.
 same reason: an unsaved edit discarded by a tab switch is the one kind of state loss no editor is
 allowed.
 
-**The run view keeps describing the file on disk.** The editor's graph is the draft's; §11.1's stored
-description, which the run tab draws and a run would execute, is the file's. Folding the draft into it
-would redraw the run tab from text no run can reach, and abandoning the edit would leave that drawing
+**A Revert control beside the state puts the draft back to the text the session opened with**, and
+asks before it does. It offers itself whenever the draft differs from that text, which is not the
+same as being unsaved: with auto-save on the buffer reads *Saved* while the edits to discard are
+still there. It restores the text into the draft and does not write the file, so the one path that
+reaches disk is still the one that always did. [005](./005-api-flow-builder.md) §7.4 gives the
+reasoning in full; it is the same control on every surface that edits one of these drafts, §4.5's and
+§4.6's included.
+
+**The run view keeps describing the file on disk while a run is open.** The editor's graph is the
+draft's; §11.1's stored description, which a run would execute, is the file's. Folding the draft into
+it would redraw a *run* from text no run can reach, and abandoning the edit would leave that drawing
 behind, since only a watcher event clears the entry. Two descriptions of one flow is the honest shape:
 they differ exactly while the editor is ahead of the file, and saving is what makes them agree —
-through the watcher, which clears the stored description on the change the save causes.
+through the watcher, which clears the stored description on the change the save causes. When no run
+is open, the flow tab is where the draft is being made and draws the draft's description —
+[005](./005-api-flow-builder.md) §7.1, which narrowed this rule from *always* to *while a run is
+open* and gives the reason.
 
 **The editor follows a file changed underneath it, and a dirty one never loses what was typed.** The
 draft living in the store keyed by path is what lets it survive a tab switch, and it is also what
@@ -1109,6 +1121,9 @@ looking for. The `API` title is what keeps a lone alias from reading as a captio
 
 The bindings are read off the drawn nodes rather than from the flow's `apis:` block, so a binding
 declared and never called takes neither a colour nor a legend row for a service no box belongs to.
+That is the read-only legend's rule. The editable one lists what the file declares, because a
+binding is added *on* the legend and would otherwise vanish as it was written —
+[005](./005-api-flow-builder.md) §5.5.
 
 ### 5.2 Layout
 
@@ -1877,7 +1892,7 @@ pane has no close control of its own, and a graph with no way back to nothing-se
 |---|---|
 | Request | The materialized request — method, resolved URL, headers, body — as sent (001 §7, §13.2's `requestHeaders`) |
 | Response | Status, headers, body, duration |
-| Assertions | Each `assert:` entry with `expected` and `actual`, as recorded for the attempt |
+| Assertions | Each `assert:` entry with its **actual** value then its **expected** one — the order 001 §10.2 writes them in on the line beside them — under named columns, as recorded for the attempt |
 | Validation | Request-schema and response-schema outcomes (001 §10.1), as recorded for the attempt |
 
 **The pane shows one attempt, and the attempt is chosen on its header rather than on a tab.** 001
@@ -2219,6 +2234,10 @@ type FlowNode = {
   kind: 'operation' | 'subflow';
   operation?: { api: string; method: string; path: string; operationId?: string };
   uses?: string;                       // sub-flow path, when kind is 'subflow'
+  exports?: { name: string; source: string }[];
+                                       // the library's exports: as it declares them (001 §12.1) —
+                                       // what a caller reads as steps.<id>.<name> — on a subflow
+                                       // node whose target could be read; absent where it could not
   parent?: string;                     // the uses: node this internal step belongs to
   rank: number;                        // longest path from a root — see below
   outputs: string[];                   // declared output names (001 §8.1, §8.5)
@@ -2988,7 +3007,7 @@ The watcher starts from inside `registerFlowIpc`, so it rides 001's existing ent
 
 ### 12.1 The manifest delta
 
-001 §13.4's table is the contract for the whole feature. Run & observe adds **eleven files** to it,
+001 §13.4's table is the contract for the whole feature. Run & observe adds **twelve files** to it,
 and grows one row that was already there:
 
 | Upstream file | Edit | Lines |
@@ -2998,6 +3017,7 @@ and grows one row that was already there:
 | `packages/bruno-app/src/components/Devtools/Console/NetworkTab/index.js` | the same import and selection | 2 |
 | `packages/bruno-app/src/components/RequestTabs/index.js` | imports, the strip's grouping rule, and the header a fork tab gets instead (§4.2) | 5 |
 | `packages/bruno-app/…/RequestTabs/RequestTab/index.js` | §4.4's close guard: one import, and a branch handing a fork tab to the registry | +3 |
+| `packages/bruno-app/src/components/CodeEditor/index.js` | a `knownGlobals` prop, into the linter's `globals` and re-linted when it changes — 005 §9.2 | 5 |
 | `packages/bruno-app/package.json` | the `@dagrejs/dagre` dependency the graph's layout needs (§5.2) | 1 |
 | `packages/bruno-app/jest.config.js` | a second `setupFiles` entry, pointing at the fork's own test setup | 1 |
 | `packages/bruno-app/src/providers/ReduxStore/middlewares/snapshot/serializeSnapshot.js` | import, and write the fork's own section into the snapshot's `extras` (§7.2) | 2 |
@@ -3005,6 +3025,14 @@ and grows one row that was already there:
 | `packages/bruno-tests/src/index.js` | require and mount the `/api/settle` router — the stateful endpoint [002-C](./002-api-flows-ui-conformance.md) §2 needs for a polling scenario | 2 |
 | `tests/utils/page/index.ts` | re-export the flows page module | 1 |
 | `tests/utils/page/locators.ts` | import, and add `flows` to the common locator tree | 2 |
+
+**The `CodeEditor` row buys a linter that stops calling correct code broken.** A flow's script is
+evaluated with 001 §8.6's library composed into its prelude, so a helper is in scope by its name —
+and the linter, which knows the sandbox globals and nothing else, reports every one as *is not
+defined*. There is no seam: the lint options are built inside the component from constants, and
+nothing a caller passes reaches them. The edit is a prop of the editor rather than anything about
+flows — *names the caller knows are in scope* — so it is the shape upstream would have written, and
+the flow-specific half (which names, and where they come from) stays in fork-owned code.
 
 **The two new rows are the cost of §5.2's layout engine, and the second one is a registry again.**
 A dependency has to be declared by the package that imports it (`.claude/rules/architecture.md`), so
@@ -3173,8 +3201,9 @@ treatments are unaffected, and **the engine keeps deciding ranks** (§5.2, §11.
 constrained to reproduce 001's ranking rather than to invent one. That containment is what makes the
 reversal cheap to undo: the seam is one module, `layout.js`.
 
-React Flow remains rejected, and remains the right base for the visual builder — which is where the
-interaction budget actually gets spent.
+React Flow remains rejected. This section once added that it remained the right base for the visual
+builder; [005](./005-api-flow-builder.md) §11 reverses that on the same evidence — positions are the
+engine's ranks and exist nowhere in the file, so the builder edits structure and the drawing follows.
 
 **Flows nested inside the collection tree.** Better adjacency, rejected on fork cost — §4.1.
 
@@ -3257,7 +3286,6 @@ app so that a UI deferral is recorded once rather than in two tables that would 
 
 | Item | Why not now | What it needs |
 |---|---|---|
-| **The flow builder** | 001 §3's judgement that the UI is trial-and-error applies hardest to editing; the viewer is the cheaper half and informs it | Its own spec: an editing model that round-trips losslessly per 001 §15, and an answer for unparseable intermediate states |
 | **Running one step or a subgraph** | 001 defines execution for a whole flow; a subset needs semantics for what its dependencies resolve to | A definition of partial-run state — probably seeding `steps.*` from a previous run's capture, which is a format question, not a UI one |
 | **Diffing two runs** | §10 makes both runs readable, which is the prerequisite; what to diff (bodies? outputs? timings?) is unclear without watching people use it | A diff model over `StepCapture`, and evidence about which comparison people reach for first |
 | **OS-level run notifications** | §4.1 covers the ambient case; an OS notification is a third surface needing a preference, and no Electron `Notification` usage exists in the app to build on | Evidence that flows run long enough for people to leave the app during one |

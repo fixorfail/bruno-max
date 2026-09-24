@@ -518,6 +518,37 @@ describe('R8.6 — Paths, and the tags that name them', () => {
     expect(await validate(flow('drop.flow.yml'))).toEqual([]);
   });
 
+  /** `drop.flow.yml` with its body's two lines changed, since a variant cannot write the tag back. */
+  const withBody = (body) => {
+    const entry = file('drop-unseeded.flow.yml');
+    const text = fs.readFileSync(file('drop.flow.yml'), 'utf8').replace('      name: !...\n      ref: widget\n', body);
+    return { entry, files: { [entry]: text } };
+  };
+
+  it('warns about !... on a key the seed never produces, where it removes nothing', async () => {
+    const { entry, files } = withBody('      name: widget\n      ref: !...\n');
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(codes(diagnostics)).toEqual(['unseeded-drop']);
+    expect(diagnostics[0].severity).toBe('warning');
+    expect(diagnostics[0].message).toContain('body.ref');
+  });
+
+  it('warns about !... on a key inside an array item, which replaces the seed rather than merging', async () => {
+    const { entry, files } = withBody('      name: widget\n      ref:\n        - note: !...\n');
+
+    const [complaint] = of(await validate(entry, { files }), 'unseeded-drop');
+
+    expect(complaint.message).toContain('body.ref[0].note');
+  });
+
+  it('accepts !... as an array item, which removes that item', async () => {
+    const { entry, files } = withBody('      name: widget\n      ref:\n        - a\n        - !...\n');
+
+    expect(of(await validate(entry, { files }), 'unseeded-drop')).toEqual([]);
+  });
+
   it('reports !... anywhere else, where it drops nothing and reads as null', async () => {
     const [complaint] = of(await validate(flow('drop-misplaced.flow.yml')), 'misplaced-drop');
 

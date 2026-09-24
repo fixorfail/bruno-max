@@ -110,19 +110,39 @@ const Headers = ({ headers }) => {
  * Outputs arrive in `StepResult` rather than in the capture file, so they render on a
  * capture-disabled run too — the same reason §9 keeps assertions under one. They describe the step
  * rather than an attempt of it, which is why the caller shows them only on the final attempt.
+ *
+ * **Every output the step declares is listed, including the ones that resolved to nothing.** 001
+ * §8.1 extracts a value or it does not, and an output that found nothing is simply absent from the
+ * result — so listing what was extracted shows a path that missed as no row at all, which reads as
+ * an output nobody declared. That is the failure this pane is most often opened to diagnose: the
+ * value is undefined, every step downstream skips on the unresolved reference, and the one place
+ * that could have said so was silent. The declared names come from the description (002 §11.1);
+ * anything extracted under a name the description does not carry is listed after them, so a run
+ * recorded before the flow was edited still shows everything it produced.
  */
-const Outputs = ({ outputs }) => {
-  const entries = Object.entries(outputs || {});
-  if (!entries.length) {
+const Outputs = ({ outputs, declared }) => {
+  const extracted = outputs || {};
+  const names = [
+    ...(declared || []),
+    ...Object.keys(extracted).filter((name) => !(declared || []).includes(name))
+  ];
+
+  if (!names.length) {
     return null;
   }
 
   return (
     <div className="detail-outputs">
       <div className="detail-label">Outputs</div>
-      {entries.map(([name, value]) => (
+      {names.map((name) => (
         <Row key={name} label={name}>
-          {JSON.stringify(value)}
+          {name in extracted ? (
+            JSON.stringify(extracted[name])
+          ) : (
+            <span className="detail-unresolved" data-testid={`flow-step-output-undefined-${name}`}>
+              undefined
+            </span>
+          )}
         </Row>
       ))}
     </div>
@@ -452,7 +472,7 @@ const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
  * past one alike. Reading the run control's checkbox instead makes unchecking it erase the captures
  * of a run that already happened, which no setting for the *next* run should be able to do.
  */
-const StepDetail = ({ stepId, node, running, scopeRoot, runDir, iteration, height, onExpandSubflow }) => {
+const StepDetail = ({ stepId, node, declaredOutputs, running, scopeRoot, runDir, iteration, height, onExpandSubflow }) => {
   const dispatch = useDispatch();
   const [tab, setTab] = useState(DEFAULT_TAB);
   /**
@@ -500,13 +520,9 @@ const StepDetail = ({ stepId, node, running, scopeRoot, runDir, iteration, heigh
     };
   }, [dispatch, runDir, stepId, iteration, attempt, captureStatus]);
 
-  // The pane's owner drags this (§9); absent, the stylesheet's own minimum stands in — which is
-  // what a standalone render of this component gets.
-  const sized = typeof height === 'number' ? { height } : undefined;
-
   if (!node) {
     return (
-      <StyledWrapper style={sized}>
+      <StyledWrapper height={height} testId="flow-step-detail" header={<span className="detail-step">{stepId}</span>}>
         <div className="detail-empty">{`${stepId} has not run in this iteration`}</div>
       </StyledWrapper>
     );
@@ -544,158 +560,163 @@ const StepDetail = ({ stepId, node, running, scopeRoot, runDir, iteration, heigh
   // Pre-terminal, with nothing left to move it: the run is over and this step never reported an end.
   const unreported = !running && RUNNING_STATES.has(node.state);
 
-  return (
-    <StyledWrapper style={sized} data-testid="flow-step-detail">
-      <div className="detail-header">
-        <span className="detail-step">{stepId}</span>
-        {perAttempt ? <AttemptSelector attempt={attempt} count={attemptCount(node)} onSelect={setChosen} /> : null}
+  const header = (
+    <>
+      <span className="detail-step">{stepId}</span>
+      {perAttempt ? <AttemptSelector attempt={attempt} count={attemptCount(node)} onSelect={setChosen} /> : null}
 
-        {/* §8.2's in-flight states, beside the attempt this pane is reading — a step still going
+      {/* §8.2's in-flight states, beside the attempt this pane is reading — a step still going
             shows no status here (its outcome is not its own until it settles) and no duration, so
             without this the header of a running step is indistinguishable from a finished one whose
             events were missed. It stays up across a poll's retries: `retrying` is the same request
             still in flight, and a spinner that stopped between attempts would say it had landed. */}
-        {inFlight(node, running) ? (
-          <IconLoader2
-            className={`detail-spinner animate-spin ${node.state}`}
-            size={14}
-            strokeWidth={1.5}
-            data-testid="flow-step-in-flight"
-          />
-        ) : null}
+      {inFlight(node, running) ? (
+        <IconLoader2
+          className={`detail-spinner animate-spin ${node.state}`}
+          size={14}
+          strokeWidth={1.5}
+          data-testid="flow-step-in-flight"
+        />
+      ) : null}
 
-        {/* A step whose run ended without it reporting has no outcome to show, and repeating the
+      {/* A step whose run ended without it reporting has no outcome to show, and repeating the
             last thing it said would have the pane claiming it is still going — beside a run that
             says it is over. What is known is that nothing more is coming. */}
-        {showsStepOutcome && unreported ? (
-          <span className="detail-status unreported" data-testid="flow-step-unreported">
-            the run ended without this step reporting
-          </span>
-        ) : null}
+      {showsStepOutcome && unreported ? (
+        <span className="detail-status unreported" data-testid="flow-step-unreported">
+          the run ended without this step reporting
+        </span>
+      ) : null}
 
-        {showsStepOutcome && !unreported ? (
-          <span className={`detail-status ${node.state}`}>{[node.state, node.reason].filter(Boolean).join(' · ')}</span>
-        ) : null}
-        {showsStepOutcome && node.durationMs !== undefined ? (
-          <span className="detail-duration">{`${node.durationMs}ms`}</span>
-        ) : null}
-        {/* 004 §7: the share of the duration that was §6.2's pacing, so a paced step does not read
+      {showsStepOutcome && !unreported ? (
+        <span className={`detail-status ${node.state}`}>{[node.state, node.reason].filter(Boolean).join(' · ')}</span>
+      ) : null}
+      {showsStepOutcome && node.durationMs !== undefined ? (
+        <span className="detail-duration">{`${node.durationMs}ms`}</span>
+      ) : null}
+      {/* 004 §7: the share of the duration that was §6.2's pacing, so a paced step does not read
             as a slow API. Only ever shown where a limit actually held the step up. */}
-        {showsStepOutcome && node.rateLimitWaitMs ? (
-          <span className="detail-paced" title="waiting on this API's declared rate limit">
-            {`+${node.rateLimitWaitMs}ms paced`}
-          </span>
-        ) : null}
-      </div>
+      {showsStepOutcome && node.rateLimitWaitMs ? (
+        <span className="detail-paced" title="waiting on this API's declared rate limit">
+          {`+${node.rateLimitWaitMs}ms paced`}
+        </span>
+      ) : null}
+    </>
+  );
 
-      {showsStepOutcome && node.message ? <StepMessage node={node} /> : null}
-
-      <div className="detail-tabs">
-        {TABS.map((name) => (
-          <button
-            key={name}
-            type="button"
-            className={name === tab ? 'active' : ''}
-            onClick={() => setTab(name)}
-            data-testid={`flow-step-tab-${name}`}
-          >
-            {name}
-          </button>
-        ))}
-      </div>
-
-      <div className="detail-body-area">
-        {absence ? (
-          <div className="detail-empty">
-            {absence}
-            {/* The steps the line names are not on the drawing until the container is expanded
+  return (
+    <StyledWrapper
+      height={height}
+      testId="flow-step-detail"
+      header={header}
+      notice={showsStepOutcome && node.message ? <StepMessage node={node} /> : null}
+      tabs={TABS}
+      activeTab={tab}
+      onSelectTab={setTab}
+      tabTestId={(name) => `flow-step-tab-${name}`}
+    >
+      {absence ? (
+        <div className="detail-empty">
+          {absence}
+          {/* The steps the line names are not on the drawing until the container is expanded
                 (§5.4), and a reader who is in this pane is already looking for them. Absent once
                 they are drawn — the sentence is then a statement about where they are. */}
-            {captureStatus === 'subflow' && onExpandSubflow ? (
-              <button
-                type="button"
-                className="detail-expand"
-                onClick={onExpandSubflow}
-                data-testid="flow-step-expand-subflow"
-              >
-                Show them in the graph
-              </button>
-            ) : null}
-          </div>
-        ) : null}
+          {captureStatus === 'subflow' && onExpandSubflow ? (
+            <button
+              type="button"
+              className="detail-expand"
+              onClick={onExpandSubflow}
+              data-testid="flow-step-expand-subflow"
+            >
+              Show them in the graph
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
-        {perAttempt && read.status === 'loading' ? <div className="detail-empty">Loading capture…</div> : null}
+      {perAttempt && read.status === 'loading' ? <div className="detail-empty">Loading capture…</div> : null}
 
-        {perAttempt && read.status === 'failed' ? (
-          <div className="detail-empty">{`The capture could not be read — ${read.error}`}</div>
-        ) : null}
+      {perAttempt && read.status === 'failed' ? (
+        <div className="detail-empty">{`The capture could not be read — ${read.error}`}</div>
+      ) : null}
 
-        {tab === 'request' && read.status === 'loaded' ? (
-          capture?.request ? (
+      {tab === 'request' && read.status === 'loaded' ? (
+        capture?.request ? (
+          <>
+            <Row label="Method">{capture.request.method}</Row>
+            <Row label="URL">{capture.request.url}</Row>
+            <Headers headers={capture.request.headers} />
+            <Body body={capture.request.body} side="request" />
+          </>
+        ) : (
+          <div className="detail-empty">Nothing was sent</div>
+        )
+      ) : null}
+
+      {tab === 'response' ? (
+        <>
+          {read.status === 'loaded' && capture?.response ? (
             <>
-              <Row label="Method">{capture.request.method}</Row>
-              <Row label="URL">{capture.request.url}</Row>
-              <Headers headers={capture.request.headers} />
-              <Body body={capture.request.body} side="request" />
+              <Row label="Status">{`${capture.response.status} ${capture.response.statusText || ''}`}</Row>
+              <Row label="Duration">{`${capture.response.responseTimeMs}ms`}</Row>
+              <Headers headers={capture.response.headers} />
             </>
-          ) : (
-            <div className="detail-empty">Nothing was sent</div>
-          )
-        ) : null}
+          ) : null}
 
-        {tab === 'response' ? (
-          <>
-            {read.status === 'loaded' && capture?.response ? (
-              <>
-                <Row label="Status">{`${capture.response.status} ${capture.response.statusText || ''}`}</Row>
-                <Row label="Duration">{`${capture.response.responseTimeMs}ms`}</Row>
-                <Headers headers={capture.response.headers} />
-              </>
-            ) : null}
+          {showsStepOutcome ? <Outputs outputs={node.outputs} declared={declaredOutputs} /> : null}
 
-            {showsStepOutcome ? <Outputs outputs={node.outputs} /> : null}
+          {read.status === 'loaded' && capture?.response ? <Body body={capture.response.body} side="response" /> : null}
+          {read.status === 'loaded' && !capture?.response ? (
+            <div className="detail-empty">No response arrived</div>
+          ) : null}
+        </>
+      ) : null}
 
-            {read.status === 'loaded' && capture?.response ? <Body body={capture.response.body} side="response" /> : null}
-            {read.status === 'loaded' && !capture?.response ? (
-              <div className="detail-empty">No response arrived</div>
-            ) : null}
-          </>
-        ) : null}
+      {tab === 'assertions' && outcomeReady ? (
+        <table className="detail-table">
+          {/* 001 §10.2 writes an assertion as `<expr> <op> <value>`, and the two sides of it are the
+              expression's value and what it was compared against — in that order, which is the order
+              they are read in on the line to their left. Named as well as ordered: two bare columns
+              of JSON are a guess about which is which, and the guess is only checkable on the rows
+              that failed. */}
+          <thead>
+            <tr>
+              <th aria-label="Outcome" />
+              <th>Assertion</th>
+              <th>Actual</th>
+              <th>Expected</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(assertions || []).map((assertion, index) => (
+              <tr key={index} className={assertion.passed ? 'passed' : 'failed'}>
+                <td>{assertion.passed ? '✓' : '✗'}</td>
+                <td>{assertion.expr}</td>
+                <td>{JSON.stringify(assertion.actual)}</td>
+                <td>{JSON.stringify(assertion.expected)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
 
-        {tab === 'assertions' && outcomeReady ? (
-          <table className="detail-table">
-            <tbody>
-              {(assertions || []).map((assertion, index) => (
-                <tr key={index} className={assertion.passed ? 'passed' : 'failed'}>
-                  <td>{assertion.passed ? '✓' : '✗'}</td>
-                  <td>{assertion.expr}</td>
-                  <td>{JSON.stringify(assertion.expected)}</td>
-                  <td>{JSON.stringify(assertion.actual)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : null}
-
-        {tab === 'validation' && outcomeReady ? (
-          <>
-            {['request', 'response'].map((side) =>
-              validation?.[side] ? (
-                <div key={side}>
-                  <Row label={side}>{validation[side].valid ? 'valid' : 'invalid'}</Row>
-                  {validation[side].errors.map((error, index) => (
-                    <Row key={index} label={error.path}>
-                      {error.message}
-                    </Row>
-                  ))}
-                </div>
-              ) : null
-            )}
-            {validation ? null : <div className="detail-empty">No schema validation ran</div>}
-          </>
-        ) : null}
-
-      </div>
+      {tab === 'validation' && outcomeReady ? (
+        <>
+          {['request', 'response'].map((side) =>
+            validation?.[side] ? (
+              <div key={side}>
+                <Row label={side}>{validation[side].valid ? 'valid' : 'invalid'}</Row>
+                {validation[side].errors.map((error, index) => (
+                  <Row key={index} label={error.path}>
+                    {error.message}
+                  </Row>
+                ))}
+              </div>
+            ) : null
+          )}
+          {validation ? null : <div className="detail-empty">No schema validation ran</div>}
+        </>
+      ) : null}
     </StyledWrapper>
   );
 };

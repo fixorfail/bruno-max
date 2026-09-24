@@ -167,6 +167,32 @@ export const loadLibrary = async (flow: NormalizedFlow, reader: FileReader): Pro
 };
 
 /**
+ * The names a raw `.js` library puts in scope: its top-level declarations.
+ *
+ * A raw source is composed as written into the prelude of the IIFE the script is evaluated in
+ * (`withLibrary`), so what a script can call is exactly what the file declares at its top level. A
+ * declaration written at column 0 is that, and one written indented is inside something else and is
+ * not — which is what this reads, and the whole of what it reads.
+ *
+ * **It is a reader's answer, not a parser's.** Nothing in the toolchain parses JavaScript (the
+ * comment on `collectLibrary` says so, and `composeLibrary` is a string join), so this is a listing
+ * of what a file appears to declare rather than a claim about what it does. Both ways of being wrong
+ * are safe for the two callers it has: a name it misses is a helper an editor still underlines and a
+ * listing still omits, which is where those stood before; a name it invents is one warning not
+ * given. Neither can change what a flow runs, because nothing composes from this.
+ *
+ * The first binding of a statement only — `const a = 1, b = 2` yields `a`. A helper file declares
+ * one helper per statement, and the alternative is parsing a declaration list by hand.
+ */
+const DECLARATION = /^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:const|let|var|function\s*\*?|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
+
+export const declaredNames = (source: string): string[] => {
+  const names = new Set<string>();
+  for (const match of source.matchAll(DECLARATION)) names.add(match[1]);
+  return [...names];
+};
+
+/**
  * §8.6, for a reader rather than for a run: the functions a flow ends up with and the file each was
  * declared in, in the order they are composed.
  *
@@ -179,4 +205,11 @@ export const resolveLibrary = async (
   flow: NormalizedFlow,
   read: (source: string, from: string) => Promise<string>
 ): Promise<{ name?: string; from: string }[]> =>
-  effectiveLibrary(await collectLibrary(flow.functions, flow.file, read)).map(({ name, from }) => ({ name, from }));
+  effectiveLibrary(await collectLibrary(flow.functions, flow.file, read)).flatMap(({ name, source, from }) => {
+    if (name) return [{ name, from }];
+    // A raw file is one entry carrying a dozen helpers. Listed as the helpers it declares, because
+    // "what a script may call" is the question both callers are asking — and a file that appears to
+    // declare nothing is still worth naming as a file that was read.
+    const declared = declaredNames(source);
+    return declared.length ? declared.map((declaration) => ({ name: declaration, from })) : [{ from }];
+  });

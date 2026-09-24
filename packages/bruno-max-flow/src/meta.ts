@@ -1,10 +1,11 @@
 /**
  * Reading and rewriting a flow's `meta:` block — 001 §5.2, for 002 §4.4's properties dialog.
  *
- * **This is the format's only writer, and it lives here for the same reason `readFlowMeta` does.**
- * §5.1 buys one parser and one serializer by making flows YAML-only; a host that edited `meta:` with
- * a YAML library of its own would be the second serializer that decision exists to avoid, and it
- * would have to know §5.4's local tags to leave them alone.
+ * **The writing lives here for the same reason `readFlowMeta` does.** §5.1 buys one parser and one
+ * serializer by making flows YAML-only; a host that edited `meta:` with a YAML library of its own
+ * would be the second serializer that decision exists to avoid, and it would have to know §5.4's
+ * local tags to leave them alone. `serialize.ts` holds the pieces this shares with `edit.ts`, which
+ * writes the rest of the document (005 §9.1).
  *
  * **Everything outside `meta:` survives, and that is the requirement rather than a nicety.** A
  * `.flow.yml` is a committed, hand-edited file (§5.1), so a dialog that changed a name and
@@ -22,6 +23,7 @@ import * as YAML from 'yaml';
 
 import { asRecord, parseDocument } from './document';
 import { CURRENT_FLOW_VERSION } from './schema';
+import { PARSE_OPTIONS, ensureBlock, isMeaningful } from './serialize';
 import type { FlowIdentity } from './types/reporter';
 
 /** §5.2's `meta:`, as a dialog edits it. */
@@ -32,36 +34,6 @@ export type FlowProperties = {
   testId?: string;
   tags: string[];
   library: boolean;
-};
-
-/**
- * **Deliberately not `document.ts`'s `TAGS`.** Those resolve `!file` to a `FileRef` and `!...` to a
- * symbol, which is right for a model the engine runs and wrong for a document it intends to write
- * back: the tag has no matching `stringify`, so re-emitting a resolved node yields
- * `catalog: !file "[object Object]"` and a flow's fixtures are destroyed by an edit to its name.
- *
- * Resolving to the node itself keeps the tag *and* its content exactly as parsed. Nothing here needs
- * to know what a tag means — only `meta:` is read, and `meta:` has none — so identity is not a
- * shortcut but the whole of what a serializer wants.
- */
-const TAGS: YAML.Tags = [
-  { tag: '!file', collection: 'map', resolve: (map: YAML.YAMLMap) => map },
-  { tag: '!file', resolve: (value: string) => value },
-  { tag: '!...', resolve: (value: string) => value }
-] as YAML.Tags;
-
-/** `merge: true` and `logLevel: 'silent'` for `document.ts`'s reasons, which do not change here. */
-const OPTIONS: YAML.ParseOptions & YAML.DocumentOptions & YAML.SchemaOptions = {
-  merge: true,
-  customTags: TAGS,
-  logLevel: 'silent'
-};
-
-/** A `meta` entry is written when it says something, and omitted when it does not. */
-const isMeaningful = (value: unknown): boolean => {
-  if (typeof value === 'string') return value.trim() !== '';
-  if (Array.isArray(value)) return value.length > 0;
-  return value === true;
 };
 
 const asStringArray = (value: unknown): string[] =>
@@ -82,7 +54,7 @@ const asStringArray = (value: unknown): string[] =>
  * a document it could not read (002 §6 makes an unparseable flow ordinary).
  */
 export const readFlowProperties = (text: string): FlowProperties | undefined => {
-  const document = YAML.parseDocument(text, OPTIONS);
+  const document = YAML.parseDocument(text, PARSE_OPTIONS);
   if (document.errors.length) return undefined;
 
   const meta = document.getIn(['meta']);
@@ -104,29 +76,6 @@ export const readFlowProperties = (text: string): FlowProperties | undefined => 
   };
 };
 
-/**
- * An empty `meta:` mapping, placed **directly after `version:`** rather than appended.
- *
- * `setIn(['meta', ...])` on a document without the block adds it at the end, which puts a flow's name
- * below its steps — §5.2's structure inverted by an edit that only meant to name the thing. The
- * splice is what keeps a file the dialog touched readable as one somebody wrote.
- */
-const ensureMetaBlock = (document: YAML.Document): void => {
-  const contents = document.contents;
-  const block = document.createNode({});
-  const pair = document.createPair('meta', block);
-
-  if (!YAML.isMap(contents)) {
-    // No mapping at the root at all — an empty file, or one holding a scalar. `setIn` builds the
-    // root the document is missing, and there is no order to preserve.
-    document.setIn(['meta'], block);
-    return;
-  }
-
-  const version = contents.items.findIndex((item) => String(item.key) === 'version');
-  contents.items.splice(version + 1, 0, pair as YAML.Pair<unknown, unknown>);
-};
-
 /** The edit itself, on a parsed document. `false` means nothing was written and the text stands. */
 const writeProperties = (document: YAML.Document, properties: FlowProperties): boolean => {
   const entries: [string, unknown][] = [
@@ -143,7 +92,7 @@ const writeProperties = (document: YAML.Document, properties: FlowProperties): b
       // file the author changed nothing about.
       return false;
     }
-    ensureMetaBlock(document);
+    ensureBlock(document, 'meta', {}, ['version']);
   }
 
   for (const [key, value] of entries) {
@@ -170,7 +119,7 @@ const writeProperties = (document: YAML.Document, properties: FlowProperties): b
  * document to edit, and writing one built from scratch would silently discard the file.
  */
 export const writeFlowProperties = (text: string, properties: FlowProperties): string | undefined => {
-  const document = YAML.parseDocument(text, OPTIONS);
+  const document = YAML.parseDocument(text, PARSE_OPTIONS);
   if (document.errors.length) return undefined;
   return writeProperties(document, properties) ? String(document) : text;
 };

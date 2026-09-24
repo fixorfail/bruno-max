@@ -7,9 +7,11 @@ import { useTheme } from 'providers/Theme';
 import { usePersistedState } from 'hooks/usePersistedState';
 import { useVerticalSplit } from 'fork/hooks/useVerticalSplit';
 import { useAutoSave } from 'fork/hooks/useAutoSave';
-import { describeFlowDraft, readFlowSource, saveFlowSource } from '../actions';
-import { documentAnchored, sourceEdited } from '../slice';
+import { useDraftDescribe } from 'fork/hooks/useDraftDescribe';
+import { readFlowSource, saveFlowSource } from '../actions';
+import { documentAnchored, sourceEdited, sourceReverted } from '../slice';
 import FlowGraph from '../FlowTabPane/FlowGraph';
+import SaveState from '../SaveState';
 import { renderDiagnosticGutter, inThisDocument } from './diagnosticGutter';
 import StyledWrapper from './StyledWrapper';
 
@@ -25,13 +27,6 @@ import StyledWrapper from './StyledWrapper';
  * drawing derived from the draft some other way could disagree with the one a run would execute,
  * which is the disagreement §11.1 exists to rule out.
  */
-
-/**
- * Long enough that a burst of typing is one describe rather than one per character, short enough
- * that the graph reads as following the text. Each keystroke re-arms it, so this is the pause after
- * typing rather than a fixed refresh rate.
- */
-const DESCRIBE_DEBOUNCE_MS = 300;
 
 /**
  * One identity for "nothing to mark", so a render that changes nothing does not redraw the gutter.
@@ -56,34 +51,6 @@ const DEFAULT_EDITOR_HEIGHT = 320;
  * flow* and still draws, with its diagnostics on the nodes, exactly as §6 requires of the run view —
  * being told what is wrong with a flow is most of what this view is for.
  */
-
-/**
- * §4.3's save state, in words rather than an icon: this view writes to a file the rest of the app is
- * watching, so what has and has not reached disk is the one thing it must never be coy about.
- */
-const SaveState = ({ source }) => {
-  if (source.saving) {
-    return <span className="yaml-state">Saving…</span>;
-  }
-  if (source.error) {
-    return <span className="yaml-state error">{`Not saved — ${source.error}`}</span>;
-  }
-  if (source.content !== source.saved) {
-    /**
-     * The file moved on while there was unsaved work here, so neither side can be taken silently:
-     * the editor kept what was typed, and saving from here will overwrite what is on disk. Saying
-     * so is the whole of the handling — choosing for the author is what an editor must not do.
-     */
-    return source.staleOnDisk ? (
-      <span className="yaml-state error" data-testid="flow-yaml-diverged">
-        Unsaved changes — the file also changed on disk
-      </span>
-    ) : (
-      <span className="yaml-state dirty">Unsaved changes</span>
-    );
-  }
-  return <span className="yaml-state">Saved</span>;
-};
 
 /**
  * §6's list, in the surface §6 calls the primary one for it.
@@ -181,31 +148,16 @@ const FlowYamlTabPane = ({ tab }) => {
     }
   }, [dispatch, flow, source]);
 
-  const content = source?.content;
   const loading = source?.loading;
   const diagnostics = source?.diagnostics || NO_DIAGNOSTICS;
 
   /**
-   * Whether the engine has answered about *this* text, and what it said.
-   *
-   * `undefined` while a describe is outstanding — the answer arrives over IPC, so between a keystroke
-   * and the reply nothing is known about what is in the editor. Everything reading this treats
-   * not-yet-known as not-yet-valid, which is the safe direction: auto-save stays disarmed rather than
-   * writing text nobody has checked.
+   * Whether the engine has answered about *this* text, and what it said — `undefined` while a
+   * describe is outstanding. Everything reading this treats not-yet-known as not-yet-valid, which is
+   * the safe direction: auto-save stays disarmed rather than writing text nobody has checked. The
+   * redraw itself is debounced by the hook, so a pause in typing is what triggers the describe.
    */
-  const answered = Boolean(source) && source.describedContent === content;
-  const valid = answered ? source.parses : undefined;
-
-  // Redraws from the draft, debounced. The dependency on `content` is what re-arms it, so a pause in
-  // typing is what triggers the describe rather than a timer running through it.
-  useEffect(() => {
-    if (!flow || loading || content === undefined || answered) {
-      return undefined;
-    }
-
-    const timer = setTimeout(() => dispatch(describeFlowDraft(flow, content)), DESCRIBE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [dispatch, flow, content, answered, loading]);
+  const { valid } = useDraftDescribe({ flow, source });
 
   /**
    * §6: the document view is the primary diagnostic surface, so an anchor is honoured by putting the
@@ -312,7 +264,13 @@ const FlowYamlTabPane = ({ tab }) => {
         {source.describeError ? <span className="yaml-state error">{source.describeError}</span> : null}
 
         <div className="yaml-toolbar-right">
-          <SaveState source={source} />
+          <SaveState
+            source={source}
+            name={flow.filename}
+            divergedTestId="flow-yaml-diverged"
+            revertTestId="flow-yaml-revert"
+            onRevert={() => dispatch(sourceReverted({ pathname: flow.pathname }))}
+          />
           {/* Auto-save owns the writing when it is on; a button beside it would be a second answer to
               "is this saved" and the two would disagree the moment one of them was mid-flight. */}
           {autoSaveEnabled ? null : (

@@ -1,0 +1,18 @@
+# B1.6's second case — a file declaring blocks on both sides of where `steps:` belongs.
+#
+# `setIn` would append the new block after `vars:` by accident rather than by rule; what the rule
+# says is "after the last key §5.2 reads before this one", and here that is also `vars:`. The two
+# agree only because the file is in order, which is why `empty.flow.yml` asserts the other end.
+version: 1
+
+meta:
+  name: Builder — every root block but steps
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  failOnStatusCode: false
+
+vars:
+  currency: USD

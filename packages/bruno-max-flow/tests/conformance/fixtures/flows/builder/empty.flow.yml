@@ -1,0 +1,12 @@
+# What 002 §4.1c's create form writes, which is the builder's first input — 005-C B1.6, B1.14.
+#
+# No `steps:` key, so the file is schema-invalid until its first insert (§5.4 requires one). That is
+# the case the edit gate is built around: refusing any schema error would lock the builder out of
+# every flow the app itself creates.
+version: 1
+
+meta:
+  name: Builder — a flow with no steps
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml

@@ -17,6 +17,12 @@ export type FlowNode = {
   operation?: { api: string; method: string; path: string; operationId?: string };
   /** Sub-flow path, when kind is 'subflow'. */
   uses?: string;
+  /**
+   * The library's `exports:` as it declares them (§12.1) — what a caller reads as
+   * `steps.<id>.<name>` — on a 'subflow' node whose target could be read. Absent where it could
+   * not, which is the difference between a library that exports nothing and one nobody can open.
+   */
+  exports?: { name: string; source: string }[];
   /** The uses: node this internal step belongs to. */
   parent?: string;
   /** Longest path from a root. */

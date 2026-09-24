@@ -15,7 +15,8 @@ import * as YAML from 'yaml';
  */
 const YAML_OPTIONS = { merge: true, logLevel: 'silent' as const };
 
-import { normalizeApis, parseDocument } from './document';
+import { normalizeApis, normalizeFlow, parseDocument } from './document';
+import type { DescribeOptions } from './types/options';
 import type { FlowContext, ReadSpec } from './types/ports';
 
 /**
@@ -170,6 +171,49 @@ export const resolveOperation = (
   return spec.operations.get(reference);
 };
 
+/** One operation as 005 §5.1's picker shows it, and as a step's `operation:` will name it. */
+export type OperationSummary = {
+  /** What a step's `operation:` reads after the alias — the `operationId`, else §6.1's `METHOD /template`. */
+  reference: string;
+  operationId?: string;
+  method: string;
+  /** The path template as the document wrote it, path parameters unsubstituted. */
+  path: string;
+  summary?: string;
+  description?: string;
+  tags: string[];
+  deprecated: boolean;
+  /** §6.5: the id is declared twice, so a reference to it would resolve to two operations and the run refuses it. */
+  ambiguous: boolean;
+};
+
+/**
+ * 005 §9.3's picker list — one entry per operation the document declares, in `indexDocument`'s own
+ * order: `paths` as the document wrote them, methods in `METHODS`' order within each.
+ *
+ * `operations` holds every operation twice — once under its endpoint, once under its `operationId`
+ * (`indexDocument` above) — and `Map.values()` walks both. Collecting them into a `Set` first is the
+ * de-duplication: the two entries for one operation are the same object, so the `Set` keeps only the
+ * first it sees, which is the endpoint one and therefore document order.
+ */
+export const listOperations = (spec: SpecIndex): OperationSummary[] =>
+  [...new Set(spec.operations.values())].map((resolved) => {
+    const ambiguous = resolved.operationId !== undefined && spec.duplicates.has(resolved.operationId);
+    return {
+      // The endpoint form round-trips through `resolveOperation`'s `asEndpoint`, which is what makes
+      // it a safe stand-in for an id the run would otherwise refuse (§6.5, §5.1's picker).
+      reference: resolved.operationId && !ambiguous ? resolved.operationId : `${resolved.method} ${resolved.template}`,
+      operationId: resolved.operationId,
+      method: resolved.method,
+      path: resolved.template,
+      summary: resolved.operation.summary,
+      description: resolved.operation.description,
+      tags: resolved.operation.tags || [],
+      deprecated: Boolean(resolved.operation.deprecated),
+      ambiguous
+    };
+  });
+
 /**
  * Where a `source:` resolves to — a URL as written, a file against the document that named it (§6.2).
  *
@@ -223,6 +267,71 @@ export class SpecLoader {
     return loading;
   }
 }
+
+export type FlowOperations = {
+  apis: {
+    alias: string;
+    /** As the flow writes it. */
+    source: string;
+    /** Where `source` resolved to — absent alongside `error`, where there was nothing to resolve it against. */
+    resolved?: string;
+    /** Per binding, so one unreadable document does not empty the picker for the others (§9.3). */
+    error?: string;
+    operations: OperationSummary[];
+  }[];
+};
+
+/**
+ * §9.3's picker list for a whole flow — every bound API's operations, loaded through the same
+ * `SpecLoader` a run uses, so an operation offered here is one the engine can resolve.
+ *
+ * Takes `describeFlow`'s options, not a narrower shape of its own, so a host can overlay the read
+ * port with a draft's unsaved text exactly as it does for a describe (002 §11.3) — a binding just
+ * added on the legend has to offer its operations before the flow is saved.
+ *
+ * Reads the flow's own `apis:` off the parsed model directly, not through `normalizeFlow` and
+ * `Connectors`: a connector file (§8.5) enriches a binding this flow already declared and never
+ * contributes an alias of its own, so there is nothing a connector could add to this list.
+ */
+export const listFlowOperations = async (options: DescribeOptions): Promise<FlowOperations> => {
+  const context: FlowContext = {
+    runId: 'list-operations',
+    flow: options.entry,
+    scope: options.scope,
+    signal: new AbortController().signal
+  };
+
+  const text = (await options.ports.readFile(options.entry, context)).toString('utf8');
+  const { model, errors } = parseDocument(text);
+  // A flow mid-edit has no operations to offer — the syntax error is the editor's to show, and there
+  // is no parsed `apis:` here to walk (§9.2's identical reasoning for the graph).
+  if (errors.length) return { apis: [] };
+
+  const loader = new SpecLoader(options.ports.readSpec, context);
+
+  const apis = await Promise.all(
+    Object.values(normalizeApis(model.apis)).map(async (binding) => {
+      try {
+        const spec = await loader.load(binding.source, options.entry);
+        return {
+          alias: binding.alias,
+          source: binding.source,
+          resolved: resolveSpecSource(binding.source, options.entry),
+          operations: listOperations(spec)
+        };
+      } catch (error) {
+        return {
+          alias: binding.alias,
+          source: binding.source,
+          error: error instanceof Error ? error.message : String(error),
+          operations: []
+        };
+      }
+    })
+  );
+
+  return { apis };
+};
 
 /** The request body schema for a media type, or the sole one when the operation declares one. */
 export const requestMediaTypes = (operation: Record<string, any>): string[] =>
@@ -288,6 +397,62 @@ export const requestExample = (operation: Record<string, any>, mediaType: string
   if (content.example !== undefined) return content.example;
   const examples = Object.values<Record<string, any>>(content.examples || {});
   return examples.length ? examples[0].value : undefined;
+};
+
+export type StepRequestExample = { example?: unknown; mediaType?: string; reason?: string };
+
+/**
+ * 005 §6.7's *Seed from spec* control — the operation's request example, resolved the same way
+ * 001 §7.1 resolves it for a run, so the body the control writes is the body the run would have
+ * sent. Never a schema-derived body: a schema-derived body is a guess with the shape of a fact.
+ *
+ * Reads the flow the same way `listFlowOperations` does — through the port, so a host's draft
+ * overlay works here for free — and resolves the named step's `operation:` against the flow's own
+ * `apis:` binding, the way `validate.ts` resolves the same reference for `unknown-operation` and
+ * `ambiguous-operation`. `reason` is one of that vocabulary, plus the three this control adds for
+ * what it, and not a run, can be asked about: `no-such-step`, `not-an-operation` (a `uses:` step
+ * sends nothing of its own — 001 §12.4), `no-request-body` and `no-example`.
+ */
+export const stepRequestExample = async (
+  options: DescribeOptions & { stepId: string }
+): Promise<StepRequestExample> => {
+  const context: FlowContext = {
+    runId: 'step-request-example',
+    flow: options.entry,
+    scope: options.scope,
+    signal: new AbortController().signal
+  };
+
+  const text = (await options.ports.readFile(options.entry, context)).toString('utf8');
+  const flow = normalizeFlow(parseDocument(text), options.entry);
+  const step = flow.steps.find((entry) => entry.id === options.stepId);
+  if (!step) return { reason: 'no-such-step' };
+  if (!step.operation) return { reason: 'not-an-operation' };
+
+  const binding = flow.apis[step.operation.alias];
+  if (!binding) return { reason: 'unresolved-alias' };
+
+  const loader = new SpecLoader(options.ports.readSpec, context);
+  let spec: SpecIndex;
+  try {
+    spec = await loader.load(binding.source, options.entry);
+  } catch {
+    return { reason: 'unresolved-alias' };
+  }
+
+  const resolved = resolveOperation(spec, step.operation.operationId);
+  if (!resolved) return { reason: 'unknown-operation' };
+  if (resolved === 'ambiguous') return { reason: 'ambiguous-operation' };
+
+  const mediaTypes = requestMediaTypes(resolved.operation);
+  if (!mediaTypes.length) return { reason: 'no-request-body' };
+
+  const mediaType
+    = step.contentType
+      ?? (mediaTypes.length === 1 ? mediaTypes[0] : mediaTypes.find((type) => type.includes('json')) ?? mediaTypes[0]);
+
+  const example = requestExample(resolved.operation, mediaType);
+  return example === undefined ? { reason: 'no-example' } : { example, mediaType };
 };
 
 export const responseSchema = (

@@ -1,0 +1,8 @@
+version: 1
+
+meta:
+  name: Designer empty
+  tags: [designer]
+
+apis:
+  orders: ../apispec/orders-v1.yml

@@ -167,7 +167,7 @@ export const buildFlowLocators = (page: Page) => {
       expandSubflow: () => page.getByTestId('flow-step-expand-subflow'),
       empty: () => detail.locator('.detail-empty'),
       /** What the body area says in place of a capture — §9's five different absences. */
-      absence: () => detail.locator('.detail-body-area > .detail-empty').first(),
+      absence: () => detail.locator('.sheet-body > .detail-empty').first(),
       assertions: () => detail.locator('.detail-table'),
       headers: () => detail.locator('.detail-headers'),
       outputs: () => detail.locator('.detail-outputs'),
@@ -199,6 +199,71 @@ export const buildFlowLocators = (page: Page) => {
       diagnostic: (index: number) => page.getByTestId(`flow-yaml-diagnostic-${index}`),
       /** §6's mark in the editor's own gutter, on the one-based line the diagnostic names. */
       gutterMarker: (line: number) => page.getByTestId(`flow-gutter-${line}`)
+    },
+
+    /**
+     * 005's designer — the affordances on the canvas, the legend's controls, the picker, the step
+     * editor and the toolbar's state. Every one is a `data-testid` 005-C §2 lists.
+     */
+    designer: {
+      state: () => page.getByTestId('flow-designer-state'),
+      diverged: () => page.getByTestId('flow-designer-diverged'),
+      readOnly: () => page.getByTestId('flow-designer-readonly'),
+      edit: () => page.getByTestId('flow-designer-edit'),
+      save: () => page.getByTestId('flow-designer-save'),
+      refusal: () => page.getByTestId('flow-designer-refusal'),
+      runSavesFirst: () => page.getByTestId('flow-run-saves-first'),
+      editLayer: () => page.getByTestId('flow-edit-layer'),
+      insertFirst: () => page.getByTestId('flow-insert-first'),
+      insertAfter: (stepId: string) => page.getByTestId(`flow-insert-after-${stepId}`),
+      insertBefore: (stepId: string) => page.getByTestId(`flow-insert-before-${stepId}`),
+      delete: (stepId: string) => page.getByTestId(`flow-delete-${stepId}`),
+      portIn: (stepId: string) => page.getByTestId(`flow-port-in-${stepId}`),
+      portOut: (stepId: string) => page.getByTestId(`flow-port-out-${stepId}`),
+      edgeRemove: (from: string, to: string) => page.getByTestId(`flow-edge-remove-${from}-${to}`),
+      legendAdd: () => page.getByTestId('flow-legend-add'),
+      legendMenu: (alias: string) => page.getByTestId(`flow-legend-menu-${alias}`),
+      legendEdit: (alias: string) => page.getByTestId(`flow-legend-${alias}-edit`),
+      legendRemove: (alias: string) => page.getByTestId(`flow-legend-${alias}-remove`),
+      apiDialog: () => page.getByTestId('flow-api-dialog'),
+      apiSource: () => page.getByTestId('flow-api-source'),
+      apiAlias: () => page.getByTestId('flow-api-alias'),
+      apiColor: () => page.getByTestId('flow-api-color'),
+      apiSubmit: () => page.getByTestId('flow-api-dialog-submit-btn'),
+      picker: () => page.getByTestId('flow-operation-picker'),
+      pickerSearch: () => page.getByTestId('flow-operation-search'),
+      pickerApi: (alias: string) => page.getByTestId(`flow-operation-api-${alias}`),
+      pickerOperation: (reference: string) => page.getByTestId(`flow-operation-${reference}`),
+      pickerAmbiguous: (reference: string) => page.getByTestId(`flow-operation-ambiguous-${reference}`),
+      pickerLibraries: () => page.getByTestId('flow-operation-libraries'),
+      pickerLibrary: (filename: string) => page.getByTestId(`flow-library-${filename}`),
+      pickerEmpty: () => page.getByTestId('flow-operation-picker-empty'),
+      editor: () => page.getByTestId('flow-step-editor'),
+      editorTab: (name: 'overview' | 'scripts' | 'request' | 'flow' | 'outputs' | 'assert' | 'settings') =>
+        page.getByTestId(`flow-step-editor-tab-${name}`),
+      /** The Scripts tab — 001 §8.7's `pre:`, one named editor per value (005 §6.2). */
+      scripts: () => page.getByTestId('flow-step-scripts'),
+      /** The flow's `functions.use:` (001 §8.6), listed and added to from the same tab. */
+      sharedScripts: () => page.getByTestId('flow-step-shared-scripts'),
+      sharedScript: (index: number) => page.getByTestId(`flow-step-shared-script-${index}`),
+      sharedScriptRemove: (index: number) => page.getByTestId(`flow-step-shared-script-remove-${index}`),
+      sharedScriptAdd: () => page.getByTestId('flow-step-shared-script-add'),
+      scriptAdd: () => page.getByTestId('flow-step-script-add'),
+      scriptName: (index: number) => page.getByTestId(`flow-step-script-name-${index}`),
+      scriptEditor: (index: number) => page.getByTestId(`flow-step-script-editor-${index}`).locator('.CodeMirror'),
+      field: (key: string) => page.getByTestId(`flow-step-field-${key}`),
+      flag: (key: string) => page.getByTestId(`flow-step-flag-${key}`),
+      stepRefusal: () => page.getByTestId('flow-step-refusal'),
+      opaque: () => page.getByTestId('flow-step-opaque'),
+      opaqueKey: (key: string) => page.getByTestId(`flow-step-opaque-${key}`),
+      openYaml: (key: string) => page.getByTestId(`flow-step-open-yaml-${key}`),
+      pickOperation: () => page.getByTestId('flow-step-pick-operation'),
+      /** A `uses:` step's Outputs tab lists its library's exports first (005 §6.2). */
+      exports: () => page.getByTestId('flow-step-exports'),
+      exportRow: (name: string) => page.getByTestId(`flow-step-export-${name}`),
+      /** One of the step's mapping tables — `headers`, `query`, `pathParams`, `outputs`, `shared`, `pre`. */
+      table: (field: string) => page.getByTestId(`flow-step-${field}-table`),
+      tableRows: (field: string) => page.getByTestId(`flow-step-${field}-table`).locator('tbody tr')
     },
 
     /**
@@ -392,6 +457,91 @@ export const openStepDetail = async (page: Page, stepId: string) => {
       await flows.graph.node(stepId).click();
     }
     await flows.detail.root().waitFor({ state: 'visible' });
+  });
+};
+
+/**
+ * 005 §5.1 — adds a step after the one named (or first, on an empty flow) by picking an operation
+ * from the alias given, and waits for the engine to have described the result.
+ */
+export const addStepAfter = async (page: Page, after: string | undefined, alias: string, reference: string) => {
+  await test.step(`Add ${alias}#${reference} after ${after || 'nothing'}`, async () => {
+    const flows = buildFlowLocators(page);
+    await (after ? flows.designer.insertAfter(after) : flows.designer.insertFirst()).click();
+    await flows.designer.picker().waitFor({ state: 'visible' });
+    await flows.designer.pickerApi(alias).click();
+    await flows.designer.pickerOperation(reference).click();
+    await flows.designer.picker().waitFor({ state: 'hidden' });
+  });
+};
+
+/** 005 §5.1 — the leading `+`: inserts a new first step, before the one named. */
+export const addStepBefore = async (page: Page, before: string, alias: string, reference: string) => {
+  await test.step(`Add ${alias}#${reference} before ${before}`, async () => {
+    const flows = buildFlowLocators(page);
+    await flows.designer.insertBefore(before).click();
+    await flows.designer.picker().waitFor({ state: 'visible' });
+    await flows.designer.pickerApi(alias).click();
+    await flows.designer.pickerOperation(reference).click();
+    await flows.designer.picker().waitFor({ state: 'hidden' });
+  });
+};
+
+/** 005 §5.1 — the same `+`, with the picker's Libraries entry: inserts a `uses:` step invoking the library named. */
+export const addLibraryAfter = async (page: Page, after: string | undefined, filename: string) => {
+  await test.step(`Add library ${filename} after ${after || 'nothing'}`, async () => {
+    const flows = buildFlowLocators(page);
+    await (after ? flows.designer.insertAfter(after) : flows.designer.insertFirst()).click();
+    await flows.designer.picker().waitFor({ state: 'visible' });
+    await flows.designer.pickerLibraries().click();
+    await flows.designer.pickerLibrary(filename).click();
+    await flows.designer.picker().waitFor({ state: 'hidden' });
+  });
+};
+
+/** 005 §5.4 — drags a connector from one step's out-port to another's in-port. */
+export const connectSteps = async (page: Page, from: string, to: string) => {
+  await test.step(`Connect ${from} → ${to}`, async () => {
+    const flows = buildFlowLocators(page);
+    const source = await flows.designer.portOut(from).boundingBox();
+    const target = await flows.designer.portIn(to).boundingBox();
+    if (!source || !target) {
+      throw new Error(`ports for ${from} → ${to} are not on screen`);
+    }
+    await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 8 });
+    await page.mouse.up();
+  });
+};
+
+/** 005 §5.5 — binds the workspace document named, through the legend's dialog. */
+export const addApiBinding = async (page: Page, documentName: string, options: { alias?: string; color?: string } = {}) => {
+  await test.step(`Bind ${documentName} on the legend`, async () => {
+    const flows = buildFlowLocators(page);
+    await flows.designer.legendAdd().click();
+    await flows.designer.apiDialog().waitFor({ state: 'visible' });
+    await flows.designer.apiSource().selectOption({ label: documentName });
+    if (options.alias) {
+      await flows.designer.apiAlias().fill(options.alias);
+    }
+    if (options.color) {
+      await flows.designer.apiColor().fill(options.color);
+    }
+    await flows.designer.apiSubmit().click();
+    await flows.designer.apiDialog().waitFor({ state: 'hidden' });
+  });
+};
+
+/** Opens the step editor on a step, whatever was selected before — `openStepDetail`'s twin for 005 §6. */
+export const openStepEditor = async (page: Page, stepId: string) => {
+  await test.step(`Open the step editor on ${stepId}`, async () => {
+    const flows = buildFlowLocators(page);
+    const classes = (await flows.graph.node(stepId).getAttribute('class')) || '';
+    if (!classes.split(' ').includes('selected')) {
+      await flows.graph.node(stepId).click();
+    }
+    await flows.designer.editor().waitFor({ state: 'visible' });
   });
 };
 

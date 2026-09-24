@@ -1,0 +1,39 @@
+# A comment on every line and a column of aligned trailing ones — 005-C B1.2.
+#
+# The shape a re-serializer destroys most visibly, and the one the corpus otherwise lacks. What is
+# asserted against it is that an edit costs the line it names: the padding on every *other* line is
+# still there afterwards, which is only true of a writer that transplants rather than re-emits.
+#
+# Every trailing comment sits on a scalar. `yaml` re-emits one written after a key whose value is a
+# block on the line *below* it, which is a second line where the author wrote none — so a flow that
+# annotates its blocks does it above them, as this one does.
+version: 1                                # the format version
+
+# §5.2's identity block.
+meta:
+  name: Builder — a commented flow        # the prose name
+
+# §6.2's bindings.
+apis:
+  regress-api: ../../specs/regressions-v1.yml   # every step below resolves against this document
+
+# The graph.
+steps:
+  # The session every other step runs under.
+  - id: sign_in                           # the first step
+    operation: regress-api#signIn         # §6.1's reference
+
+  # The one under edit.
+  - id: create                            # the second step
+    operation: regress-api#createThing    # what it calls
+    # §10.2's triples.
+    assert:
+      - res.status eq 201                 # the documented status
+    maxDuration: 120000                   # §11.1's whole-step budget
+
+  # And one below it, so an edit above has somewhere to push into.
+  - id: read_back                         # the third step
+    operation: regress-api#getThing       # the read
+    # §7's path layer.
+    pathParams:
+      id: thing-1                         # a literal, so nothing has to resolve

@@ -52,8 +52,23 @@ describe('R4m — The document schema', () => {
    *
    * `file-option-typo.flow.yml` is excluded by the parse rather than by name: §5.4 makes a `!file`
    * carrying a fourth option a parse error, and a document that did not parse has no model.
+   *
+   * `builder/`'s five are excluded by name, because each carries a shape the *writer* has to accept
+   * rather than one the format recommends (005-C §3). A flow with no `steps:` is what 002 §4.1c's
+   * create form emits and what 005 §5.2 restores when the last step is removed — schema-invalid, and
+   * the reason 005 §9.1's gate compares before and after instead of reading the after-state alone.
+   * A key this build does not model is 001 §15's forward compatibility, which §5.4 makes a warning.
+   * Both are asserted where they belong, in `edit-refusals.spec.js`.
    */
   it('validates every .flow.yml in the fixture corpus', () => {
+    const byDesign = [
+      'builder/empty.flow.yml',
+      'builder/no-apis.flow.yml',
+      'builder/root-keys.flow.yml',
+      'builder/unknown-key.flow.yml',
+      'builder/version-only.flow.yml'
+    ].map((file) => path.normalize(file));
+
     const under = (directory) =>
       fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
         const target = path.join(directory, entry.name);
@@ -68,7 +83,8 @@ describe('R4m — The document schema', () => {
         file: path.relative(FLOWS, file),
         issues: checkDocumentSchema(normalizeFlow(parsed, file).raw)
       }))
-      .filter(({ issues }) => issues.length);
+      .filter(({ issues }) => issues.length)
+      .filter(({ file }) => !byDesign.includes(file));
 
     expect(under(FLOWS).length).toBeGreaterThan(40);
     expect(rejected).toEqual([]);

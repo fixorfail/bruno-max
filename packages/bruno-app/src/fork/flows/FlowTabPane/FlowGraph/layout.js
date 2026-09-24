@@ -24,7 +24,7 @@ import { graphlib, layout } from '@dagrejs/dagre';
  * the only tight solution, so the columns are 001's ranks and the layout is a presentation of them.
  */
 
-const NODE_WIDTH = 220;
+export const NODE_WIDTH = 220;
 /**
  * §5.1's footer bar: the markers, and the binding the step calls, on a strip along the bottom of the
  * box. Exported because the box is measured here and drawn there, and a footer the drawing believed
@@ -38,7 +38,7 @@ export const NODE_FOOTER_HEIGHT = 18;
  * old height only ever had to fit three single lines, and anything longer left the box rather than
  * growing it.
  */
-const NODE_HEIGHT = 84 + NODE_FOOTER_HEIGHT;
+export const NODE_HEIGHT = 84 + NODE_FOOTER_HEIGHT;
 /**
  * Between one rank and the next — the direction the flow runs, and the room an edge turns in. It is
  * also the corridor an edge label rides, which is why it is exported: a label wider than the gap

@@ -1,9 +1,8 @@
 # 001 — API Flows
 
 **Status:** **Implemented.** Every contract in this document is built and covered by
-[001-C](./001-api-flows-conformance.md); §18 holds two questions and neither is about how a flow
-runs — one waits on §19.1's scheduled `--dry-run`, and the other is about writing a flow file, which
-nothing does.
+[001-C](./001-api-flows-conformance.md); §18 holds one question, and it waits on §19.1's scheduled
+`--dry-run`. What writes a flow file is answered by [005](./005-api-flow-builder.md) §9.1.
 **Owner:** Jake Campbell
 **Last revised:** 2026-09-09
 
@@ -994,7 +993,9 @@ exclusive, so the layer has one source either way.
 - The **local tag `!...`** removes a key the seed introduced. `null` keeps its ordinary meaning and
   sends a literal JSON null. Three other positions are merge layers and take it for the same reason:
   a step's `outputs:` over a connector entry, and a binding's `defaultHeaders:` / `defaultQuery:`
-  over a connector file's binding (§8.5).
+  over a connector file's binding (§8.5). Under a key the seed does not produce, `!...` has nothing to
+  remove, and the key is absent from the request; §14.3 warns (`unseeded-drop`). An array item that
+  is `!...` is removed from the array, so `[a, !..., c]` sends `[a, c]`.
 
 ```yaml
     body:
@@ -1966,14 +1967,32 @@ the sub-flow's behaviour depend on who called it — the property §12 exists to
 layer along and answers it the same way — *a step's available outputs are no longer visible by
 reading the step* — and a library is the sharper case: an output resolved from a file you did not
 know about is a value, a *function* resolved from one is arbitrary code. A name appears once,
-carrying the declaration that won; a raw source file is listed as the file it is, because nothing in
-the toolchain parses JavaScript to find out what it declares.
+carrying the declaration that won, and a raw source file is listed as the helpers it declares.
+
+**What a raw file declares is read, not parsed.** Its source is composed as written into the prelude,
+so what a script may call is what the file declares at its top level — which is what is read, by the
+declarations written at column 0. Nothing in the toolchain parses JavaScript and this does not start:
+it is a listing of what a file appears to declare. Both ways of being wrong are safe, because nothing
+composes from it — a name it misses is a helper the listing omits and an editor still underlines,
+which is where both stood before; a name it invents is one warning not given. What a flow *runs* is
+the file's source either way.
 
 **It also resolves the files and checks the names**, because a library reaches every
 script in the flow: an unreadable file or a name that is not a JavaScript identifier is one broken
 prelude and *every* script position failing at once, with `script-error` naming whichever step
 happened to run first. A name that shadows what §8.2 hands a script — `res`, `ctx` — is a warning:
 legal, occasionally meant, never meant twice.
+
+**And it reads each script for calls nothing answers.** `lastFive(…)` where the library declares
+`lastFour` throws when the script runs, and `script-error` names whichever step ran first rather than
+the line the name is on — so `unknown-function` names it where it is written, before anything runs.
+It is a warning and the narrowest reading that finds the defect: this does not parse JavaScript, so a
+call is a bare name before a `(`, and one is reported only when *nothing* accounts for it — not the
+library, not the script's own declarations or parameters, not §8.2's arguments, not a global. A
+warning on code the author can see working is worse than a typo caught one run later, because it
+teaches them to stop reading the warnings. A script a connector file supplied is not read here: it is
+written in another file, and §8.5 already says a flow does not report one of those at a line it does
+not have.
 
 **No host changes, deliberately.** §13.2's `RunScript` receives an expression that evaluates to a
 function; the engine composes the library into that expression rather than adding a port argument or
@@ -2618,10 +2637,12 @@ and `undefined` become those values, a numeric operand becomes a number, a quote
 string, and **anything else is a string**. Flows keep that unchanged, and add: **an unquoted operand
 whose first dot-segment is a reserved root resolves as a reference.**
 
-The reserved roots are `res`, `req`, `steps`, `row`, `params`, `shared` and `flow` — §7.3's
-namespaces, which are already illegal as variable names. That is what makes the rule decidable
-without a symbol table: the seven roots are fixed, so a reader classifies an operand by looking at
-its first segment and nothing else.
+The reserved roots are `res`, `req`, `steps`, `row`, `params`, `shared`, `flow`, `pre` and
+`process` — §7.3's seven namespaces, which are already illegal as variable names, plus the two views
+of the exchange this section adds. That is what makes the rule decidable without a symbol table: the
+nine roots are fixed, so a reader classifies an operand by looking at its first segment and nothing
+else. `res` and `req` are not namespaces and are not reserved as variable names; they are roots here
+because an assertion is written about an exchange.
 
 ```yaml
     assert:
@@ -2629,6 +2650,7 @@ its first segment and nothing else.
       - res.status eq 201                       # 201        — a number
       - res.body.data.active eq true            # true       — a boolean
       - res.body.data.role eq row.role          # a reference — `row` is a reserved root
+      - res.body.data.nonce eq pre.nonce        # a reference — this step's own computed value
       - res.body.data.tier eq status            # "status"   — a string, not a variable
       - res.body.data.tier eq {{status}}        # the variable — unchanged from today
 ```
@@ -2636,12 +2658,14 @@ its first segment and nothing else.
 `{{...}}` continues to work in every operand position, so a variable is always reachable and the
 distinction never traps an author — it only means the short form is reserved for the namespaces.
 The same resolution governs `when:` (§9.3), which is one operand rule for the whole format rather
-than one per clause.
+than one per clause. The rule is the same; what a root holds is not. `pre.*` is empty in a
+`when:` condition, which runs before the `pre:` scripts it would read (§8.7) — the operand still
+resolves as a reference, to nothing.
 
 Left-hand sides are unaffected: they have always been expressions and are evaluated as such.
 
 **An assertion addresses flow state as well as the response** — `steps.*`, `row.*`, `params.*`,
-`shared.*`, `flow.*`, and bare variables, alongside `res.*` and `req.*`:
+`shared.*`, `flow.*`, `pre.*`, `process.*`, and bare variables, alongside `res.*` and `req.*`:
 
 ```yaml
     assert:
@@ -4711,6 +4735,7 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   nothing
 - `!...` appears only where a value can be dropped — inside `body` / `query` / `headers` /
   `pathParams` — and never as a step or top-level key (§7.2)
+- Warning: a `body:` `!...` on a key the seed does not produce, where it removes nothing (§7.2)
 - Warnings: undeclared `.body` dependencies (§8.3), shadowed reserved namespaces and the two script
   names `env` and `vars` (§7.3), unreachable steps, and declarations nothing consumes — an output a
   step declares **in its own `outputs:` block** and nothing reads (never a connector-supplied one,
@@ -4774,9 +4799,11 @@ ever tell the author.
 | `missing-param` | A call site omits a required param the sub-flow gives no default (§12.4) |
 | `undeclared-dependency` *(warning)* | A reference reads an ancestor's raw `.body` or `.headers` instead of a declared output (§8.3) |
 | `interpolation-in-output-path` *(warning)* | An output's string form is a path into the response, so `{{...}}` written there selects nothing (§8.1) |
+| `script-in-output-path` *(warning)* | An output's string form is a path, so a function written there selects nothing — the script form is `script:` (§8.1) |
 | `pre-reads-sibling-value` *(warning)* | A `pre:` script reads `ctx.pre`, which is empty in every one of them (§8.7) |
 | `status-opt-out-without-assertion` *(warning)* | `failOnStatusCode: false` with no `res.status` assertion accepts every status (§10.3) |
 | `function-shadows-script-argument` *(warning)* | A `functions:` name shadows one of the arguments every script is handed (§8.2) |
+| `unknown-function` *(warning)* | A `script:` calls a bare name that §8.6's library does not declare, the script does not declare or take, and no global answers — it throws at run time, where `script-error` names whichever step ran first rather than the line the typo is on. A warning and not an error because the reading is textual: nothing here parses JavaScript, so a name it cannot account for is reported only when nothing accounts for it |
 | `invalid-step-meta` *(warning)* | A step's `meta:` is not a mapping, so nothing it says reaches a report (§14.8.4) |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` (§6.2) |
 | `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 (§6.2, 004) |
@@ -4817,6 +4844,7 @@ ever tell the author.
 | `bru-unavailable` *(warning)* | A `script:` references `bru`, which is not in a flow script's scope in either sandbox — it throws at run time. Data a later step needs moves through `outputs:` or a `shared:` slot, which the graph and §9.1's ordering can see (§8.2) |
 | `unknown-dataset-format` | `dataset:` names a file whose extension is not one of §9.4's three. The loader refuses it by throwing, which rejects the run rather than failing a step — so validation is the only place it can be reported against the flow that caused it |
 | `external-schema-ref` *(warning)* | The operation's schema reaches a `$ref` in another document. Only the bound one is read (§6.2), so the step's body and parameters are checked against nothing and the run fails it when the validator cannot compile the reference (§14.3) |
+| `unseeded-drop` *(warning)* | A step's `body:` puts `!...` on a key §7.1's seed does not produce — an optional property with no `example` or `default`, or any key inside an array item, since an array replaces the seed wholesale. The key is absent already, so the tag removes nothing (§7.2) |
 | `required-param-without-library` *(warning)* | A flow declares a `required` param with no `default` and is not marked `meta.library: true` (§12.5) |
 | `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
 | `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
@@ -6328,14 +6356,13 @@ phase used to provide, expressed in the same mechanism as every other edge.
 
 The design blockers and the review gaps that produced this section are resolved into the body above,
 indexed below by where each landed. **Every question about execution semantics is now answered**;
-what remains are three, and none of them is about how a flow runs. What is recorded here is *not*
+what remains are two, and neither is about how a flow runs. What is recorded here is *not*
 resolved — each is a decision with a real trade, and one is a contradiction between two sections
 that both read as deliberate, where picking a side silently would discard whichever argument was
 right.
 
-Each names what breaks while it stays open, and each is local to one code path. **None of them
-blocks anything shipped**: two wait on work that is scheduled rather than undecided (§19.1's
-`--dry-run`), and the third is about writing a flow file, which nothing does.
+Each names what breaks while it stays open, and each is local to one code path. **Neither blocks
+anything shipped**: both wait on work that is scheduled rather than undecided (§19.1's `--dry-run`).
 
 A note worth keeping from when this list was long: rows went stale here faster than anywhere else in
 the document. Several described a contradiction that a later revision had already fixed, or named a
@@ -6382,13 +6409,7 @@ reviewed, then deleted per the convention in [README](./README.md).
 | Where do `processEnv` and `envVarOverrides` sit in the chain? | Neither is a rank: `--env-var` merges into `environment`, `process.env` is a namespace | §7.3, §13.2 |
 | How do `!file` and `!...` reach the schema? | Resolved to a symbol and a class instance; projected by stripping the tag | §5.4, §17 |
 | Does a `uses:` step occupy a concurrency slot? | No — only its internals draw from the pool, or a sub-flow deadlocks at `concurrency: 1` | §9.2 |
-
-### The format
-
-**What writes a flow file?** §15 mandates `parse(stringify(x)) === x`, a stringifier that preserves
-unrecognized fields, and migrate-on-read. Nothing in 001 or 002 writes a flow — 002 §3 and §13 make
-the app read-only — so migrate-on-read has no writer to persist through, and whether comments, key
-order and formatting survive is unstated for a format whose primary editor is a human.
+| What writes a flow file, and what survives it? | The engine, by editing the parsed document and re-emitting it: a structured edit changes the lines it names and no others, and every unrecognized key survives | [005](./005-api-flow-builder.md) §9.1, §15 |
 
 ### CLI and artifacts
 

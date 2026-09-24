@@ -114,13 +114,34 @@ const elapsed = (duration) => {
   return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
 };
 
-const RunControls = ({ flow, description, run, configuration, onConfigurationChange }) => {
+/**
+ * 005 §8: `renderer:flow-run` executes the file on disk, and the graph above this control is the
+ * draft's — so a run over an unsaved draft would execute the previous version of the flow being
+ * looked at. A dirty draft that parses is written first, as one act with the run; one that does not
+ * parse, or that the engine has not yet answered about, blocks the control the way §6's errors do,
+ * because saving it would write text nobody has checked (002 §4.3's auto-save refuses the same).
+ */
+const draftBlockingReason = (draft) => {
+  if (!draft?.dirty) {
+    return undefined;
+  }
+  if (draft.parses === false) {
+    return 'The draft does not parse';
+  }
+  if (draft.parses === undefined) {
+    return 'Checking the draft…';
+  }
+  return undefined;
+};
+
+const RunControls = ({ flow, description, run, configuration, onConfigurationChange, draft }) => {
   const dispatch = useDispatch();
   const dropdownRef = useRef();
   const [menuOpen, setMenuOpen] = useState(false);
   const [starting, setStarting] = useState(false);
 
-  const blockedReason = blockingReason(description, configuration);
+  const blockedReason = blockingReason(description, configuration) || draftBlockingReason(draft);
+  const savesFirst = Boolean(draft?.dirty) && !blockedReason;
   const blocked = blockedReason !== undefined;
   const isRunning = run?.state === 'running';
   /**
@@ -136,6 +157,9 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
   const start = async (capture) => {
     setStarting(true);
     try {
+      if (savesFirst) {
+        await draft.save();
+      }
       await dispatch(runFlow({ flow, configuration: { ...configuration, capture } }));
     } catch (error) {
       toast.error(error.message || 'The flow could not be started');
@@ -171,7 +195,7 @@ const RunControls = ({ flow, description, run, configuration, onConfigurationCha
             data-testid="flow-run"
           >
             <IconPlayerPlay size={14} strokeWidth={1.5} />
-            Run
+            {savesFirst ? <span data-testid="flow-run-saves-first">Save & run</span> : 'Run'}
           </button>
 
           {/* The flow's other kinds of run, attached to the button that performs the ordinary one.

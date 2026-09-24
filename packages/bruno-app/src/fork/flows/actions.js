@@ -15,6 +15,9 @@ import {
   sourceSaving,
   sourceSaved,
   sourceSaveFailed,
+  structuredEdit,
+  editRefused,
+  editModelRead,
   suiteRunCancelled
 } from './slice';
 
@@ -117,16 +120,35 @@ export const describeFlow = (flow) => async (dispatch) => {
  * for the saved file: a graph the app derived on its own could differ from the one the CLI executes,
  * and the whole point of drawing it while editing is to see what will run.
  */
-export const describeFlowDraft = (flow, content) => async (dispatch) => {
-  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+/**
+ * The reads in flight for a draft, keyed by path and the text asked about. Two surfaces — and two
+ * hooks on one surface — can ask the engine about the same text in the same frame; the second ask
+ * joins the first rather than crossing IPC again, and the slice drops the answer if the buffer has
+ * moved on by the time it lands.
+ */
+const inFlight = new Map();
 
-  try {
-    const description = await ipc().invoke('renderer:flow-describe', { entry: flow.pathname, scope, content });
-    dispatch(sourceDescribed({ pathname: flow.pathname, description, content }));
-  } catch (error) {
-    dispatch(sourceDescribeFailed({ pathname: flow.pathname, error: error.message }));
+const once = (key, start) => {
+  const pending = inFlight.get(key);
+  if (pending) {
+    return pending;
   }
+  const promise = start().finally(() => inFlight.delete(key));
+  inFlight.set(key, promise);
+  return promise;
 };
+
+export const describeFlowDraft = (flow, content) => (dispatch) =>
+  once(`describe:${flow.pathname}:${content}`, async () => {
+    const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+
+    try {
+      const description = await ipc().invoke('renderer:flow-describe', { entry: flow.pathname, scope, content });
+      dispatch(sourceDescribed({ pathname: flow.pathname, description, content }));
+    } catch (error) {
+      dispatch(sourceDescribeFailed({ pathname: flow.pathname, error: error.message }));
+    }
+  });
 
 /** §4.3: the flow's own text, for the raw editor. */
 export const readFlowSource = (flow) => async (dispatch) => {
@@ -211,6 +233,84 @@ export const saveFlowSource = (flow) => async (dispatch, getState) => {
     dispatch(sourceSaveFailed({ pathname, error: error.message }));
     throw error;
   }
+};
+
+/** 005 §7.2's message, in one place, so the two paths that produce the state say the same thing. */
+const EDIT_OVERTAKEN = 'The document changed while that edit was being applied — try again';
+
+/**
+ * 005 §7.1 — a structured edit, applied to the draft by the engine.
+ *
+ * The edit is sent with the draft's text and comes back as text; the file is not touched (§9.4), and
+ * the answer lands where a keystroke would, so everything 002 §4.3 built on the draft — dirty,
+ * auto-save, the divergence notice — holds without a second copy of it.
+ *
+ * **The buffer is compared again when the answer lands.** The edit was applied to the text as it was
+ * when sent; a keystroke in the YAML tab in between would be destroyed by writing the answer over
+ * it. If the buffer moved, the edit is dropped and said (§7.2) — `refreshFlowSource` makes the same
+ * check around its read, for the same reason. An edit the engine reports as changing nothing is
+ * dropped silently: it dirties nothing and pushes no history (§7.3).
+ *
+ * Resolves with the engine's result either way, so the surface that asked can show a refusal on the
+ * field that caused it.
+ */
+export const applyFlowEdit = (flow, edits) => async (dispatch, getState) => {
+  const { pathname } = flow;
+  const source = getState().flows.sources[pathname];
+  if (!source || source.loading) {
+    return { ok: false, reason: 'no-draft', message: 'The flow has not been read yet' };
+  }
+
+  const content = source.content;
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+
+  let result;
+  try {
+    result = await ipc().invoke('renderer:flow-apply-edit', { entry: pathname, scope, content, edits });
+  } catch (error) {
+    result = { ok: false, reason: 'host-error', message: error.message };
+  }
+
+  if (!result.ok) {
+    dispatch(editRefused({ pathname, message: result.message }));
+    return result;
+  }
+
+  const current = getState().flows.sources[pathname];
+  if (!current || current.content !== content) {
+    dispatch(editRefused({ pathname, message: EDIT_OVERTAKEN }));
+    return { ok: false, reason: 'overtaken', message: EDIT_OVERTAKEN };
+  }
+
+  if (result.changed) {
+    dispatch(structuredEdit({ pathname, content: result.text, previous: content }));
+  }
+  return result;
+};
+
+/** 005 §9.2 — the draft as the step editor reads it. Asked about the text it is handed. */
+export const readFlowEditModel = (flow, content) => (dispatch) =>
+  once(`model:${flow.pathname}:${content}`, async () => {
+    const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+    const model = await ipc().invoke('renderer:flow-read-edit-model', { entry: flow.pathname, scope, content });
+    dispatch(editModelRead({ pathname: flow.pathname, model, content }));
+    return model;
+  });
+
+/** 005 §9.3 — the operations the picker offers, for the draft's bindings. Nothing is stored. */
+export const listFlowOperations = (flow, content) => async () => {
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+  return ipc().invoke('renderer:flow-list-operations', { entry: flow.pathname, scope, content });
+};
+
+/**
+ * 005 §6.7 — the *Seed from spec* control's answer for one step: the operation's own request
+ * example, or a reason there is none. Nothing is stored — the field that asked writes it through
+ * `onPatch`, the same as a keystroke would.
+ */
+export const readStepRequestExample = (flow, content, stepId) => async () => {
+  const scope = { workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot };
+  return ipc().invoke('renderer:flow-step-example', { entry: flow.pathname, scope, content, stepId });
 };
 
 /**

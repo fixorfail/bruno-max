@@ -4,6 +4,11 @@ const { ipcMain } = require('electron');
 const {
   runFlow,
   describeFlow,
+  applyFlowEdits,
+  readFlowEditModel,
+  resolveFunctions,
+  listFlowOperations,
+  stepRequestExample,
   listRuns,
   listSuites,
   readRun,
@@ -137,22 +142,71 @@ const requireFlowInScope = (entry, scope) => {
 
 /**
  * **`content` describes a draft rather than the file on disk** — 002 §4.3's editor redraws the graph
- * from unsaved text, so `describeFlow` has to be able to read the entry from somewhere other than
- * the filesystem. Overlaying the *port* rather than adding a parameter to the engine is what keeps
- * that a host concern: `describeFlow` still resolves sub-flows and OpenAPI documents through the same
- * `readFile`, and only the entry itself is answered from memory.
+ * from unsaved text, so a read has to be able to answer the entry from somewhere other than the
+ * filesystem. Overlaying the *port* rather than adding a parameter to the engine is what keeps that a
+ * host concern: sub-flows and OpenAPI documents still resolve through the same `readFile`, and only
+ * the entry itself is answered from memory.
+ *
+ * Shared by every reader that takes `content` — a describe (002 §11.3), the edit model's read and the
+ * operations picker (005 §9.2–§9.4) — so a binding just added on the legend (§5.5) offers itself the
+ * same way to each.
  */
-const describeFlowHandler = ({ entry, scope, content }) => {
+const portsOverlaying = (entry, scope, content) => {
   const { readFile, readSpec } = createPorts({ collectionRoot: scope?.collectionRoot });
   if (typeof content !== 'string') {
-    return describeFlow({ entry, scope: requireScope(scope), ports: { readFile, readSpec } });
+    return { readFile, readSpec };
   }
 
   const draft = requireFlowInScope(entry, scope);
   const readDraft = async (target, context) =>
     path.resolve(target) === draft ? Buffer.from(content, 'utf8') : readFile(target, context);
 
-  return describeFlow({ entry, scope, ports: { readFile: readDraft, readSpec } });
+  return { readFile: readDraft, readSpec };
+};
+
+const describeFlowHandler = ({ entry, scope, content }) =>
+  describeFlow({ entry, scope: requireScope(scope), ports: portsOverlaying(entry, scope, content) });
+
+/**
+ * 001 §8.6's names, for the editor that has to underline the ones it does not know.
+ *
+ * The engine's model is read from text and a library is a file, so this is the host's half: the
+ * ports the draft already reads through, resolving what each library declares.
+ *
+ * **A library that cannot be read is not an error here.** It is reported where it belongs — as
+ * `unresolved-function-library`, on the flow, by validate — and a model that failed because a helper
+ * file was mid-rename would take the whole step editor down with it. The inline definitions are
+ * still known from the text, so that is what the editor gets.
+ */
+const functionNamesFor = async ({ entry, scope, content }, model) => {
+  try {
+    const listed = await resolveFunctions({ entry, scope: requireScope(scope), ports: portsOverlaying(entry, scope, content) });
+    return [...new Set(listed.map((fn) => fn.name).filter(Boolean))];
+  } catch {
+    return Object.keys(model.definitions || {});
+  }
+};
+
+/** 005 §9.2 — the step editor's model of one flow, from the draft when `content` is given. */
+const readFlowEditModelHandler = async (request) => {
+  const { entry, scope, content } = request;
+  const pathname = requireFlowInScope(entry, scope);
+  const text = typeof content === 'string' ? content : await fs.promises.readFile(pathname, 'utf8');
+  const model = readFlowEditModel(text);
+
+  return { ...model, functionNames: await functionNamesFor(request, model) };
+};
+
+/** 005 §9.3 — the operation picker's list for every API a flow binds, with the same draft overlay. */
+const listFlowOperationsHandler = ({ entry, scope, content }) => {
+  requireFlowInScope(entry, scope);
+  return listFlowOperations({ entry, scope, ports: portsOverlaying(entry, scope, content) });
+};
+
+/** 005 §6.7 — the *Seed from spec* control's answer for one step, with the same draft overlay. */
+const stepRequestExampleHandler = ({ entry, scope, content, stepId }) => {
+  requireFlowInScope(entry, scope);
+  return stepRequestExample({ entry, scope, ports: portsOverlaying(entry, scope, content), stepId });
 };
 
 /**
@@ -436,6 +490,92 @@ const writeNewFlow = async ({ directory, filename, content }) => {
 const relativeSpecSource = (directory, source) => {
   const relative = path.relative(directory, source).split(path.sep).join('/');
   return relative.startsWith('.') ? relative : `./${relative}`;
+};
+
+/**
+ * 005 §9.1 — a transform, not a write. `applyFlowEdits` takes text and returns text; the file the
+ * write channel guards (`renderer:flow-write-source`) is untouched here, which is the whole of what
+ * keeps §7.1's one buffer, one dirty comparison and one write guard true for a structured edit too.
+ *
+ * The one thing the handler does that the engine cannot: an `api.add`/`api.update` arrives with the
+ * document's path as the renderer knows it, absolute, because the renderer's `path` is a POSIX shim
+ * and cannot resolve it relative to the flow itself. It is relativized here, the same way
+ * `createFlowHandler` relativizes a binding for a new flow. A source that is not an absolute path —
+ * already relative, or a URL — is left exactly as the edit named it.
+ */
+const relativizeEditBindingSource = (edit, directory) => {
+  if (edit.kind !== 'api.add' && edit.kind !== 'api.update') {
+    return edit;
+  }
+  const source = edit.binding && edit.binding.source;
+  if (typeof source !== 'string' || !path.isAbsolute(source)) {
+    return edit;
+  }
+
+  return { ...edit, binding: { ...edit.binding, source: relativeSpecSource(directory, source) } };
+};
+
+const isWithin = (root, target) => {
+  const relative = path.relative(root, target);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+};
+
+/**
+ * A `step.insert` whose `uses:` is absolute — the picker names a library by the path the watcher
+ * lists it under — is written the way 001 §12.2 resolves it: relative to the flow where the library
+ * lies under the flow's own scope root, and `workspace:`-prefixed where a collection flow reaches a
+ * library that lies outside its collection but inside the workspace. A path already relative, or
+ * one the run could not reach either way, is left as the edit named it for the engine to report.
+ */
+const relativizeSubflowTarget = (edit, pathname, scope) => {
+  if (edit.kind !== 'step.insert') {
+    return edit;
+  }
+  const uses = edit.step && edit.step.uses;
+  if (typeof uses !== 'string' || !path.isAbsolute(uses)) {
+    return edit;
+  }
+
+  const scopeRoot = path.resolve(scope.collectionRoot || scope.workspaceRoot);
+  const workspaceRoot = path.resolve(scope.workspaceRoot);
+  if (isWithin(scopeRoot, uses)) {
+    return { ...edit, step: { ...edit.step, uses: relativeSpecSource(path.dirname(pathname), uses) } };
+  }
+  if (isWithin(workspaceRoot, uses)) {
+    return { ...edit, step: { ...edit.step, uses: `workspace:${path.relative(workspaceRoot, uses).split(path.sep).join('/')}` } };
+  }
+  return edit;
+};
+
+/**
+ * A `functions.use` names a script by the path the watcher lists it under, absolute; 001 §8.6
+ * resolves a `use:` entry against the flow's own directory, so that is what it is written as. A path
+ * already relative is left as the edit named it.
+ */
+const relativizeScriptSource = (edit, directory) => {
+  if (edit.kind !== 'functions.use' && edit.kind !== 'functions.unuse') {
+    return edit;
+  }
+  if (typeof edit.source !== 'string' || !path.isAbsolute(edit.source)) {
+    return edit;
+  }
+  return { ...edit, source: relativeSpecSource(directory, edit.source) };
+};
+
+const applyFlowEditHandler = ({ entry, scope, content, edits }) => {
+  const pathname = requireFlowInScope(entry, scope);
+  if (typeof content !== 'string') {
+    throw new Error('an edit needs the draft text to apply to');
+  }
+  if (!Array.isArray(edits)) {
+    throw new Error('an edit needs a list of edits to apply');
+  }
+
+  const directory = path.dirname(pathname);
+  return applyFlowEdits(
+    content,
+    edits.map((edit) => relativizeScriptSource(relativizeSubflowTarget(relativizeEditBindingSource(edit, directory), pathname, scope), directory))
+  );
 };
 
 const newFlowDocument = ({ directory, properties, apis }) => {
@@ -973,6 +1113,10 @@ const registerFlowIpc = (mainWindow) => {
   watcher = new FlowsWatcher();
 
   ipcMain.handle('renderer:flow-describe', (event, request) => describeFlowHandler(request));
+  ipcMain.handle('renderer:flow-read-edit-model', (event, request) => readFlowEditModelHandler(request));
+  ipcMain.handle('renderer:flow-apply-edit', (event, request) => applyFlowEditHandler(request));
+  ipcMain.handle('renderer:flow-list-operations', (event, request) => listFlowOperationsHandler(request));
+  ipcMain.handle('renderer:flow-step-example', (event, request) => stepRequestExampleHandler(request));
   ipcMain.handle('renderer:flow-read-source', (event, request) => readFlowSourceHandler(request));
   ipcMain.handle('renderer:flow-write-source', (event, request) => writeFlowSourceHandler(request));
   ipcMain.handle('renderer:flow-run', async (event, request) => {
@@ -1004,6 +1148,10 @@ const registerFlowIpc = (mainWindow) => {
 
 module.exports = registerFlowIpc;
 module.exports.describeFlowHandler = describeFlowHandler;
+module.exports.readFlowEditModelHandler = readFlowEditModelHandler;
+module.exports.applyFlowEditHandler = applyFlowEditHandler;
+module.exports.listFlowOperationsHandler = listFlowOperationsHandler;
+module.exports.stepRequestExampleHandler = stepRequestExampleHandler;
 module.exports.readFlowSourceHandler = readFlowSourceHandler;
 module.exports.writeFlowSourceHandler = writeFlowSourceHandler;
 module.exports.listRunsHandler = listRunsHandler;

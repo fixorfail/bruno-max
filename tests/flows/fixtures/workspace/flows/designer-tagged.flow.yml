@@ -1,0 +1,19 @@
+version: 1
+
+meta:
+  name: Designer tagged
+  tags: [designer]
+
+apis:
+  orders: ../apispec/orders-v1.yml
+
+steps:
+  - id: upload
+    operation: orders#createOrder
+    body: !file ./fixtures/order.json
+    outputs:
+      orderId: id
+      channel: !...
+
+  - id: read
+    operation: orders#getOrder

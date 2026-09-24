@@ -1,0 +1,25 @@
+# The sequence every position rule is argued over — 005-C B1.4, B1.7, B1.8.
+#
+# Three steps in §9.1's implicit sequence and nothing else. The ids are single letters because the
+# subject is *where* an edit lands rather than what a step does: `a`, `b`, `c` are positions, and a
+# fixture that called them `sign_in` and `create` would read as if it were testing those.
+version: 1
+
+meta:
+  name: Builder — a linear sequence
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: a
+    operation: regress-api#signIn
+
+  - id: b
+    operation: regress-api#createThing
+
+  - id: c
+    operation: regress-api#getThing
+    when: steps.b.status eq 200
+    pathParams:
+      id: "{{steps.b.thingId}}"

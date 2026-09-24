@@ -39,54 +39,6 @@ const StyledWrapper = styled.div`
     padding: 1rem;
   }
 
-  /* §5.1's key to the API colours. Over the drawing at the top right, out of the way of rank 0 and
-     of the run's own left-to-right progress, and inert to the pointer so it never takes a click meant
-     for the node beneath it. */
-  .flow-legend {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.75rem;
-    z-index: 1;
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    gap: 0.25rem 0.75rem;
-    max-width: 60%;
-    padding: 0.25rem 0.5rem;
-    pointer-events: none;
-    font-size: 0.6875rem;
-    color: ${(props) => props.theme.colors.text.muted};
-    background: ${(props) => props.theme.sidebar.collection.item.bg};
-    border: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
-    border-radius: 4px;
-    opacity: 0.94;
-  }
-
-  /* Names the key for what it is: without it a lone alias over the drawing reads as a caption on the
-     flow rather than as the binding its steps call. */
-  .flow-legend-title {
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    opacity: 0.75;
-  }
-
-  .flow-legend-entry {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3125rem;
-    white-space: nowrap;
-  }
-
-  .flow-legend-swatch {
-    width: 9px;
-    height: 9px;
-    border-radius: 2px;
-  }
-
-  #flow-arrow path {
-    fill: ${(props) => props.theme.colors.text.muted};
-  }
-
   .edge path {
     fill: none;
     stroke: ${(props) => props.theme.colors.text.muted};
@@ -152,6 +104,131 @@ const StyledWrapper = styled.div`
 
   .node {
     cursor: pointer;
+  }
+
+  /* 005 §5's controls, drawn over the edges and the selected box. Purple for §5.1's reason — every
+     other hue on the graph already means an outcome — and filled, so they read as controls on the
+     drawing rather than as marks in it. */
+  .flow-insert,
+  .flow-delete {
+    cursor: pointer;
+
+    circle {
+      fill: ${(props) => props.theme.sidebar.collection.item.bg};
+      stroke: ${(props) => props.theme.colors.text.purple};
+      stroke-width: 1.5;
+    }
+
+    .flow-glyph {
+      fill: none;
+      stroke: ${(props) => props.theme.colors.text.purple};
+      stroke-width: 1.75;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
+    &:hover circle,
+    &:focus-visible circle {
+      fill: ${(props) => props.theme.colors.text.purple};
+    }
+
+    &:hover .flow-glyph,
+    &:focus-visible .flow-glyph {
+      stroke: ${(props) => props.theme.sidebar.collection.item.bg};
+    }
+
+    &:focus {
+      outline: none;
+    }
+  }
+
+  /* §5.4's ports: quiet until a connector is being dragged, when the in-port that would take it
+     lights up. Small on purpose — they sit on the box's edge, where the node's own click lives. */
+  .flow-port {
+    fill: ${(props) => props.theme.sidebar.collection.item.bg};
+    stroke: ${(props) => props.theme.colors.text.muted};
+    stroke-width: 1;
+    opacity: 0.6;
+  }
+
+  .flow-port-out {
+    cursor: crosshair;
+  }
+
+  .flow-port:hover,
+  .flow-port.is-target {
+    opacity: 1;
+    stroke: ${(props) => props.theme.colors.text.purple};
+    stroke-width: 2;
+  }
+
+  .flow-connector-preview {
+    stroke: ${(props) => props.theme.colors.text.purple};
+    stroke-width: 1.5;
+    stroke-dasharray: 4 3;
+    pointer-events: none;
+  }
+
+  .flow-edge-remove {
+    cursor: pointer;
+
+    circle {
+      fill: ${(props) => props.theme.sidebar.collection.item.bg};
+      stroke: ${(props) => props.theme.colors.text.muted};
+      stroke-width: 1;
+    }
+
+    .flow-glyph {
+      fill: none;
+      stroke: ${(props) => props.theme.colors.text.muted};
+      stroke-width: 1.25;
+      stroke-linecap: round;
+      pointer-events: none;
+    }
+
+    &:hover circle,
+    &:focus-visible circle {
+      stroke: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &:hover .flow-glyph,
+    &:focus-visible .flow-glyph {
+      stroke: ${(props) => props.theme.colors.text.danger};
+    }
+
+    &:focus {
+      outline: none;
+    }
+  }
+
+  .flow-delete circle {
+    stroke: ${(props) => props.theme.colors.text.danger};
+  }
+
+  .flow-delete .flow-glyph {
+    stroke: ${(props) => props.theme.colors.text.danger};
+  }
+
+  .flow-delete:hover circle,
+  .flow-delete:focus-visible circle {
+    fill: ${(props) => props.theme.colors.text.danger};
+  }
+
+  .flow-insert-first {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 0.5rem 1rem;
+    font-size: 0.8125rem;
+    color: ${(props) => props.theme.colors.text.purple};
+    border: 1px dashed ${(props) => props.theme.colors.text.purple};
+    border-radius: 4px;
+
+    &:hover {
+      color: ${(props) => props.theme.sidebar.collection.item.bg};
+      background: ${(props) => props.theme.colors.text.purple};
+    }
   }
 
   /* 002 §5.6's side panels — the inputs to the left of the drawing and the exports to its right, in

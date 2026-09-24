@@ -14,5 +14,5 @@ steps:
   - id: create
     operation: regress-api#createThing
     body:
-      name: widget
-      ref: !...
+      name: !...
+      ref: widget

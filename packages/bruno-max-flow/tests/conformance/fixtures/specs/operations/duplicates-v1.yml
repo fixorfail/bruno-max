@@ -1,0 +1,33 @@
+openapi: 3.0.3
+# B7.1-B7.3: a normal, singly-declared operation (`/things`) beside an operationId declared twice
+# across two different paths (`/v1/tickets`, `/v2/tickets`) — §6.5's ambiguity, from one document.
+info: { title: Operations picker corpus, version: 1.0.0 }
+servers:
+  - url: https://ops.example.com
+paths:
+  /things:
+    get:
+      operationId: listThings
+      summary: List things
+      description: Returns every thing in the account.
+      tags: [things]
+      responses:
+        '200': { description: OK }
+    post:
+      operationId: createThing
+      deprecated: true
+      tags: [things, admin]
+      responses:
+        '201': { description: Created }
+  /v1/tickets:
+    post:
+      operationId: createTicket
+      summary: Create a ticket (v1)
+      responses:
+        '201': { description: Created }
+  /v2/tickets:
+    post:
+      operationId: createTicket
+      summary: Create a ticket (v2)
+      responses:
+        '201': { description: Created }

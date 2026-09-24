@@ -11,8 +11,8 @@
  */
 const path = require('path');
 
-const { runFlow, validate, variant, FLOWS } = require('./harness');
-const { withLibrary } = require('../../src/functions');
+const { runFlow, validate, resolveFunctions, variant, FLOWS } = require('./harness');
+const { declaredNames, withLibrary } = require('../../src/functions');
 
 const flow = (name) => `regressions/${name}`;
 
@@ -2087,6 +2087,96 @@ describe('R4t — a script library', () => {
   });
 
   /**
+   * §8.6's listing is "what a script may call", and a raw file is one entry carrying a dozen
+   * helpers. Listed as the file alone it answered a different question — and the app's editor, which
+   * underlines a name it has never heard of, had nothing to be told.
+   */
+  it('lists the helpers a raw library file declares, by name', async () => {
+    const listed = await resolveFunctions(flow('r4t-functions.flow.yml'));
+    const named = listed.filter((entry) => entry.name).map((entry) => entry.name);
+
+    expect(named).toEqual(expect.arrayContaining(['lastFour', 'digitsOnly']));
+    // A raw file is read for its top-level declarations, so every entry now carries a name.
+    expect(listed.filter((entry) => !entry.name)).toEqual([]);
+  });
+
+  /**
+   * §8.6's call fails at run time as `script-error`, against whichever step ran first — rarely the
+   * step the typo is in, never the line. Read from the text it is named where it is written.
+   */
+  it('reports a script calling a helper nothing declares', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.steps[0].outputs.masked.script = '(res) => lastFive(res.body.data.id)\n';
+    });
+
+    const diagnostics = await validate(entry, { files });
+    const found = diagnostics.find((item) => item.code === 'unknown-function');
+
+    expect(found).toMatchObject({ severity: 'warning', stepId: 'create' });
+    expect(found.message).toContain('lastFive()');
+    // The names are known, so the nearest one is offered.
+    expect(found.message).toContain('did you mean lastFour?');
+    // It is written in this file, so it is reported at the line it is written on.
+    expect(found.line).toBeGreaterThan(0);
+  });
+
+  /**
+   * The check reads text and cannot parse it, so every name it cannot account for has to be
+   * accounted for some other way or it reports working code — which is the failure that teaches an
+   * author to stop reading warnings.
+   */
+  it('stays quiet on helpers, locals, parameters, methods and globals', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.steps[0].outputs.masked.script = [
+        '(res, ctx) => {',
+        '  const pick = (thing) => thing.id;',
+        '  function tidy(value) { return String(value).trim(); }',
+        '  const ids = res.body.data.items.map((item) => pick(item));',
+        '  if (!ids.length) { return JSON.stringify(ctx.vars); }',
+        '  return tidy(lastFour(ids[0]));',
+        '}\n'
+      ].join('\n');
+    });
+
+    expect(await validate(entry, { files })).toEqual(
+      expect.not.arrayContaining([expect.objectContaining({ code: 'unknown-function' })])
+    );
+  });
+
+  /**
+   * §8.5's connector files supply outputs that normalization folds into a step, and their scripts run
+   * in this flow's library — but they are written in another file, so a warning here would land on a
+   * line this document does not have, once per flow that binds the operation. R10.1 pins the other
+   * half: it is a run-time failure, reported where it happens.
+   */
+  it('says nothing about a script the flow does not contain', async () => {
+    const { entry, files } = variant(flow('r4t-functions.flow.yml'), (document) => {
+      document.functions.label = '(thing) => thing.name\n';
+    });
+
+    const diagnostics = await validate(entry, { files });
+    expect(diagnostics.filter((item) => item.code === 'unknown-function')).toEqual([]);
+  });
+
+  /**
+   * What a raw file puts in scope is what it declares at the top level of the prelude, so a
+   * declaration inside a function body is not one of them.
+   */
+  it('reads a raw file for its top-level declarations only', () => {
+    const source = [
+      'const lastFour = (v) => String(v).slice(-4);',
+      'async function digits(v) {',
+      '  const inner = 1;',
+      '  return inner;',
+      '}',
+      'class Card {}',
+      'export const exported = 2;'
+    ].join('\n');
+
+    expect(declaredNames(source)).toEqual(['lastFour', 'digits', 'Card', 'exported']);
+  });
+
+  /**
    * Composition is invisible to a host (§13.2), so a flow that declares no library must reach
    * `RunScript` as the source it was written as — byte for byte, or §8.2's "no new execution
    * environment" stops being a statement anyone can check.
@@ -2183,6 +2273,35 @@ describe('R4w — values computed before the request', () => {
     expect(diagnostics).toContainEqual(
       expect.objectContaining({ code: 'interpolation-in-output-path', severity: 'warning' })
     );
+  });
+
+  /**
+   * The same mistake from the other side, and the one that costs most: `pre:` values *are* scripts,
+   * so an author who wrote one there writes one in `outputs:` too — where the string form is a path,
+   * the path selects nothing, and every output is undefined with nothing said anywhere.
+   */
+  it('warns on a script written where a path belongs', async () => {
+    const { entry, files } = variant(flow('r4w-pre.flow.yml'), (document) => {
+      document.steps[1].outputs.companyName = '(res) => res.body.included[0].attributes.name';
+    });
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'script-in-output-path', severity: 'warning' })
+    );
+    expect(diagnostics.find((entry_) => entry_.code === 'script-in-output-path').message).toContain('script:');
+  });
+
+  /** The mapping form is the script, so it is not the string form and draws no warning. */
+  it('says nothing about a script written as one', async () => {
+    const { entry, files } = variant(flow('r4w-pre.flow.yml'), (document) => {
+      document.steps[1].outputs.companyName = { script: '(res) => res.body.name' };
+    });
+
+    const diagnostics = await validate(entry, { files });
+
+    expect(diagnostics.filter((entry_) => entry_.code === 'script-in-output-path')).toEqual([]);
   });
 
   it('reports a from: pre naming a value the step does not compute', async () => {

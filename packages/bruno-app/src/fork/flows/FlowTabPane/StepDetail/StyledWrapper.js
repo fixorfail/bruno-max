@@ -1,23 +1,8 @@
 import styled from 'styled-components';
+import BottomSheet from '../BottomSheet';
 
-const StyledWrapper = styled.div`
-  display: flex;
-  flex-direction: column;
-  border-top: 1px solid ${(props) => props.theme.sidebar.collection.item.focusBorder};
-  /* Never sized by flex distribution: the graph is what absorbs spare room, and a step with fifteen
-     response headers must not squeeze it out. The height is the one the split hands down; the
-     minimum here is only the floor for a render that has no split above it. */
-  flex: 0 0 auto;
-  min-height: 10rem;
-  overflow: hidden;
-
-  .detail-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 0.5rem 1rem;
-  }
-
+/** The sheet's chrome is `BottomSheet`'s; what is styled here is the run record drawn into it. */
+const StyledWrapper = styled(BottomSheet)`
   .detail-step {
     font-weight: 500;
   }
@@ -93,37 +78,6 @@ const StyledWrapper = styled.div`
     &:hover {
       color: ${(props) => props.theme.text};
     }
-  }
-
-  .detail-tabs {
-    display: flex;
-    gap: 0.25rem;
-    padding: 0 1rem;
-
-    button {
-      padding: 0.125rem 0.5rem;
-      font-size: 0.75rem;
-      /* The tab's name is its Playwright selector and its state value; capitalization is how it
-         reads, not what it is. */
-      text-transform: capitalize;
-      color: ${(props) => props.theme.colors.text.muted};
-      border-bottom: 2px solid transparent;
-
-      &.active {
-        color: ${(props) => props.theme.colors.text.subtext2};
-        border-bottom-color: ${(props) => props.theme.colors.text.purple};
-      }
-    }
-  }
-
-  /* The scrollport for everything below the tabs. Without the zero min-height a flex item refuses
-     to shrink below its content, so the auto overflow never engages and the rows simply overflow
-     the pane — taking the body, which §9 renders last, out of reach behind the hidden overflow. */
-  .detail-body-area {
-    flex: 1;
-    min-height: 0;
-    padding: 0.75rem 1rem;
-    overflow: auto;
   }
 
   /* §14.6's message is one sentence for most reasons and a list for the schema ones, where a comma
@@ -207,6 +161,13 @@ const StyledWrapper = styled.div`
     font-size: 0.75rem;
     width: 100%;
 
+    th {
+      padding: 0 0.5rem 0.25rem 0;
+      text-align: left;
+      font-weight: 400;
+      color: ${(props) => props.theme.colors.text.muted};
+    }
+
     td {
       padding: 0.125rem 0.5rem 0.125rem 0;
       vertical-align: top;
@@ -224,6 +185,13 @@ const StyledWrapper = styled.div`
   .detail-headers,
   .detail-outputs {
     margin-top: 0.75rem;
+  }
+
+  /* An output that found nothing is a row, not an absence — drawn as the word rather than as a
+     value, so it does not read as the string "undefined" the API sent back. */
+  .detail-unresolved {
+    color: ${(props) => props.theme.colors.text.muted};
+    font-style: italic;
   }
 
   .detail-headers > .detail-label,

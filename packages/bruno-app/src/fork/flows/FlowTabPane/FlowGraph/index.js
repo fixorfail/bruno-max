@@ -12,6 +12,8 @@ import {
 import { assignApiColors } from './apiColors';
 import { assignSubflowColors } from './subflowColors';
 import { nodeViewportOffset, useFollowActiveNode, useSelectedNodeInView } from './follow';
+import EditLayer from './EditLayer';
+import ApiLegend from '../ApiLegend';
 import StyledWrapper from './StyledWrapper';
 
 /**
@@ -454,7 +456,20 @@ const FlowGraph = ({
    */
   paramValues,
   varValues,
-  onParamChange
+  onParamChange,
+  /**
+   * 005 §5: the drawing is editable while the tab shows the flow as it stands (§4), and the
+   * affordances are drawn over it only then. Each writes to the document through the engine; the
+   * layout, the dimming, the focus and the follow are the same drawing whether or not they are up.
+   */
+  editable,
+  onInsertStep,
+  onDeleteStep,
+  onAddApi,
+  onEditApi,
+  onRemoveApi,
+  onConnect,
+  onDisconnect
 }) => {
   const graph = useMemo(
     () => layoutGraph(description, { expandedSubflows }),
@@ -598,6 +613,14 @@ const FlowGraph = ({
   const rightGutter = exportsPanel ? exportsPanel.x + exportsPanel.width - graph.width : 0;
   const width = graph.width + gutter + rightGutter;
   const drawnHeight = Math.max(height, inputs?.height || 0, exportsPanel?.height || 0);
+  // 005 §5.1's control after the last step stands a corridor's width past the drawing's last box,
+  // which is past the width the layout measured; without the room it is clipped by the SVG's own
+  // edge and cannot be reached.
+  const trailing = editable ? RANK_GAP : 0;
+  // And the one before the first step stands a corridor's width before the first box — room the
+  // inputs panel already claims on a library flow, where the control sits in the corridor between
+  // the panel and the first rank, and that has to be made on any other.
+  const leading = editable && !inputs ? RANK_GAP : 0;
 
   /**
    * The drawing scrolls inside this box (§5.2), so the run walks off the edge of it on any flow
@@ -629,39 +652,31 @@ const FlowGraph = ({
 
   return (
     <StyledWrapper>
-      {/**
-        * §5.1's legend, over the drawing rather than inside it. The graph is far wider than its box
-        * and scrolls (§5.2), so a key drawn into the picture is one that is off-screen for all but
-        * the first rank — which is the state a legend exists to prevent. Outside the scrolling box it
-        * stays where it was put.
-        *
-        * It is drawn for a single binding too, where it has no colour to explain: which service a
-        * flow drives is a question every one of these graphs is asked, and the operation line answers
-        * it with a path that names no host.
-        */}
-      {apiColors.size ? (
-        <div className="flow-legend" data-testid="flow-legend">
-          <span className="flow-legend-title">API</span>
-          {[...apiColors].map(([api, color]) => (
-            <span key={api} className="flow-legend-entry">
-              {/* No swatch where there is no tint — a flow calling one service, or a binding past the
-                  palette. A chip in the key that no bar on the drawing wears is a colour the reader
-                  goes looking for. */}
-              {color ? <span className="flow-legend-swatch" style={{ background: color }} /> : null}
-              {api}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <ApiLegend
+        apiColors={apiColors}
+        declared={description.apis || []}
+        editable={Boolean(editable)}
+        onAddApi={onAddApi}
+        onEditApi={onEditApi}
+        onRemoveApi={onRemoveApi}
+      />
 
       <div className="flow-graph-viewport" ref={viewportRef} data-testid="flow-graph-viewport">
         <svg
           className="flow-graph"
-          viewBox={`${-GRAPH_MARGIN - gutter} ${-GRAPH_MARGIN - band} ${width + GRAPH_MARGIN * 2} ${drawnHeight + GRAPH_MARGIN * 2 + band}`}
-          width={width + GRAPH_MARGIN * 2}
+          viewBox={`${-GRAPH_MARGIN - gutter - leading} ${-GRAPH_MARGIN - band} ${width + GRAPH_MARGIN * 2 + leading + trailing} ${drawnHeight + GRAPH_MARGIN * 2 + band}`}
+          width={width + GRAPH_MARGIN * 2 + leading + trailing}
           height={drawnHeight + GRAPH_MARGIN * 2 + band}
           data-focus={focusedStep || undefined}
           data-testid="flow-graph"
+          /* 005 §6.8: the drawing itself, hit where nothing is drawn, clears the selection — which
+             is what opens the pane over the flow's own `config:`. Selecting the selected node again
+             already did this; nothing said so, and the setting under it was reachable only by
+             guessing at the gesture. `currentTarget` is the test: a click that landed on a node, an
+             edge or a control is that thing's, whatever it does with it. */
+          onClick={(event) => {
+            if (event.target === event.currentTarget) onSelectStep(null);
+          }}
         >
           <defs>
             <marker id="flow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
@@ -1090,7 +1105,33 @@ const FlowGraph = ({
               </g>
             );
           })}
+
+          {editable ? (
+            <EditLayer
+              graph={graph}
+              description={description}
+              selectedStep={selectedStep}
+              onInsertStep={onInsertStep}
+              onDeleteStep={onDeleteStep}
+              onConnect={onConnect}
+              onDisconnect={onDisconnect}
+            />
+          ) : null}
         </svg>
+
+        {/* 005 §5.1: a flow with no steps has no edge to put a `+` on, so the one control it needs is
+            drawn alone where the first step will be. An HTML control rather than a mark in an empty
+            SVG, since the SVG of an empty graph has no size to centre anything in. */}
+        {editable && !description.nodes.some((node) => !node.parent) ? (
+          <button
+            type="button"
+            className="flow-insert-first"
+            onClick={() => onInsertStep({})}
+            data-testid="flow-insert-first"
+          >
+            + Add the first request
+          </button>
+        ) : null}
       </div>
     </StyledWrapper>
   );

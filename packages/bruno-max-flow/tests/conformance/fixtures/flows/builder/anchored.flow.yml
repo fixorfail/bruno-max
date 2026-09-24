@@ -1,0 +1,36 @@
+# B1.3 — four spellings the normalized model does not distinguish, in one file.
+#
+# An anchor and the alias that reads it, a merge key, and a flow-style sequence. Each is a decision
+# the author made about how the file reads, and each is invisible to anything downstream of
+# `normalizeFlow` — so a writer that rebuilt the document from the model would rewrite all four and
+# no test of what a flow *means* would notice.
+version: 1
+
+meta:
+  name: Builder — anchors, a merge key and flow style
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+vars:
+  step_defaults: &defaults
+    timeout: 30000
+
+steps:
+  - id: sign_in
+    operation: regress-api#signIn
+    retry: &poll { maxAttempts: 10, delay: 500 }
+
+  - id: create
+    operation: regress-api#createThing
+    retry: *poll
+
+  - id: read_back
+    <<: *defaults
+    operation: regress-api#getThing
+    depends: [sign_in, create]
+    pathParams:
+      id: thing-1
+
+  - id: settle
+    operation: regress-api#getState

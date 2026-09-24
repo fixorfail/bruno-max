@@ -1,0 +1,21 @@
+# B1.5 — a chain whose second step declares its own dependency, which is what an insert must leave
+# alone.
+#
+# §5.1's rule is *position*, not rewiring: a step dropped between `a` and `c` inherits the sequence
+# from `a`, and `c` — which named its parent explicitly — keeps naming it, so the new step is a leaf
+# and the file gains two lines rather than a rewiring of its neighbours.
+version: 1
+
+meta:
+  name: Builder — a declared dependency
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: a
+    operation: regress-api#signIn
+
+  - id: c
+    operation: regress-api#getState
+    depends: [a]

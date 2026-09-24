@@ -230,14 +230,12 @@ const collect = async (
     if (seen.has(target)) continue;
 
     try {
-      const inner = await collect(
-        await loader.readFlow(target),
-        loader,
-        scope,
-        `${prefix}${step.id}/`,
-        `${prefix}${step.id}`,
-        new Set([...seen, target])
-      );
+      const library = await loader.readFlow(target);
+      const inner = await collect(library, loader, scope, `${prefix}${step.id}/`, `${prefix}${step.id}`, new Set([...seen, target]));
+      // The interface the caller reads, on the container: an internal step's outputs are its own
+      // file's (§12), and the exports are the one thing of the library's a caller may name.
+      const container = nodes.find((node) => node.id === `${prefix}${step.id}`);
+      if (container) container.exports = Object.entries(library.flow.exports).map(([name, source]) => ({ name, source }));
       nodes.push(...inner.nodes);
       edges.push(...inner.edges);
     } catch {

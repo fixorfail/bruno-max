@@ -27,7 +27,7 @@ export const aliasFor = (apiSpec) => {
  * Two specs whose filenames slug to the same alias would silently collapse into one binding, since
  * `apis:` is a mapping — so the second one takes a suffix instead.
  */
-const uniqueAlias = (alias, taken) => {
+export const uniqueAlias = (alias, taken) => {
   let candidate = alias;
   for (let suffix = 2; taken.has(candidate); suffix += 1) {
     candidate = `${alias}-${suffix}`;

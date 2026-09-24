@@ -118,6 +118,11 @@ const applyEditorProfile = (
   );
 };
 
+/** `knownGlobals` as JSHint reads them: declared, and not writable from the code being linted. */
+const knownGlobals = (names) => Object.fromEntries((names || []).map((name) => [name, false]));
+
+const knownGlobalsKey = (props) => (props.knownGlobals || []).join('\n');
+
 class CodeEditor extends React.Component {
   constructor(props) {
     super(props);
@@ -135,7 +140,11 @@ class CodeEditor extends React.Component {
       esversion: 11,
       expr: true,
       asi: true,
-      highlightLines: true
+      highlightLines: true,
+      // Names the caller knows are in scope, so the linter does not report them as undefined. The
+      // linter is told what it cannot work out for itself — a script composed with a prelude, a
+      // sandbox global — and the caller decides what that is.
+      globals: knownGlobals(this.props.knownGlobals)
     };
 
     const longLineDetected = hasLongLine(this.cachedValue);
@@ -486,6 +495,12 @@ class CodeEditor extends React.Component {
     // user-input changes which could otherwise result in an infinite
     // event loop.
     this.ignoreChangeEvent = true;
+    if (this.editor && !this.longLineMode && knownGlobalsKey(this.props) !== knownGlobalsKey(prevProps)) {
+      this.lintOptions.globals = knownGlobals(this.props.knownGlobals);
+      // The list arrives after the first lint pass, so re-run it rather than leaving the underlines
+      // there until the next keystroke.
+      this.editor.performLint?.();
+    }
     if (this.props.schema !== prevProps.schema && this.editor && !this.longLineMode) {
       this.editor.options.lint.schema = this.props.schema;
       this.editor.options.hintOptions.schema = this.props.schema;

@@ -603,3 +603,120 @@ describe('the documents cover the engine', () => {
     });
   }
 });
+
+/**
+ * A diagnostic that names a step names a line.
+ *
+ * `Positions.at` resolves a path from the *document root*, and `createReport` takes the path it is
+ * given without falling back to the step — so a path naming a step's own field without saying which
+ * step resolves to nothing, and the diagnostic reaches the author with no line at all. It is a
+ * silent failure of exactly the kind these checks exist to prevent: the code and the message are
+ * right, every assertion on them passes, and the one thing an author needs to act on is missing.
+ *
+ * Asserted as the invariant rather than per code, because that is what stops the next one: a
+ * diagnostic with no `node` falls back to the step's own position, so `stepId` without a line can
+ * only mean an anchor that did not resolve.
+ */
+describe('every step-anchored diagnostic carries its line', () => {
+  const flowFile = (name, body) => {
+    const entry = path.join(FLOWS, `anchors-${name}.flow.yml`);
+    return { entry, files: { [entry]: body } };
+  };
+
+  it('anchors each of the per-step checks at the field it is about', async () => {
+    const { entry, files } = flowFile('per-step', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+    body:
+      email: qa@example.com
+      password: hunter2
+    pre:
+      nonce: |
+        () => 'abcd'
+      signature: |
+        (ctx) => 'sig:' + ctx.pre.nonce
+    outputs:
+      missing: { from: pre, path: nonc }
+      interpolated: "{{pre.nonce}}"
+      scripted: "(res) => res.body.data.id"
+      called:
+        script: |
+          (res) => lastFour(res.body.data.id)
+`);
+
+    const diagnostics = await validate(entry, { files });
+    const anchored = diagnostics.filter((entry_) => entry_.stepId);
+
+    // Every per-step check fired, so the assertion below is over all of them at once.
+    expect([...new Set(anchored.map((entry_) => entry_.code))].sort()).toEqual([
+      'interpolation-in-output-path',
+      'pre-reads-sibling-value',
+      'script-in-output-path',
+      'unknown-function',
+      'unknown-pre-value',
+      'unused-output'
+    ]);
+    expect(anchored.filter((entry_) => !(entry_.line > 0))).toEqual([]);
+
+    // Each is anchored at its own field rather than all at the step, which is what the path buys.
+    expect(new Set(anchored.map((entry_) => entry_.line)).size).toBeGreaterThan(1);
+  });
+
+  /** A flow-level anchor addresses the document directly, and `stages:` is a mapping by name. */
+  it('anchors a stage problem at the stage that has it', async () => {
+    const { entry, files } = flowFile('stages', `
+version: 1
+
+apis:
+  shop-api: ../specs/shop-v1.yml
+
+stages:
+  setup: sign_in
+  teardown: nowhere
+
+steps:
+  - id: sign_in
+    operation: shop-api#login
+    auth: none
+`);
+
+    const staged = (await validate(entry, { files })).filter((entry_) => entry_.message.includes('nowhere'));
+
+    expect(staged).not.toHaveLength(0);
+    expect(staged.filter((entry_) => !(entry_.line > 0))).toEqual([]);
+  });
+});
+
+/**
+ * §10.2's reserved roots, against the array the dialect actually reads.
+ *
+ * The list is the whole of the rule — a reader classifies an operand by its first segment and
+ * nothing else — so a root the engine treats as a reference and the spec does not name is a
+ * documented rule that is not the implemented one. It drifted exactly that way once: `pre` and
+ * `process` became namespaces and §10.2 kept saying seven.
+ */
+describe('§10.2 names every reserved root', () => {
+  const { RESERVED_ROOTS } = require('../../src/interpolate');
+  const SPEC = path.join(__dirname, '../../../../docs/specs/001-api-flows.md');
+
+  const COUNTED = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+
+  it('lists them all, and counts them correctly', () => {
+    const text = fs.readFileSync(SPEC, 'utf8');
+    const from = text.indexOf('The reserved roots are');
+    // The paragraph, as one line: the list is wrapped, so the sentences it is read for are too.
+    const paragraph = text.slice(from, text.indexOf('\n\n', from)).replace(/\s+/g, ' ');
+    const named = [...new Set([...paragraph.matchAll(/`([a-z]+)`/g)].map((match) => match[1]))];
+
+    expect(named.sort()).toEqual([...RESERVED_ROOTS].sort());
+    // The prose counts them too, and a count that disagrees with the list is the same drift.
+    expect(paragraph).toContain(`the ${COUNTED[RESERVED_ROOTS.length]} roots are fixed`);
+  });
+});

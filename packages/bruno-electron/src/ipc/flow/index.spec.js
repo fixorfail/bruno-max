@@ -1585,3 +1585,216 @@ describe('a suite of flows', () => {
     expect(readCapture.mock.calls[0][0]).toMatchObject({ scopeRoot: '/w', dir: '/w/.bruno-runs/suite-a/run-1', stepId: 'login', attempt: 1 });
   });
 });
+
+/**
+ * 005-C §8, B6 — the host boundary the three new channels add: a structured edit, the step editor's
+ * read, and the operations picker. `applyFlowEdits`, `readFlowEditModel` and `listFlowOperations` are
+ * the engine's own real functions here, for `readFlowProperties`/`writeFlowProperties`'s reason above
+ * — a handler tested against a stub of its own engine call would assert its own plumbing.
+ */
+describe('the host boundary (005-C B6)', () => {
+  const os = require('os');
+  const path = require('path');
+  const fs = require('fs');
+
+  const FLOW = 'version: 1\nmeta:\n  name: Checkout\n\nsteps:\n  - id: charge\n    operation: get /health\n';
+
+  let scopeRoot;
+  let scope;
+  let entry;
+  let applyFlowEditHandler;
+  let readFlowEditModelHandler;
+  let listFlowOperationsHandler;
+  let stepRequestExampleHandler;
+
+  beforeEach(() => {
+    scopeRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'flow-b6-')));
+    scope = { workspaceRoot: scopeRoot };
+    entry = path.join(scopeRoot, 'checkout.flow.yml');
+    fs.writeFileSync(entry, FLOW, 'utf8');
+
+    // The file-level `./ports` mock above answers every `readSpec` with the same empty document,
+    // which cannot tell a readable binding from a missing one (B6.5) or load the real fixtures this
+    // block writes to disk (B6.3). A fresh module registry with the real ports underneath — the ones
+    // `ports.spec.js` already covers — is what lets `listFlowOperations` do its own OpenAPI reads.
+    jest.resetModules();
+    jest.doMock('./ports', () => ({
+      createPorts: () => ({
+        readFile: (target) => fs.promises.readFile(target),
+        readSpec: async (source) => ({ text: await fs.promises.readFile(source, 'utf8'), from: 'file' })
+      })
+    }));
+    ({ applyFlowEditHandler, readFlowEditModelHandler, listFlowOperationsHandler, stepRequestExampleHandler } = require('./index'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(scopeRoot, { recursive: true, force: true });
+  });
+
+  /** B6.1 — pins 005 §9.4's transform-not-write shape. */
+  it('flow-apply-edit writes no file', () => {
+    const before = fs.readFileSync(entry);
+
+    const result = applyFlowEditHandler({
+      entry,
+      scope,
+      content: FLOW,
+      edits: [{ kind: 'step.patch', id: 'charge', patch: { set: { timeout: 5000 } } }]
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      text: FLOW.replace('operation: get /health\n', 'operation: get /health\n    timeout: 5000\n'),
+      changed: true
+    });
+    expect(fs.readFileSync(entry)).toEqual(before);
+  });
+
+  /** B6.2 — as 002 §11.3's read channels do. */
+  it('rejects an entry outside the scope, and one that is not a flow, on all three handlers', async () => {
+    const outside = path.join(scopeRoot, '..', 'elsewhere.flow.yml');
+    const notes = path.join(scopeRoot, 'notes.txt');
+    fs.writeFileSync(notes, 'not a flow', 'utf8');
+    const edits = [{ kind: 'step.patch', id: 'charge', patch: { set: { timeout: 1 } } }];
+
+    expect(() => applyFlowEditHandler({ entry: outside, scope, content: FLOW, edits })).toThrow('outside its scope');
+    expect(() => applyFlowEditHandler({ entry: notes, scope, content: FLOW, edits })).toThrow('not a flow file');
+
+    await expect(readFlowEditModelHandler({ entry: outside, scope })).rejects.toThrow('outside its scope');
+    await expect(readFlowEditModelHandler({ entry: notes, scope })).rejects.toThrow('not a flow file');
+
+    expect(() => listFlowOperationsHandler({ entry: outside, scope })).toThrow('outside its scope');
+    expect(() => listFlowOperationsHandler({ entry: notes, scope })).toThrow('not a flow file');
+
+    expect(() => stepRequestExampleHandler({ entry: outside, scope, stepId: 'charge' })).toThrow('outside its scope');
+    expect(() => stepRequestExampleHandler({ entry: notes, scope, stepId: 'charge' })).toThrow('not a flow file');
+  });
+
+  /** B6.3 — the draft overlay reaches both reads. */
+  it('answers the edit model and the operations picker from the draft, not the file on disk', async () => {
+    fs.writeFileSync(
+      path.join(scopeRoot, 'payments.yml'),
+      'openapi: 3.0.0\npaths:\n  /charges:\n    post:\n      operationId: createCharge\n',
+      'utf8'
+    );
+    const draft
+      = 'version: 1\napis:\n  payments: ./payments.yml\nsteps:\n  - id: charge\n    operation: payments#createCharge\n';
+
+    const model = await readFlowEditModelHandler({ entry, scope, content: draft });
+    expect(model.apis.map((api) => api.alias)).toEqual(['payments']);
+
+    const operations = await listFlowOperationsHandler({ entry, scope, content: draft });
+    expect(operations.apis).toHaveLength(1);
+    expect(operations.apis[0].alias).toBe('payments');
+    expect(operations.apis[0].operations.map((operation) => operation.operationId)).toEqual(['createCharge']);
+
+    // 005 §6.7 — the same draft, read for the step's own operation rather than the whole picker.
+    const example = await stepRequestExampleHandler({ entry, scope, content: draft, stepId: 'charge' });
+    expect(example).toEqual({ reason: 'no-request-body' });
+  });
+
+  /**
+   * B6.8 — 001 §8.6's names, which the editor's linter has to be told or it underlines them.
+   *
+   * The model is read from text and a library is a file, so this half is the host's: the same ports
+   * the draft reads through, resolving what each library declares.
+   */
+  it('answers the edit model with every name a script may call', async () => {
+    fs.mkdirSync(path.join(scopeRoot, 'scripts'));
+    fs.writeFileSync(
+      path.join(scopeRoot, 'scripts', 'helpers.js'),
+      'const lastFour = (v) => String(v).slice(-4);\nfunction digitsOnly(v) { return v; }\n',
+      'utf8'
+    );
+    const draft = `${FLOW}functions:\n  use:\n    - ./scripts/helpers.js\n  label: (v) => v\n`;
+
+    const model = await readFlowEditModelHandler({ entry, scope, content: draft });
+
+    expect(model.functionNames).toEqual(expect.arrayContaining(['lastFour', 'digitsOnly', 'label']));
+  });
+
+  /**
+   * A helper file mid-rename is reported as `unresolved-function-library` on the flow, by validate.
+   * Failing the model over it would take the whole step editor down with it.
+   */
+  it('keeps the edit model when a library file cannot be read', async () => {
+    const draft = `${FLOW}functions:\n  use:\n    - ./scripts/not-here.js\n  label: (v) => v\n`;
+
+    const model = await readFlowEditModelHandler({ entry, scope, content: draft });
+
+    expect(model.steps.map((step) => step.id)).toEqual(['charge']);
+    expect(model.functionNames).toEqual(['label']);
+  });
+
+  /** B6.4 — as 002 §4.1c's create writes it. */
+  it('relativizes an absolute api.add source before it reaches the engine', () => {
+    const specPath = path.join(scopeRoot, 'payments.yml');
+
+    const result = applyFlowEditHandler({
+      entry,
+      scope,
+      content: FLOW,
+      edits: [{ kind: 'api.add', binding: { alias: 'payments', source: specPath } }]
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('payments: ./payments.yml');
+  });
+
+  /** B6.6 — as 001 §12.2 resolves it: against the flow within its own root, from the workspace beyond it. */
+  it('relativizes an absolute uses: target before it reaches the engine', () => {
+    const insert = (uses) => ({ kind: 'step.insert', step: { uses } });
+
+    const beside = applyFlowEditHandler({ entry, scope, content: FLOW, edits: [insert(path.join(scopeRoot, 'shared', 'sign-in.flow.yml'))] });
+    expect(beside.ok).toBe(true);
+    expect(beside.text).toContain('  - id: sign_in\n    uses: ./shared/sign-in.flow.yml\n');
+
+    const collectionRoot = path.join(scopeRoot, 'collections', 'payments');
+    const collectionEntry = path.join(collectionRoot, 'flows', 'charge.flow.yml');
+    const collectionScope = { workspaceRoot: scopeRoot, collectionRoot };
+    const library = path.join(scopeRoot, 'flows', 'shared', 'sign-in.flow.yml');
+
+    const reached = applyFlowEditHandler({ entry: collectionEntry, scope: collectionScope, content: FLOW, edits: [insert(library)] });
+    expect(reached.ok).toBe(true);
+    expect(reached.text).toContain('uses: workspace:flows/shared/sign-in.flow.yml\n');
+
+    const elsewhere = applyFlowEditHandler({ entry, scope, content: FLOW, edits: [insert(path.join(scopeRoot, '..', 'elsewhere.flow.yml'))] });
+    expect(elsewhere.ok).toBe(true);
+    expect(elsewhere.text).toContain(`uses: ${path.join(scopeRoot, '..', 'elsewhere.flow.yml')}\n`);
+  });
+
+  /** B6.7 — as 001 §8.6 resolves a `use:` entry: against the flow's own directory. */
+  it('relativizes an absolute functions.use source before it reaches the engine', () => {
+    const script = path.join(scopeRoot, 'scripts', 'helpers.js');
+
+    const used = applyFlowEditHandler({ entry, scope, content: FLOW, edits: [{ kind: 'functions.use', source: script }] });
+    expect(used.ok).toBe(true);
+    expect(used.text).toContain('functions:\n  use: [ ./scripts/helpers.js ]\n');
+
+    const unused = applyFlowEditHandler({ entry, scope, content: used.text, edits: [{ kind: 'functions.unuse', source: script }] });
+    expect(unused.ok).toBe(true);
+    expect(unused.text).toBe(FLOW);
+  });
+
+  /** B6.5 */
+  it('does not empty the picker when one binding is unreadable', async () => {
+    fs.writeFileSync(
+      path.join(scopeRoot, 'payments.yml'),
+      'openapi: 3.0.0\npaths:\n  /charges:\n    post:\n      operationId: createCharge\n',
+      'utf8'
+    );
+    const draft
+      = 'version: 1\napis:\n  payments: ./payments.yml\n  shipping: ./missing.yml\nsteps:\n  - id: charge\n    operation: payments#createCharge\n';
+
+    const operations = await listFlowOperationsHandler({ entry, scope, content: draft });
+
+    expect(operations.apis).toHaveLength(2);
+    const payments = operations.apis.find((api) => api.alias === 'payments');
+    const shipping = operations.apis.find((api) => api.alias === 'shipping');
+
+    expect(payments.error).toBeUndefined();
+    expect(payments.operations.map((operation) => operation.operationId)).toEqual(['createCharge']);
+    expect(shipping.error).toBeTruthy();
+    expect(shipping.operations).toEqual([]);
+  });
+});

@@ -1,0 +1,25 @@
+# B3.3 — a `!...` suppressing an inherited output (001 §8.5).
+#
+# §12 believes the list of positions a tag can appear in is complete, and this family is where a
+# missing one would show up. Each fixture carries the tag in one position and an untouched step
+# beside it, so a patch to the neighbour is the assertion that the tag survived.
+version: 1
+
+meta:
+  name: Builder — a suppressed output
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+steps:
+  - id: create
+    operation: regress-api#createThing
+    outputs:
+      thingId: data.id
+      ref: !...
+    maxDuration: 120000
+
+  - id: read_back
+    operation: regress-api#getThing
+    pathParams:
+      id: thing-1

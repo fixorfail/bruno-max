@@ -421,6 +421,16 @@ describe('R4q — sub-flows', () => {
     expect(node(description, 'create').parent).toBeUndefined();
   });
 
+  /** 005-C B4.9's engine half: the interface a caller reads, on the container and nowhere else. */
+  it('carries the library\'s exports on the container, as it declares them', async () => {
+    const description = await describeFlow(flow('r9-subflow-step-count.flow.yml'));
+    const container = description.nodes.find((entry) => entry.kind === 'subflow');
+
+    expect(container.exports).toEqual([{ name: 'thingId', source: 'steps.make.thingId' }]);
+    expect(description.nodes.filter((entry) => entry.kind !== 'subflow').every((entry) => entry.exports === undefined)).toBe(true);
+    expect(node(await describeFlow(flow('r4-subflow-slot.flow.yml')), 'child').exports).toEqual([]);
+  });
+
   it('ranks an internal step within its own flow', async () => {
     const description = await describeFlow(flow('r4-subflow-slot.flow.yml'));
 

@@ -75,7 +75,7 @@ describe('StepDetail', () => {
     expect(screen.getByTestId('flow-step-tab-response')).toHaveClass('active');
     expect(screen.getByTestId('flow-step-tab-request')).not.toHaveClass('active');
     // The row still reads in the order the call happened in.
-    const tabs = [...document.querySelectorAll('.detail-tabs button')].map((button) => button.textContent);
+    const tabs = [...document.querySelectorAll('.sheet-tabs button')].map((button) => button.textContent);
     expect(tabs).toEqual(['request', 'response', 'assertions', 'validation']);
   });
 
@@ -156,7 +156,7 @@ describe('StepDetail', () => {
     it('sits between the step and its outcome, where the request and response it selects are read', () => {
       renderPane({ iteration: undefined, node: polled });
 
-      const header = [...document.querySelector('.detail-header').children];
+      const header = [...document.querySelector('.sheet-header').children];
       expect(header.map((element) => element.className)).toEqual([
         'detail-step',
         'detail-attempt',
@@ -232,12 +232,12 @@ describe('StepDetail', () => {
       });
       fireEvent.click(screen.getByTestId('flow-step-tab-assertions'));
 
-      await waitFor(() => expect(document.querySelector('.detail-table tr')).toHaveClass('passed'));
+      await waitFor(() => expect(document.querySelector('.detail-table tbody tr')).toHaveClass('passed'));
 
       fireEvent.change(screen.getByTestId('flow-step-attempt'), { target: { value: '1' } });
 
       expect(await screen.findByText('"pending"')).toBeInTheDocument();
-      expect(document.querySelector('.detail-table tr')).toHaveClass('failed');
+      expect(document.querySelector('.detail-table tbody tr')).toHaveClass('failed');
     });
 
     /** Validation is per-attempt for the same reason, and travels in the same file. */
@@ -876,5 +876,73 @@ describe('StepDetail', () => {
       expect(await screen.findByText('URL')).toBeInTheDocument();
       expect(screen.queryByText('Captures were disabled for this run')).not.toBeInTheDocument();
     });
+  });
+});
+
+/**
+ * §8.1 extracts a value or it does not, and an output that found nothing is simply absent from the
+ * result — so a pane listing what was extracted shows a path that missed as no row at all. That is
+ * the failure this pane is most often opened to diagnose.
+ */
+describe('B4.17 — the outputs it lists', () => {
+  const settled = (outputs) => ({ state: 'success', attempts: 1, assertions: [], outputs, capturePath: '/runs/one/login' });
+
+  it('lists an output that resolved to nothing, as undefined', () => {
+    renderPane({
+      iteration: undefined,
+      node: settled({ token: 'tok-1' }),
+      declaredOutputs: ['token', 'role']
+    });
+
+    expect(screen.getByTestId('flow-step-output-undefined-role')).toHaveTextContent('undefined');
+    expect(screen.queryByTestId('flow-step-output-undefined-token')).not.toBeInTheDocument();
+  });
+
+  /** A run recorded before the flow was edited still shows everything it produced. */
+  it('lists a value it holds under a name the description does not carry', () => {
+    renderPane({ iteration: undefined, node: settled({ legacy: 'kept' }), declaredOutputs: ['token'] });
+
+    expect(screen.getByTestId('flow-step-output-undefined-token')).toBeInTheDocument();
+    expect(screen.getByText('"kept"')).toBeInTheDocument();
+  });
+
+  it('shows nothing where the step declares none and produced none', () => {
+    renderPane({ iteration: undefined, node: settled({}), declaredOutputs: [] });
+
+    expect(screen.queryByText('Outputs')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * §10.2 writes an assertion as `<expr> <op> <value>`: the expression's value on the left, what it
+ * was compared against on the right. The two columns beside the line read in that order, and say
+ * which is which — the order is only checkable by eye on a row that failed, and by then the reader
+ * is already trying to work out why.
+ */
+describe('the assertions it lists', () => {
+  const asserted = (assertions) => ({ state: 'failed', attempts: 1, assertions, outputs: {} });
+  // No `runDir`, so the pane shows the step's own outcome rather than reading an attempt's capture —
+  // which attempt these came from is a different scenario, above.
+  const renderAssertions = (assertions) => {
+    renderPane({ iteration: undefined, runDir: undefined, node: asserted(assertions) });
+    fireEvent.click(screen.getByTestId('flow-step-tab-assertions'));
+  };
+
+  it('names the columns, and puts the actual value before the expected one', () => {
+    renderAssertions([{ expr: 'res.status eq 201', expected: 201, actual: 500, passed: false }]);
+
+    const headings = [...document.querySelectorAll('.detail-table th')].map((cell) => cell.textContent);
+    expect(headings).toEqual(['', 'Assertion', 'Actual', 'Expected']);
+
+    const cells = [...document.querySelectorAll('.detail-table tbody td')].map((cell) => cell.textContent);
+    expect(cells).toEqual(['✗', 'res.status eq 201', '500', '201']);
+  });
+
+  /** An operator that takes no operand has nothing to compare against, and the cell stays empty. */
+  it('leaves the expected column empty for a unary assertion', () => {
+    renderAssertions([{ expr: 'res.body.items isEmpty', actual: [], passed: false }]);
+
+    const cells = [...document.querySelectorAll('.detail-table tbody td')].map((cell) => cell.textContent);
+    expect(cells).toEqual(['✗', 'res.body.items isEmpty', '[]', '']);
   });
 });
