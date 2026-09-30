@@ -73,6 +73,7 @@
     "build:schema-types": "npm run build --workspace=packages/bruno-schema-types",
     "build:bruno-max-flow": "npm run build --workspace=packages/bruno-max-flow",
     "build:electron": "node ./scripts/build-electron.js",
+    "build:electron:benchmark": "cross-env BRUNO_BENCHMARK=true npm run build:benchmark --workspace=packages/bruno-app && cross-env BRUNO_BENCHMARK=true node scripts/build-electron.js",
     "build:electron:mac": "./scripts/build-electron.sh mac",
     "build:electron:win": "./scripts/build-electron.sh win",
     "build:electron:linux": "./scripts/build-electron.sh linux",

@@ -8,6 +8,7 @@ import {
 } from 'utils/snapshot';
 import { normalizePath } from 'utils/common/path';
 import { serializeForkSnapshot } from 'fork/registry';
+import { API_SPEC_TAB_TYPE } from 'utils/api-specs';
 
 const { ipcRenderer } = window;
 
@@ -140,6 +141,8 @@ export const serializeSnapshot = async (state, options = {}) => {
 
     let lastActiveCollectionPathname = null;
     let activeWorkspaceTabType = null;
+    let apiSpecTabs = [];
+    let activeApiSpecTabPathname = null;
 
     if (isActiveWorkspace) {
       const activeTab = tabs.tabs.find((t) => t.uid === tabs.activeTabUid);
@@ -160,9 +163,30 @@ export const serializeSnapshot = async (state, options = {}) => {
       ) {
         activeWorkspaceTabType = activeTab.type;
       }
+
+      if (workspace.scratchCollectionUid) {
+        apiSpecTabs = tabs.tabs
+          .filter((t) => (
+            t.collectionUid === workspace.scratchCollectionUid
+            && t.type === API_SPEC_TAB_TYPE
+            && t.apiSpecPathname
+          ))
+          .map((t) => normalizePath(t.apiSpecPathname));
+
+        if (
+          activeTab
+          && activeTab.collectionUid === workspace.scratchCollectionUid
+          && activeTab.type === API_SPEC_TAB_TYPE
+          && activeTab.apiSpecPathname
+        ) {
+          activeApiSpecTabPathname = normalizePath(activeTab.apiSpecPathname);
+        }
+      }
     } else {
       lastActiveCollectionPathname = existingWorkspace?.lastActiveCollectionPathname || null;
       activeWorkspaceTabType = existingWorkspace?.activeWorkspaceTabType || null;
+      apiSpecTabs = existingWorkspace?.apiSpecTabs || [];
+      activeApiSpecTabPathname = existingWorkspace?.activeApiSpecTabPathname || null;
     }
 
     const workspaceSorting = isActiveWorkspace
@@ -175,6 +199,8 @@ export const serializeSnapshot = async (state, options = {}) => {
       lastActiveCollectionPathname,
       sorting: workspaceSorting,
       activeWorkspaceTabType,
+      apiSpecTabs,
+      activeApiSpecTabPathname,
       collections: [...workspaceCollectionPaths]
     });
   });

@@ -31,6 +31,9 @@ import { getInvalidVariableNames, invalidVariableNamesError } from 'utils/common
 import { isEnvironmentValidationError } from 'utils/environments';
 import ExampleTab from '../ExampleTab';
 import MockResponseTab from 'components/MockServer/RequestTabs/MockResponseTab';
+import ConfirmApiSpecClose from './ConfirmApiSpecClose';
+import { findApiSpecByPathname, hasUnsavedApiSpecChanges } from 'utils/api-specs';
+import { clearApiSpecDraft, saveApiSpecTabDraft } from 'providers/ReduxStore/slices/apiSpec';
 import toast from 'react-hot-toast';
 
 const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUid, hasOverflow, setHasOverflow, dropdownContainerRef }) => {
@@ -44,6 +47,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
   const [showConfirmFolderClose, setShowConfirmFolderClose] = useState(false);
   const [showConfirmEnvironmentClose, setShowConfirmEnvironmentClose] = useState(false);
   const [showConfirmGlobalEnvironmentClose, setShowConfirmGlobalEnvironmentClose] = useState(false);
+  const [showConfirmApiSpecClose, setShowConfirmApiSpecClose] = useState(false);
   const [newRequestTarget, setNewRequestTarget] = useState(null);
 
   const menuDropdownRef = useRef();
@@ -146,6 +150,11 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
       e.preventDefault();
       e.stopPropagation();
 
+      if (hasApiSpecDraft) {
+        setShowConfirmApiSpecClose(true);
+        return;
+      }
+
       // Close the tab
       dispatch(
         closeTabs({
@@ -203,6 +212,7 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     'openapi-spec',
     'mock-server',
     'changelog',
+    'api-spec',
     ...FORK_TAB_TYPES
   ];
 
@@ -211,6 +221,12 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
   const hasEnvironmentDraft = tab.type === 'environment-settings' && collection?.environmentsDraft;
   const globalEnvironmentDraft = useSelector((state) => state.globalEnvironments.globalEnvironmentDraft);
   const hasGlobalEnvironmentDraft = (tab.type === 'global-environment-settings' || tab.type === 'workspaceEnvironments') && globalEnvironmentDraft;
+
+  const apiSpec = useSelector((state) => (
+    tab.type === 'api-spec' ? findApiSpecByPathname(state.apiSpec.apiSpecs, tab.apiSpecPathname) : null
+  ));
+  const hasApiSpecDraft = hasUnsavedApiSpecChanges(apiSpec);
+  const apiSpecTabName = tab.tabName || apiSpec?.filename || apiSpec?.name;
 
   const activeTabUid = useSelector((state) => state.tabs.activeTabUid);
   const isActive = tab.uid === activeTabUid;
@@ -253,11 +269,17 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
       } else {
         dispatch(closeTabs({ tabUids: [tab.uid] }));
       }
+    } else if (tab.type === 'api-spec') {
+      if (hasApiSpecDraft) {
+        setShowConfirmApiSpecClose(true);
+      } else {
+        dispatch(closeTabs({ tabUids: [tab.uid] }));
+      }
     } else {
       dispatch(closeTabs({ tabUids: [tab.uid] }));
     }
     return false;
-  }, { enabled: isActive, deps: [isActive, tab, hasChanges, item, collection, folder, globalEnvironmentDraft] });
+  }, { enabled: isActive, deps: [isActive, tab, hasChanges, hasApiSpecDraft, item, collection, folder, globalEnvironmentDraft] });
 
   const saveErrorHandler = (fallbackMessage) => (err) =>
     toast.error(isEnvironmentValidationError(err) ? err.message : fallbackMessage);
@@ -292,6 +314,8 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
       }
     } else if (tab.type === 'collection-settings') {
       dispatch(saveCollectionSettings(collection.uid));
+    } else if (tab.type === 'api-spec') {
+      dispatch(saveApiSpecTabDraft(tab.uid)).catch(() => {});
     } else if (item && item.uid) {
       if (hasChanges || isItemTransientRequest(item)) {
         if (item.type === 'js' || collection.fileMode) {
@@ -330,6 +354,16 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
     event.stopPropagation();
     event.preventDefault();
     setShowConfirmGlobalEnvironmentClose(true);
+  };
+
+  const handleCloseApiSpec = (event) => {
+    if (!hasApiSpecDraft) {
+      return handleCloseClick(event);
+    }
+
+    event.stopPropagation();
+    event.preventDefault();
+    setShowConfirmApiSpecClose(true);
   };
 
   const newRequestModal = newRequestTarget ? (
@@ -499,6 +533,23 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
             }}
           />
         )}
+        {showConfirmApiSpecClose && tab.type === 'api-spec' && (
+          <ConfirmApiSpecClose
+            name={apiSpecTabName}
+            onCancel={() => setShowConfirmApiSpecClose(false)}
+            onCloseWithoutSave={() => {
+              dispatch(clearApiSpecDraft({ uid: apiSpec.uid }));
+              dispatch(closeTabs({ tabUids: [tab.uid] }));
+              setShowConfirmApiSpecClose(false);
+            }}
+            onSaveAndClose={() => {
+              dispatch(saveApiSpecTabDraft(tab.uid)).then(() => {
+                dispatch(closeTabs({ tabUids: [tab.uid] }));
+                setShowConfirmApiSpecClose(false);
+              }).catch(() => {});
+            }}
+          />
+        )}
         {newRequestModal}
         {tab.type === 'folder-settings' && !folder ? (
           tab.name && isItemsLoading
@@ -518,6 +569,8 @@ const RequestTab = ({ tab, collection, tabIndex, collectionRequestTabs, folderUi
           <SpecialTab handleCloseClick={null} type={tab.type} hasDraft={hasGlobalEnvironmentDraft} />
         ) : tab.type === 'mock-server' ? (
           <SpecialTab handleCloseClick={handleCloseClick} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} tabName={tab.tabName} />
+        ) : tab.type === 'api-spec' ? (
+          <SpecialTab handleCloseClick={handleCloseApiSpec} handleDoubleClick={() => dispatch(makeTabPermanent({ uid: tab.uid }))} type={tab.type} tabName={apiSpecTabName} hasDraft={hasApiSpecDraft} />
         ) : isForkTab(tab) ? (
           <ForkSpecialTab tab={tab} onClose={handleCloseClick} />
         ) : (
@@ -731,12 +784,15 @@ function RequestTabMenu({ menuDropdownRef, tabLabelRef, collectionRequestTabs, t
 
     for (const tab of tabs) {
       const item = findItemInCollection(collection, tab.uid);
-      if (item && hasRequestChanges(item)) {
-        try {
+
+      try {
+        if (tab.type === 'api-spec') {
+          await dispatch(saveApiSpecTabDraft(tab.uid));
+        } else if (item && hasRequestChanges(item)) {
           await dispatch(saveRequest(item.uid, collection.uid, true));
-        } catch (err) {
-          continue;
         }
+      } catch (err) {
+        continue;
       }
 
       if (tab?.uid) {

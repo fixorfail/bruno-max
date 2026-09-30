@@ -21,6 +21,7 @@ import { buildDevToolsLocators } from './devtools-console';
 import { buildVariablesTabLocators } from './variables-tab';
 import { buildWorkspaceOverviewLocators } from './workspace/workspace-overview';
 import { buildManageWorkspaceLocators } from './workspace/manage-workspace';
+import { buildCreateWorkspaceModalLocators } from './workspace/create-workspace-modal';
 import { buildTitleBarLocators } from './title-bar';
 import { buildCloneGitRepositoryLocators } from './git/clone-git-repository';
 import { buildResponseExampleLocators } from './response-example';
@@ -56,6 +57,7 @@ export const buildCommonLocators = (page: Page) => ({
   sidebar: buildSidebarLocators(page),
   workspaceOverview: buildWorkspaceOverviewLocators(page),
   manageWorkspace: buildManageWorkspaceLocators(page),
+  createWorkspaceModal: buildCreateWorkspaceModalLocators(page),
   cloneGitRepository: buildCloneGitRepositoryLocators(page),
   migrateToYml: buildMigrateToYmlLocators(page),
   environment: buildEnvironmentLocators(page),
