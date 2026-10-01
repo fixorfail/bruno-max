@@ -214,6 +214,27 @@ const StyledWrapper = styled.div`
     fill: ${(props) => props.theme.colors.text.danger};
   }
 
+  /*
+   * 005 §5.1: a \`+\` between two steps shows only while the pointer is in the gap, or while the \`+\`
+   * has keyboard focus. Opacity rather than visibility, so the control keeps its place and can still
+   * take focus and a click. The hover area has no fill, and \`pointer-events: all\` is what lets it
+   * take the pointer anyway.
+   */
+  .flow-insert-hover {
+    fill: transparent;
+    pointer-events: all;
+  }
+
+  .flow-insert-between .flow-insert {
+    opacity: 0;
+    transition: opacity 120ms ease-in-out;
+  }
+
+  .flow-insert-between:hover .flow-insert,
+  .flow-insert-between .flow-insert:focus-visible {
+    opacity: 1;
+  }
+
   .flow-insert-first {
     position: absolute;
     top: 50%;
@@ -239,6 +260,15 @@ const StyledWrapper = styled.div`
     fill: ${(props) => props.theme.sidebar.bg};
     stroke: ${(props) => props.theme.sidebar.collection.item.focusBorder};
     stroke-width: 1;
+  }
+
+  /* 005 §6.8: a panel that opens a settings tab shows that it is a control. */
+  .flow-panel[data-editable='true'] {
+    cursor: pointer;
+
+    &:hover .panel-box {
+      stroke: ${(props) => props.theme.colors.accent};
+    }
   }
 
   .panel-body {

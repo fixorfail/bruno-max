@@ -42,9 +42,13 @@ test.describe('U9 — the connector file', () => {
       expect((await libraries.boundingBox())!.y).toBeGreaterThan((await ordinary.boundingBox())!.y);
     });
 
-    await test.step('and carries no row menu — there is no meta: to edit and no rename', async () => {
+    await test.step('and its row menu holds the reveal alone — there is no meta: to edit and no rename', async () => {
       await flows.section.row('connectors.yml').hover();
-      await expect(flows.section.menuTrigger('connectors.yml')).toHaveCount(0);
+      await flows.section.menuTrigger('connectors.yml').click();
+      await expect(flows.section.reveal('connectors.yml')).toBeVisible();
+      await expect(flows.section.editYaml('connectors.yml')).toHaveCount(0);
+      await expect(flows.section.properties('connectors.yml')).toHaveCount(0);
+      await page.keyboard.press('Escape');
     });
 
     await test.step('clicking it opens the file itself, rather than a pane that could not read it', async () => {

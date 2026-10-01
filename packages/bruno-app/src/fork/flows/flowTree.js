@@ -41,6 +41,58 @@ export const baseDirectoryOf = (flow) => {
   return flow.fixture ? `${root}/flows/fixtures` : `${root}/flows`;
 };
 
+/** A scope's `flows/` directory, from its root — where §4.1d's group label creates and reveals. */
+export const flowsDirectoryOf = (root) => `${toPosix(root)}/flows`;
+
+/** The directories between `base` and `pathname`, `pathname` itself included. */
+const segmentsBelow = (base, pathname) =>
+  base && pathname.startsWith(`${base}/`) ? pathname.slice(base.length + 1).split('/').filter(Boolean) : [];
+
+/**
+ * §4.1d: which bucket's tree a folder is drawn in — the scripts' or the fixtures' when it sits under
+ * their directory, and otherwise the libraries' when it is in or under one of `libraryFolders`, and
+ * the flows' when it is not.
+ *
+ * Libraries and flows share `flows/`, so the disk cannot say which of the two an empty folder is for.
+ * `libraryFolders` is the session's answer: the folders made from the `Libraries` label.
+ */
+export const folderBucketOf = (folder, libraryFolders = []) => {
+  const pathname = toPosix(folder.pathname);
+  const [first] = segmentsBelow(flowsDirectoryOf(folder.collectionRoot || folder.workspaceRoot), pathname);
+  if (first === 'scripts') return 'scripts';
+  if (first === 'fixtures') return 'fixtures';
+
+  const inLibraryFolder = libraryFolders.some((directory) => {
+    const chosen = toPosix(directory);
+    return pathname === chosen || pathname.startsWith(`${chosen}/`);
+  });
+  return inLibraryFolder ? 'libraries' : 'flows';
+};
+
+/**
+ * The directory a bucket's folders are counted from, for a folder rather than a file. The libraries
+ * count from `flows/`, as the flows do, so the disk's answer is the whole of it.
+ */
+const folderBaseOf = (folder) => {
+  const bucket = folderBucketOf(folder);
+  const base = flowsDirectoryOf(folder.collectionRoot || folder.workspaceRoot);
+  return bucket === 'flows' ? base : `${base}/${bucket}`;
+};
+
+/**
+ * §4.1d: the folders no listed file sits under — the ones only a folder entry can place.
+ *
+ * A folder holding a file is drawn wherever that file is, and drawing it from its folder entry as well
+ * would put a folder of libraries into the flows' tree as an empty row beside the `Libraries` one.
+ */
+export const emptyFoldersOf = (folders, entries) => {
+  const files = entries.map((entry) => toPosix(entry.pathname));
+  return folders.filter((folder) => {
+    const directory = `${toPosix(folder.pathname)}/`;
+    return !files.some((file) => file.startsWith(directory));
+  });
+};
+
 /**
  * The directories between a bucket's base and the file — `[]` for a flow sitting directly in it.
  *
@@ -48,18 +100,7 @@ export const baseDirectoryOf = (flow) => {
  * not reachable through the watcher, which builds both from the same scope, but a flow vanishing
  * from the sidebar is the one outcome a grouping rule must never produce on its own.
  */
-export const folderSegmentsOf = (flow) => {
-  const base = baseDirectoryOf(flow);
-  const pathname = toPosix(flow.pathname);
-  if (!base || !pathname.startsWith(`${base}/`)) {
-    return [];
-  }
-  return pathname
-    .slice(base.length + 1)
-    .split('/')
-    .slice(0, -1)
-    .filter(Boolean);
-};
+export const folderSegmentsOf = (flow) => segmentsBelow(baseDirectoryOf(flow), toPosix(flow.pathname)).slice(0, -1);
 
 /**
  * What a row is identified by within its bucket — `create_company.flow.yml` at the top,
@@ -78,9 +119,10 @@ export const flowLabel = (flow) => flow.name || flow.filename;
 /**
  * `key` is the folder's absolute path — what collapse state is stored under. `path` is the same
  * folder relative to its bucket's base, which is what a `data-testid` reads as and what a person
- * writing a selector would think to type.
+ * writing a selector would think to type. `directory` is the absolute path alone, which §4.1d's
+ * menu and drop target act on.
  */
-const emptyNode = (key, name, path) => ({ key, name, path, folders: [], flows: [] });
+const emptyNode = (key, name, path, directory) => ({ key, name, path, directory, folders: [], flows: [] });
 
 const sortNode = (node) => {
   // Folders above the flows beside them, each set by name. Upstream's collection tree reads the same
@@ -104,29 +146,87 @@ const sortNode = (node) => {
  * Only folders holding something appear: the watcher reports files, so an empty directory on disk is
  * not an entry and never becomes a row.
  */
-export const buildFlowTree = (flows, bucket) => {
-  const root = emptyNode('', '', '');
+const keyPrefixOf = (bucket, base) => `${bucket}:${base}`;
+
+/** The folder node at `segments` below `root`, created on the way down as needed. */
+const folderAt = (root, bucket, base, segments) => {
+  let node = root;
+  let directory = base;
+  let relative = '';
+
+  for (const segment of segments) {
+    directory = `${directory}/${segment}`;
+    relative = relative ? `${relative}/${segment}` : segment;
+    const key = keyPrefixOf(bucket, directory);
+    let child = node.folders.find((folder) => folder.key === key);
+    if (!child) {
+      child = emptyNode(key, segment, relative, directory);
+      node.folders.push(child);
+    }
+    node = child;
+  }
+
+  return node;
+};
+
+/**
+ * `folders` are §4.1d's folder entries for this bucket that no file places — `emptyFoldersOf` — so
+ * a folder made a moment ago is a row before anything is put in it.
+ */
+export const buildFlowTree = (flows, bucket, folders = []) => {
+  const root = emptyNode('', '', '', '');
 
   for (const flow of flows) {
-    let node = root;
-    let key = `${bucket}:${baseDirectoryOf(flow)}`;
-    let relative = '';
+    const base = baseDirectoryOf(flow);
+    folderAt(root, bucket, base, folderSegmentsOf(flow)).flows.push(flow);
+  }
 
-    for (const segment of folderSegmentsOf(flow)) {
-      key = `${key}/${segment}`;
-      relative = relative ? `${relative}/${segment}` : segment;
-      let child = node.folders.find((folder) => folder.key === key);
-      if (!child) {
-        child = emptyNode(key, segment, relative);
-        node.folders.push(child);
-      }
-      node = child;
-    }
-
-    node.flows.push(flow);
+  for (const folder of folders) {
+    const base = folderBaseOf(folder);
+    folderAt(root, bucket, base, segmentsBelow(base, toPosix(folder.pathname)));
   }
 
   return sortNode(root);
+};
+
+/**
+ * §4.1d: the keys of the folders an entry sits in, outermost first — what the section opens so the
+ * row of the active tab can be seen.
+ */
+export const ancestorFolderKeysOf = (entry, bucket) => {
+  const base = baseDirectoryOf(entry);
+  let directory = base;
+  return folderSegmentsOf(entry).map((segment) => {
+    directory = `${directory}/${segment}`;
+    return keyPrefixOf(bucket, directory);
+  });
+};
+
+/**
+ * §4.1d: whether `entry` may be dropped into `directory` — the renderer's half of the host's rule, so
+ * a folder that would refuse the drop does not light up for it.
+ *
+ * Inside the entry's own bucket and nowhere else (a move never changes what a file is), never the
+ * folder it is already in, and never the connector file, which the engine finds by its exact path.
+ */
+export const canMoveInto = (entry, directory) => {
+  if (entry.connectors) {
+    return false;
+  }
+
+  const base = baseDirectoryOf(entry);
+  const target = toPosix(directory);
+  const pathname = toPosix(entry.pathname);
+  if (!base || (target !== base && !target.startsWith(`${base}/`))) {
+    return false;
+  }
+  if (pathname.slice(0, pathname.lastIndexOf('/')) === target) {
+    return false;
+  }
+  if (entry.script || entry.fixture) {
+    return true;
+  }
+  return ![`${base}/scripts`, `${base}/fixtures`].some((inside) => target === inside || target.startsWith(`${inside}/`));
 };
 
 /** Every folder key in a tree, for the header's expand and collapse actions. */

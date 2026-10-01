@@ -286,6 +286,11 @@ const FlowTabPane = ({ tab }) => {
   const [picker, setPicker] = useState(null);
   /** 005 §5.5: the legend's dialog — adding a binding, or editing the one named. */
   const [bindingDialog, setBindingDialog] = useState(null);
+  /**
+   * 005 §6.8: the active tab of the settings sheet. This pane holds it, because the inputs and
+   * exports panels of the graph also select it.
+   */
+  const [settingsTab, setSettingsTab] = useState('defaults');
 
   const flows = useSelector((state) => state.flows.flows);
   const flow = find(flows, (entry) => entry.pathname === tab.pathname);
@@ -704,6 +709,10 @@ const FlowTabPane = ({ tab }) => {
             onRemoveApi={removeApi}
             onConnect={connectSteps}
             onDisconnect={disconnectSteps}
+            onOpenSettings={(name) => {
+              dispatch(stepSelected({ pathname: flow.pathname, stepId: null }));
+              setSettingsTab(name);
+            }}
           />
         ) : null}
 
@@ -724,7 +733,14 @@ const FlowTabPane = ({ tab }) => {
                 editor while the flow is editable — one predicate deciding which, so a step
                 selected while reading a run stays selected when the run is closed. */}
             {editable && !selectedStep ? (
-              <FlowSettings flow={flow} source={source} height={appliedDetailHeight} />
+              <FlowSettings
+                flow={flow}
+                source={source}
+                description={description}
+                height={appliedDetailHeight}
+                tab={settingsTab}
+                onSelectTab={setSettingsTab}
+              />
             ) : null}
             {editable && selectedStep ? (
               <StepEditor

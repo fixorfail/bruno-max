@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import get from 'lodash/get';
 import CodeEditor from 'components/CodeEditor';
@@ -11,6 +11,9 @@ import CodeMarker from '../StepEditor/CodeMarker';
 import { SHEET_EDITOR_ATTRIBUTE } from '../StepEditor/BodyField/sheetScrollGuard';
 import { numberOf } from '../StepEditor/values';
 import StyledWrapper from '../StepEditor/StyledWrapper';
+import ExportsTab from './ExportsTab';
+import InputsTab from './InputsTab';
+import VarsSection from './VarsSection';
 
 /**
  * 005 §6.8 — the pane over 001 §5.2's `config:`, where the step editor's pane is over one step.
@@ -28,7 +31,16 @@ import StyledWrapper from '../StepEditor/StyledWrapper';
  * **A cleared field deletes its key.** §5.2 writes a default as an absence, so emptying
  * `concurrency` removes the line rather than writing `5`; the engine's `config.patch` takes the
  * `unset` that says so, and removes the block when its last key goes.
+ *
+ * **The flow's interface has one tab for each block** — 001 §12.1's `params:` and `exports:`. The
+ * graph shows both blocks as panels, and a click on a panel opens its tab. Thus the caller holds the
+ * active tab (`../index.js`).
  */
+
+const TABS = ['defaults', 'runs', 'inputs', 'exports'];
+
+/** The block that each tab writes. The header shows it, as the step editor shows the operation. */
+const HEADINGS = { defaults: 'config:', runs: 'config:', inputs: 'params: · vars:', exports: 'exports:' };
 
 const RETRY_NUMBERS = [
   { field: 'maxAttempts', label: 'Attempts' },
@@ -84,15 +96,15 @@ const NumberField = ({ label, value, testId, placeholder, onCommit }) => (
   />
 );
 
-const FlowSettings = ({ flow, source, height }) => {
+const FlowSettings = ({ flow, source, description, height, tab, onSelectTab }) => {
   const dispatch = useDispatch();
   const { displayedTheme } = useTheme();
   const preferences = useSelector((state) => state.app.preferences);
-  const [tab, setTab] = useState('defaults');
   const { model, answered } = useEditModel({ flow, source });
   const config = model?.config;
 
-  const patch = (patchOf) => dispatch(applyFlowEdit(flow, [{ kind: 'config.patch', patch: patchOf }]));
+  const edit = (edits) => dispatch(applyFlowEdit(flow, edits));
+  const patch = (patchOf) => edit([{ kind: 'config.patch', patch: patchOf }]);
   /** A field emptied is a key removed (§5.2), which is the whole reason `unset` exists beside `set`. */
   const write = (field, value) =>
     patch(value === undefined || value === '' ? { unset: [field] } : { set: { [field]: value } });
@@ -116,8 +128,8 @@ const FlowSettings = ({ flow, source, height }) => {
 
   const header = (
     <>
-      <span className="editor-step">The flow&apos;s defaults</span>
-      <span className="editor-operation">config:</span>
+      <span className="editor-step">The flow&apos;s settings</span>
+      <span className="editor-operation">{HEADINGS[tab] || HEADINGS.defaults}</span>
       {source?.editError ? (
         <span className="editor-refusal" data-testid="flow-settings-refusal">
           {source.editError}
@@ -131,14 +143,14 @@ const FlowSettings = ({ flow, source, height }) => {
       height={height}
       testId="flow-settings"
       header={header}
-      tabs={config ? ['defaults', 'runs'] : []}
+      tabs={config ? TABS : []}
       activeTab={tab}
-      onSelectTab={setTab}
+      onSelectTab={onSelectTab}
       tabTestId={(name) => `flow-settings-tab-${name}`}
     >
       {!config && !answered ? <div className="editor-hint">Reading the flow…</div> : null}
       {!config && answered ? (
-        <div className="editor-hint">This flow does not parse, so its config cannot be edited here.</div>
+        <div className="editor-hint">This flow does not parse, so its settings cannot be edited here.</div>
       ) : null}
 
       {config && tab === 'defaults' ? (
@@ -275,6 +287,17 @@ const FlowSettings = ({ flow, source, height }) => {
             </div>
           </div>
         </>
+      ) : null}
+
+      {config && tab === 'inputs' ? (
+        <>
+          <InputsTab params={model.params || []} isLibrary={Boolean(description?.isLibrary)} onEdit={edit} />
+          <VarsSection vars={model.vars || []} onEdit={edit} />
+        </>
+      ) : null}
+
+      {config && tab === 'exports' ? (
+        <ExportsTab exports={model.exports || []} description={description} onEdit={edit} />
       ) : null}
     </StyledWrapper>
   );

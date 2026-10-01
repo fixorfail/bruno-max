@@ -475,4 +475,60 @@ describe('FlowsWatcher', () => {
       expect(sent('unlinkFile').at(-1)[2]).toMatchObject({ filename: 'catalog.json', fixture: true });
     });
   });
+
+  /**
+   * §4.1d: a folder the sidebar can show while it is empty — the one a New Folder just made, which no
+   * file entry would ever place.
+   */
+  describe('folders (§4.1d)', () => {
+    const folderEvents = (event) =>
+      win.webContents.send.mock.calls.filter(([channel, name]) => channel === 'main:flow-folder-updated' && name === event);
+
+    it('lists every folder under flows/, empty or not, but not the bucket directories', async () => {
+      fs.mkdirSync(path.join(flowsDir, 'payments', 'refunds'), { recursive: true });
+      fs.mkdirSync(path.join(flowsDir, 'empty'));
+      fs.mkdirSync(path.join(flowsDir, 'scripts', 'auth'), { recursive: true });
+      fs.mkdirSync(path.join(flowsDir, 'fixtures'));
+      fs.mkdirSync(path.join(flowsDir, '.cache', 'nested'), { recursive: true });
+
+      expect(await watcher.listFolders({ workspaceRoot })).toEqual(
+        [
+          path.join(flowsDir, 'empty'),
+          path.join(flowsDir, 'payments'),
+          path.join(flowsDir, 'payments', 'refunds'),
+          path.join(flowsDir, 'scripts', 'auth')
+        ].map((pathname) => ({ pathname, workspaceRoot }))
+      );
+    });
+
+    it('carries the collection root when the scope has one', async () => {
+      const collectionRoot = path.join(workspaceRoot, 'payments');
+      fs.mkdirSync(path.join(collectionRoot, 'flows', 'refunds'), { recursive: true });
+
+      expect(await watcher.listFolders({ workspaceRoot, collectionRoot })).toEqual([
+        { pathname: path.join(collectionRoot, 'flows', 'refunds'), workspaceRoot, collectionRoot }
+      ]);
+    });
+
+    it('does not report folders as tree entries', async () => {
+      fs.mkdirSync(path.join(flowsDir, 'empty'));
+
+      expect(await watcher.listFlows({ workspaceRoot })).toEqual([]);
+    });
+
+    it('reports a folder added and removed, on its own channel', async () => {
+      watcher.addWatcher(win, { workspaceRoot });
+      const folder = path.join(flowsDir, 'payments');
+
+      fs.mkdirSync(folder);
+      await until(() => folderEvents('addDir').length === 1);
+      expect(folderEvents('addDir')[0][2]).toEqual({ pathname: folder, workspaceRoot });
+
+      fs.rmdirSync(folder);
+      await until(() => folderEvents('unlinkDir').length === 1);
+      expect(folderEvents('unlinkDir')[0][2]).toEqual({ pathname: folder, workspaceRoot });
+      // The watched directory itself is never a folder row.
+      expect(folderEvents('addDir').map(([, , entry]) => entry.pathname)).not.toContain(flowsDir);
+    });
+  });
 });

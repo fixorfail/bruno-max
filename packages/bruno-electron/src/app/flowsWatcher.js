@@ -93,6 +93,24 @@ const isListedFile = (pathname, scope) =>
   || isConnectorFile(pathname, scope);
 
 /**
+ * 002 §4.1d: a directory under `flows/` that the sidebar draws as a folder even when it is empty.
+ *
+ * Not `flows/` itself, and not `flows/scripts/` or `flows/fixtures/`: those are where §4.1a counts a
+ * bucket's folders from, so the sidebar draws their labels rather than folder rows for them.
+ */
+const isListedFolder = (pathname, scope) => {
+  const relative = path.relative(flowsDirectoryFor(scope), pathname);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false;
+  }
+  return relative !== SCRIPTS_DIRECTORY && relative !== FIXTURES_DIRECTORY;
+};
+
+/** A folder carries its scope like a file entry does, and nothing else — there is nothing in it to read. */
+const buildFolderEntry = (pathname, { workspaceRoot, collectionRoot }) =>
+  collectionRoot ? { pathname, workspaceRoot, collectionRoot } : { pathname, workspaceRoot };
+
+/**
  * What the sidebar knows about a flow nobody has opened: 002 §4.1's display name and library flag —
  * `meta.name` and `meta.library` — and the strings its search box matches the flow on. Nothing else
  * the file says.
@@ -177,24 +195,33 @@ const buildEntry = (pathname, scope) => {
   return { entry, specs };
 };
 
-const scanFlows = async (directory, scope) => {
+/**
+ * The listed files and folders under `directory`, in one walk.
+ *
+ * A folder under a dot-directory is walked for its files, as it always was, but not listed: the
+ * watcher's `ignored` rule never reports one, so a listed one could never be removed again.
+ */
+const scanFlows = async (directory, scope, found = { files: [], folders: [] }, hidden = false) => {
   let entries;
   try {
     entries = await fs.readdir(directory, { withFileTypes: true });
   } catch (error) {
     // A scope with no flows/ directory yet is the ordinary case, not a failure.
-    return [];
+    return found;
   }
 
-  const found = [];
   for (const entry of entries) {
     const target = path.join(directory, entry.name);
     if (entry.isDirectory()) {
       if (!IGNORED_DIRECTORIES.includes(entry.name)) {
-        found.push(...(await scanFlows(target, scope)));
+        const hiddenFolder = hidden || entry.name.startsWith('.');
+        if (!hiddenFolder && isListedFolder(target, scope)) {
+          found.folders.push(target);
+        }
+        await scanFlows(target, scope, found, hiddenFolder);
       }
     } else if (isListedFile(target, scope)) {
-      found.push(target);
+      found.files.push(target);
     }
   }
   return found;
@@ -275,6 +302,18 @@ class FlowsWatcher {
     };
 
     watcher.on('add', report('addFile')).on('change', report('changeFile')).on('unlink', report('unlinkFile'));
+
+    /**
+     * §4.1d's folders, on a channel of their own rather than as tree entries: every reader of the
+     * tree takes an entry for a file it can open, and a folder is not one.
+     */
+    const reportFolder = (event) => (pathname) => {
+      if (isListedFolder(pathname, scope)) {
+        win.webContents.send('main:flow-folder-updated', event, buildFolderEntry(pathname, scope));
+      }
+    };
+
+    watcher.on('addDir', reportFolder('addDir')).on('unlinkDir', reportFolder('unlinkDir'));
   }
 
   /**
@@ -309,7 +348,7 @@ class FlowsWatcher {
    */
   async listFlows(scope) {
     const watchDirectory = flowsDirectoryFor(scope);
-    const pathnames = await scanFlows(watchDirectory, scope);
+    const { files: pathnames } = await scanFlows(watchDirectory, scope);
     // Path order rather than directory-read order, so the sidebar reads the same on every machine.
     const built = pathnames.sort().map((pathname) => buildEntry(pathname, scope));
 
@@ -318,6 +357,12 @@ class FlowsWatcher {
     // OpenAPI document unwatched until it was edited.
     this.watchSpecs(watchDirectory, built.flatMap(({ specs }) => specs));
     return built.map(({ entry }) => entry);
+  }
+
+  /** §4.1d's folders already on disk, for `listFlows`' reason: the slice needs a moment they are complete. */
+  async listFolders(scope) {
+    const { folders } = await scanFlows(flowsDirectoryFor(scope), scope);
+    return folders.sort().map((pathname) => buildFolderEntry(pathname, scope));
   }
 
   removeWatcher(scope) {
@@ -341,3 +386,9 @@ class FlowsWatcher {
 }
 
 module.exports = FlowsWatcher;
+// 002 §4.1d's moves and new folders keep a file in its bucket, and a bucket is these directories.
+module.exports.flowsDirectoryFor = flowsDirectoryFor;
+module.exports.SCRIPTS_DIRECTORY = SCRIPTS_DIRECTORY;
+module.exports.FIXTURES_DIRECTORY = FIXTURES_DIRECTORY;
+module.exports.CONNECTOR_FILENAME = CONNECTOR_FILENAME;
+module.exports.IGNORED_DIRECTORIES = IGNORED_DIRECTORIES;

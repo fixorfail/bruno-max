@@ -36,7 +36,19 @@ export const buildFlowLocators = (page: Page) => {
       editYaml: (relativePath: string) => page.getByTestId(`flow-edit-yaml-${relativePath}`),
       properties: (relativePath: string) => page.getByTestId(`flow-properties-${relativePath}`),
       duplicate: (relativePath: string) => page.getByTestId(`flow-duplicate-${relativePath}`),
+      reveal: (relativePath: string) => page.getByTestId(`flow-reveal-${relativePath}`),
       renameScript: (relativePath: string) => page.getByTestId(`script-rename-${relativePath}`),
+      /** §4.1d's menus: a folder row's, and a group label's for the top of its `flows/`. */
+      folderMenuTrigger: (relativePath: string) =>
+        page.getByTestId(`flow-folder-${relativePath}`).getByTestId('flow-menu-trigger'),
+      groupMenuTrigger: (label: string) => page.getByTestId(`flow-group-${label}`).getByTestId('flow-menu-trigger'),
+      groupLabelFor: (label: string) => page.getByTestId(`flow-group-${label}`),
+      subgroupMenuTrigger: (key: 'scripts' | 'fixtures') =>
+        page.getByTestId(`flow-subgroup-${key}`).getByTestId('flow-menu-trigger'),
+      /** `suffix` is the folder's bucket-relative path, the group's label, or `subgroup-<bucket>`. */
+      newFolder: (suffix: string) => page.getByTestId(`flow-new-folder-${suffix}`),
+      newFolderName: () => page.getByTestId('create-flow-folder-name'),
+      newFolderDialog: () => page.getByTestId('create-flow-folder'),
       search: () => page.getByTestId('flows-search'),
       add: () => page.getByTestId('flows-header-add'),
       run: () => page.getByTestId('flows-header-run'),
@@ -185,7 +197,8 @@ export const buildFlowLocators = (page: Page) => {
       editor: () => page.getByTestId(`${type}-pane`).locator('.script-editor'),
       filename: () => page.getByTestId(`${type}-pane`).locator('.script-filename'),
       badge: () => page.getByTestId(`${type}-pane`).locator('.script-badge'),
-      state: () => page.getByTestId(`${type}-pane`).locator('.script-state'),
+      // The pane's save state is `SaveState`, shared with the raw editor (005 §7.4).
+      state: () => page.getByTestId(`${type}-pane`).locator('.save-state-text'),
       save: () => page.getByTestId(`${type}-save`)
     }),
 
@@ -217,6 +230,8 @@ export const buildFlowLocators = (page: Page) => {
       insertFirst: () => page.getByTestId('flow-insert-first'),
       insertAfter: (stepId: string) => page.getByTestId(`flow-insert-after-${stepId}`),
       insertBefore: (stepId: string) => page.getByTestId(`flow-insert-before-${stepId}`),
+      /** The hover area around the `+` between a step and the next one (005 §5.1). */
+      insertBetween: (stepId: string) => page.getByTestId(`flow-insert-between-${stepId}`),
       delete: (stepId: string) => page.getByTestId(`flow-delete-${stepId}`),
       portIn: (stepId: string) => page.getByTestId(`flow-port-in-${stepId}`),
       portOut: (stepId: string) => page.getByTestId(`flow-port-out-${stepId}`),

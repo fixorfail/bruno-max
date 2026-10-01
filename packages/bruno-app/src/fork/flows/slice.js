@@ -22,6 +22,19 @@ const MAX_REQUEST_LOGS = 500;
 const initialState = {
   /** The watcher's tree (002 §11.3's `FlowTreeEntry`), flat — the sidebar groups it by scope. */
   flows: [],
+  /**
+   * 002 §4.1d: the folders under each watched `flows/`, flat, as `{ pathname, workspaceRoot,
+   * collectionRoot }`. Apart from `flows` because every reader of that list takes an entry for a file
+   * it can open, and only the sidebar draws a folder — the one no file places being the empty one.
+   */
+  folders: [],
+  /**
+   * 002 §4.1d: the folders made from the `Libraries` label in this session. Libraries and flows share
+   * `flows/`, so nothing on disk says an empty folder is for libraries; this is what keeps one under
+   * that label until a library is put in it. Session state, like `folderExpansion`: after a restart an
+   * empty folder shows under the flows.
+   */
+  libraryFolders: [],
   /** pathname -> { description, error, loading } from `describeFlow` (002 §11.1). */
   descriptions: {},
   /** pathname -> the state of the run being watched, folded from events (002 §8). */
@@ -409,6 +422,34 @@ const slice = createSlice({
       const { workspaceRoot, collectionRoot, flows } = action.payload;
       const isOtherScope = (flow) => flow.workspaceRoot !== workspaceRoot || flow.collectionRoot !== collectionRoot;
       state.flows = [...state.flows.filter(isOtherScope), ...flows];
+    },
+
+    /** `renderer:flow-list-folders` resolved: the folders already on disk for one scope (§4.1d). */
+    foldersLoaded: (state, action) => {
+      const { workspaceRoot, collectionRoot, folders } = action.payload;
+      const isOtherScope = (folder) => folder.workspaceRoot !== workspaceRoot || folder.collectionRoot !== collectionRoot;
+      state.folders = [...state.folders.filter(isOtherScope), ...folders];
+    },
+
+    /**
+     * `main:flow-folder-updated` (§4.1d). No description is invalidated: a folder holds nothing a flow
+     * reads, and the files that moved with one report themselves.
+     */
+    flowFolderUpdated: (state, action) => {
+      const { event, entry } = action.payload;
+      const others = state.folders.filter((folder) => folder.pathname !== entry.pathname);
+      state.folders = event === 'unlinkDir' ? others : [...others, entry];
+      if (event === 'unlinkDir') {
+        state.libraryFolders = state.libraryFolders.filter((pathname) => pathname !== entry.pathname);
+      }
+    },
+
+    /** §4.1d: a folder the `Libraries` label made, drawn under that label while it is empty. */
+    libraryFolderCreated: (state, action) => {
+      const { pathname } = action.payload;
+      if (!state.libraryFolders.includes(pathname)) {
+        state.libraryFolders.push(pathname);
+      }
     },
 
     /** `main:flow-tree-updated` (002 §11.3). */
@@ -997,6 +1038,9 @@ const slice = createSlice({
 
 export const {
   flowsLoaded,
+  foldersLoaded,
+  flowFolderUpdated,
+  libraryFolderCreated,
   flowTreeUpdated,
   flowDependencyChanged,
   flowPathRenamed,

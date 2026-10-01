@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { RANK_GAP } from '../layout';
+import { NODE_HEIGHT, RANK_GAP } from '../layout';
 
 /**
  * 005 §5.1, §5.2 — the affordances that make the drawing editable, drawn over it and only while
@@ -8,8 +8,9 @@ import { RANK_GAP } from '../layout';
  * Everything here writes to the document through the engine and nothing else; the layer never
  * moves a node or draws one the engine has not described. What it adds is the two controls that
  * mean something at a place on the canvas: a `+` on every sequence edge — the drawing of 001 §9.1's
- * implicit chain, so its midpoint is the one place that means *between these two* — and after the
- * last step, and a delete on the step that is selected.
+ * implicit chain, so its midpoint is the one place that means *between these two*, shown while the
+ * pointer is in the gap — before the first step and after the last, and a delete on the step that is
+ * selected.
  *
  * Steps inside an expanded sub-flow are another file's (002 §5.4) and get neither: an edge between
  * two of them is not a place in this document.
@@ -24,6 +25,15 @@ import { RANK_GAP } from '../layout';
 
 const CONTROL_RADIUS = 9;
 const PORT_RADIUS = 6;
+
+/**
+ * The area around a `+` between two steps that shows it. The `+` is hidden until the pointer is in
+ * this area, so a chain of steps does not carry a control on every edge. The width stops short of the
+ * ports at each end of the gap, so the area never covers a port or a step. The height is the height
+ * of a step, so the whole gap between two steps counts.
+ */
+const BETWEEN_HOVER_WIDTH = RANK_GAP - 2 * (PORT_RADIUS + 2);
+const BETWEEN_HOVER_HEIGHT = NODE_HEIGHT;
 
 /** The middle of a routed edge — the middle waypoint, or halfway between the two middle ones. */
 const midpointOf = (points) => {
@@ -169,9 +179,23 @@ const EditLayer = ({ graph, description, selectedStep, onInsertStep, onDeleteSte
 
   return (
     <g className="flow-edit-layer" data-testid="flow-edit-layer">
+      {/* Only the `+` between two steps waits for the pointer. The `+` before the first step and after
+          the last one stay visible: they are the way in to an empty end of the chain, and nothing else
+          on the canvas shows that a step can go there. */}
       {sequenceEdges.map((edge) => {
         const point = midpointOf(edge.points);
-        return <InsertControl key={`${edge.from}-${edge.to}`} x={point.x} y={point.y} at={{ after: edge.from }} onInsertStep={onInsertStep} />;
+        return (
+          <g key={`${edge.from}-${edge.to}`} className="flow-insert-between" data-testid={`flow-insert-between-${edge.from}`}>
+            <rect
+              className="flow-insert-hover"
+              x={point.x - BETWEEN_HOVER_WIDTH / 2}
+              y={point.y - BETWEEN_HOVER_HEIGHT / 2}
+              width={BETWEEN_HOVER_WIDTH}
+              height={BETWEEN_HOVER_HEIGHT}
+            />
+            <InsertControl x={point.x} y={point.y} at={{ after: edge.from }} onInsertStep={onInsertStep} />
+          </g>
+        );
       })}
 
       {firstPlaced ? (

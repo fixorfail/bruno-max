@@ -261,7 +261,9 @@ the flow they want, and the directory that would have answered it is right there
 **The renderer derives the folder; the watcher does not report one.** `FlowTreeEntry` (§11.3) already
 carries the pathname and the scope root the directories sit between, so a `directory` field would
 widen an IPC contract to carry what both ends can compute — and every entry already in the slice
-would keep its old shape until its scope was listed again.
+would keep its old shape until its scope was listed again. §4.1d adds one exception: an empty folder
+has no file to derive it from, so the watcher reports folders on a channel of their own, and the
+sidebar draws a folder from that report only when no file places it.
 
 **Each of §4.1's three buckets is a tree of its own** — the flows, the libraries and the scripts
 alike — counted from its own base: `flows/` for the flows and the libraries, `flows/scripts/` for
@@ -472,6 +474,93 @@ authorship.
 **The write is the whole of the action: nothing is dispatched.** The watcher is already watching that
 directory (§4.1), so the new row arrives exactly as it would for a flow somebody created outside the
 app — one path into the sidebar rather than two that can disagree.
+
+### 4.1d Managing files
+
+The section manages the files it lists. It makes a new folder, it moves a file into or out of a
+folder, it shows a file or folder in the platform's file manager, and it marks the row of the active
+tab.
+
+**New Folder is on the menu of each folder row, each group label, and the `Libraries`, `Scripts` and
+`Fixtures` labels.** A folder row makes the new folder inside itself. A group label makes it at the
+top of that scope's `flows/`. The `Scripts` label makes it at the top of `flows/scripts/`, and the
+`Fixtures` label at the top of `flows/fixtures/`. Without these labels, an entry can go only into a
+folder that already exists.
+
+The `Libraries` label also makes its folder at the top of `flows/`, because libraries and flows share
+that directory. Thus the disk cannot show that an empty folder is for libraries. The slice keeps the
+folders that the `Libraries` label made in this session (`state.flows.libraryFolders`), and the
+sidebar draws such a folder, and the folders in it, under `Libraries` while it is empty. When a
+library goes into it, the library places it there. After a restart, an empty folder of this kind
+shows under the flows.
+
+The menu items are in title case, as in every other sidebar menu. The label's capitals apply to its
+name only: the menu renders inside the label, and it must not inherit the label's typography. The form checks the
+name with upstream's own rule for a file or folder name. The host then refuses:
+
+- a name that starts with `.`, or a name the watcher ignores (`node_modules`, `.git`);
+- `scripts` or `fixtures` at the top of `flows/`, because §4.5 and §4.6 draw those directories as
+  labels, not as folders;
+- a name that is already on disk.
+
+After the host makes the folder, the section opens the folder that holds it, so the new row is
+visible.
+
+**An empty folder is a row.** The watcher reports each directory under `flows/` on
+`main:flow-folder-updated`, and `renderer:flow-list-folders` lists the directories that are already
+on disk. These are not tree entries: every reader of `state.flows.flows` takes an entry as a file that
+it can open, and a folder is not one. The slice keeps them in `state.flows.folders`. The sidebar
+draws a folder from this list only when no listed file is under it. A folder that holds a file is
+drawn where that file is. Thus a folder that holds only libraries does not also show as an empty
+folder among the flows. An empty folder is drawn in the bucket that holds it: under `Scripts` in
+`flows/scripts/`, under `Fixtures` in `flows/fixtures/`, and among the flows in all other places.
+§4.1b's search removes empty folders, because an empty folder matches no search.
+
+**A row moves by drag and drop.** Drop a row on a folder row to move the file into that folder. Drop
+a row on its group label to move the file to the top of its own bucket. This is also how a file
+leaves a folder. The rules are:
+
+- **A move never changes what a file is.** A flow or a library moves only in `flows/`, and not into
+  `flows/scripts/` or `flows/fixtures/`. A script moves only in `flows/scripts/`. A fixture moves only
+  in `flows/fixtures/`. §4.5 and §4.6 make the directory the thing that lists a script or a fixture,
+  so a move out of it would remove the file from the sidebar.
+- **The connector file does not drag.** The engine finds it at one fixed path (§8.5).
+- **A drop target shows only when the host will accept the drop.** The renderer applies the same
+  rules before it asks the host, and the host applies them again.
+- **The section refuses to move a flow that has unsaved YAML.** The host rewrites the moved flow's
+  paths on disk, and the draft keeps the old paths. The next save would write them back, one folder
+  wrong. A script or a fixture moves unchanged, so its draft moves with it, as §4.5's rename does.
+- **The moved flow's own relative paths are rewritten.** 001 resolves every path in a flow from the
+  flow's directory: `apis:` (§6.2), `functions.use:` (§8.6), `dataset:` and `bodyFile:` and `!file`
+  (§7.4), and `uses:` (§12.2). The engine's `rebaseFlowPaths` rewrites each one so that it names the
+  same file from the new directory. It does not change a URL, a `workspace:` path, an absolute path,
+  or a path with `{{ }}` in it. The host renames the file first and then writes the new text. If the
+  write fails, one file with the old paths stays, not two files and not zero files. A flow that does
+  not parse is refused: its paths cannot be found.
+- **Paths to the moved file are not rewritten**, for §4.5's reason. Another flow that `uses:` the
+  moved flow, or that reads a moved fixture with `!file`, still names the old path. `bru flow
+  validate` reports each one.
+- **Open tabs follow the file** through `retargetFlowTabs`, as §4.4's rename does. The section then
+  opens the folders that hold the file at its new path.
+
+**Every row, folder, group label, and `Libraries`, `Scripts` or `Fixtures` label has a reveal item.** Its label is upstream's
+`getRevealInFolderLabel()`, so it reads as the collection tree's does. It uses the fork's own
+`renderer:flow-reveal`, not upstream's `renderer:show-in-folder`. The sidebar holds a folder's path
+as POSIX text (§4.1a), and the main process resolves it to the platform's separators. The channel
+refuses a path outside the scope's `flows/`.
+
+**The row of the active tab is marked.** When the active tab is one of the fork's tab types — the run
+view, the raw editor, or a script's, a fixture's or the connector file's editor — the row for that
+file has upstream's "focused in tab" colour. When a flow tab becomes active, the section opens the
+folders that hold its row. It does this one time for each activation. If the reader then closes one
+of those folders, it stays closed until a different file becomes active.
+
+**Not in this section:** a folder does not drag, and a folder has no rename and no delete. A folder
+move would rewrite every flow under it, and those flows can have open drafts of their own.
+
+**This section adds no upstream file to §12.1's manifest.** The handlers are in the fork-owned
+`bruno-electron/src/ipc/flow/files.js`, registered from `registerFlowIpc`. The drag and drop uses the
+`react-dnd` provider that upstream already mounts at the app root.
 
 ### 4.2 The flow tab
 
@@ -2597,12 +2686,17 @@ the four `main:` pushes follow.
 | `renderer:flow-update-properties` | invoke | Write that `meta:` back, renaming the file if its name changed (§4.4) |
 | `renderer:flow-rename-script` | invoke | Rename a script within `flows/scripts/` (§4.5) |
 | `renderer:flow-watch-scope` | invoke | Start watching a scope's `flows/`; resolves with what is already there |
+| `renderer:flow-list-folders` | invoke | The directories already under a scope's `flows/` (§4.1d) |
+| `renderer:flow-create-folder` | invoke | Make one empty folder inside a scope's `flows/` (§4.1d) |
+| `renderer:flow-move` | invoke | Move one listed file into another folder of its bucket, and rewrite a moved flow's relative paths (§4.1d) |
+| `renderer:flow-reveal` | invoke | Show a file or folder inside a scope's `flows/` in the platform's file manager (§4.1d) |
 | `renderer:flow-unwatch-scope` | invoke | Stop watching a scope |
 | `main:flow-run-event` | send | A batch of `FlowEvent`s (§8.1) |
 | `main:flow-suite-event` | send | One suite-level event: the roster, a flow starting or ending in it, the suite ending |
 | `main:flow-request-log-batch` | send | A batch of requests the dispatch port sent (§8.5) |
 | `main:flow-tree-updated` | send | Watcher: a flow, script or fixture added, changed or removed |
 | `main:flow-dependency-changed` | send | Watcher: a file no row stands for, that a flow's diagnostics may come from |
+| `main:flow-folder-updated` | send | Watcher: a folder under `flows/` added or removed (§4.1d) |
 
 **The five channels that write are separate calls rather than one `renderer:flow-write`.** Each
 carries a guard the others do not: `flow-write-source` a path that is a flow, a script under
@@ -2717,7 +2811,17 @@ type ListSuitesRequest = { scopeRoot: string };
 
 // renderer:flow-watch-scope    ->  FlowTreeEntry[], the flows already on disk
 // renderer:flow-unwatch-scope  ->  void
+// renderer:flow-list-folders   ->  FlowFolderEntry[], the folders already on disk (§4.1d)
 type WatchScopeRequest = FlowScope;
+
+// renderer:flow-create-folder  ->  string, the new folder's path (§4.1d)
+type CreateFolderRequest = { scope: FlowScope; parent: string; name: string };
+
+// renderer:flow-move  ->  string, where the file is now (§4.1d)
+type MoveRequest = { entry: string; scope: FlowScope; directory: string };
+
+// renderer:flow-reveal  ->  void (§4.1d)
+type RevealRequest = { scope: FlowScope; pathname: string };
 
 // renderer:flow-read-run  ->  StoredRun (§11.2)
 type ReadRunRequest = {
@@ -2789,6 +2893,11 @@ type FlowTreeEntry = {
 // main:flow-dependency-changed — the path alone. There is no entry to carry: this is a file the
 // sidebar has no row for, and §6 does the same thing whichever one it was.
 type FlowDependencyChanged = string;
+
+// main:flow-folder-updated — two arguments, like main:flow-tree-updated (§4.1d). Not `flows/`
+// itself, and not `flows/scripts/` or `flows/fixtures/`, which the sidebar draws as labels.
+type FlowFolderEvent = 'addDir' | 'unlinkDir';
+type FlowFolderEntry = { pathname: string; workspaceRoot: string; collectionRoot?: string };
 ```
 
 **A scope is a `FlowScope` on every channel that takes one**, so the sidebar, the describe call and

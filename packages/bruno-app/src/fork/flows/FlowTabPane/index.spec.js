@@ -641,6 +641,38 @@ describe('the canvas edits the document (005 §5)', () => {
     expect(screen.queryByTestId('flow-insert-first')).not.toBeInTheDocument();
   });
 
+  /**
+   * §5.1: a `+` between two steps waits for the pointer in the gap it sits in, and the two at the
+   * ends of the chain do not. The hiding itself is CSS, which jsdom does not apply; what is pinned
+   * here is which controls carry the hover area; `tests/flows/designer.spec.ts` reads the opacity.
+   */
+  it('puts each `+` between two steps in a hover area, and leaves the two ends out of one', async () => {
+    await renderPane([], undefined, editable());
+
+    for (const id of ['a', 'b']) {
+      const between = screen.getByTestId(`flow-insert-between-${id}`);
+      expect(between.querySelector('.flow-insert-hover')).not.toBeNull();
+      expect(between).toContainElement(screen.getByTestId(`flow-insert-after-${id}`));
+    }
+    expect(screen.getByTestId('flow-insert-before-a').closest('.flow-insert-between')).toBeNull();
+    expect(screen.getByTestId('flow-insert-after-c').closest('.flow-insert-between')).toBeNull();
+  });
+
+  it('clears the selection on a click in the gap, as on the rest of the drawing', async () => {
+    const { store } = await renderPane([], undefined, editable());
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('flow-node-a'));
+    });
+    expect(store.getState().flows.selectedStep[pathname]).toBe('a');
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('flow-insert-between-a').querySelector('.flow-insert-hover'));
+    });
+
+    expect(store.getState().flows.selectedStep[pathname]).toBe(null);
+  });
+
   /** §5.1: the step just added is selected, so the editor opens on it without a second click. */
   it('selects the inserted step by the id the engine reports', async () => {
     const { store } = await renderPane([], undefined, editable({ apply: () => ({ ok: true, text: 'edited\n', changed: true, inserted: ['create_thing'] }) }));
@@ -1412,5 +1444,73 @@ describe('the flow\'s own settings (005 §6.8)', () => {
 
     expect(store.getState().flows.selectedStep[pathname]).toBe(null);
     expect(screen.getByTestId('flow-settings')).toBeInTheDocument();
+  });
+
+  /** The graph shows 001 §12.1's interface as two panels. Each panel opens the tab that edits its block. */
+  describe('B2.16 the graph\'s panels', () => {
+    const PARAMS = [{ name: 'email', required: true }];
+    const EXPORTS = [{ name: 'token', source: 'steps.a.token' }];
+    const withInterface = () => {
+      const base = withConfig();
+      const interfaced = () => ({ ...described(), params: PARAMS, exports: EXPORTS });
+      return {
+        ...base,
+        describe: interfaced,
+        sources: { [pathname]: { ...base.sources[pathname], description: interfaced() } },
+        editModel: (request) => ({ ...base.editModel(request), params: PARAMS, exports: EXPORTS, vars: [{ name: 'currency', value: 'USD' }] })
+      };
+    };
+
+    it('opens the Inputs tab from the inputs panel, with the params and the vars', async () => {
+      await renderPane([], undefined, withInterface());
+      expect(screen.getByTestId('flow-settings-defaults')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByText('Inputs'));
+      });
+
+      expect(screen.getByTestId('flow-settings-tab-inputs')).toHaveClass('active');
+      expect(screen.getByTestId('flow-settings-inputs')).toBeInTheDocument();
+      expect(screen.getByTestId('flow-settings-vars')).toBeInTheDocument();
+    });
+
+    it('opens the Exports tab from the exports panel, closing the step that was selected', async () => {
+      const { store } = await renderPane([], undefined, withInterface());
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('flow-node-a'));
+      });
+      expect(screen.getByTestId('flow-step-editor')).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('flow-exports'));
+      });
+
+      expect(store.getState().flows.selectedStep[pathname]).toBe(null);
+      expect(screen.getByTestId('flow-settings-exports')).toBeInTheDocument();
+    });
+
+    it('leaves the sheet alone for a click in a param\'s value box, which is about the next run', async () => {
+      await renderPane([], undefined, withInterface());
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('flow-input-email'));
+      });
+
+      expect(screen.getByTestId('flow-settings-defaults')).toBeInTheDocument();
+    });
+
+    it('is not a control while a run is open', async () => {
+      const opts = withInterface();
+      const run = { runId: 'run-1', state: 'complete', status: 'passed', selectedIteration: 0, steps: {}, description: opts.describe() };
+      await renderPane([], run, opts);
+
+      expect(screen.getByTestId('flow-designer-readonly')).toBeInTheDocument();
+      expect(screen.getByTestId('flow-inputs')).not.toHaveAttribute('role');
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('flow-exports'));
+      });
+      expect(screen.queryByTestId('flow-settings')).not.toBeInTheDocument();
+    });
   });
 });

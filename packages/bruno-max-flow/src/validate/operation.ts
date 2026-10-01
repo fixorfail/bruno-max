@@ -22,6 +22,17 @@ const isMapping = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value) && !(value instanceof FileRef);
 
 /**
+ * Adds one branch's properties to a composition's. A property two branches both declare is one
+ * object described by both — the JSON:API envelope and the operation's own `data` — so its schema
+ * becomes their `allOf`, and the keys under it are checked against the union rather than the last.
+ */
+const absorb = (composed: Record<string, Schema>, found: Record<string, Schema>) => {
+  for (const [key, property] of Object.entries(found)) {
+    composed[key] = composed[key] ? { allOf: [composed[key], property] } : property;
+  }
+};
+
+/**
  * The properties a schema names, or `undefined` where it names none it can be held to — a free-form
  * object, a `$ref` outside the document, a composition with a branch of either kind.
  *
@@ -36,12 +47,11 @@ export const propertiesOf = (schema: Schema | undefined, definitions: Schema): R
   const branches: Schema[] = [...(resolved.allOf || []), ...(resolved.oneOf || []), ...(resolved.anyOf || [])];
   if (branches.length) {
     const composed: Record<string, Schema> = {};
-    for (const branch of branches) {
+    for (const branch of [...branches, { properties: resolved.properties || {} }]) {
       const found = propertiesOf(branch, definitions);
       if (!found) return undefined;
-      Object.assign(composed, found);
+      absorb(composed, found);
     }
-    Object.assign(composed, resolved.properties || {});
     return composed;
   }
 

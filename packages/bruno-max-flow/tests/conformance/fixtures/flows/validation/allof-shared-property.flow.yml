@@ -1,0 +1,24 @@
+# R8.4 — a body whose `data` is declared by two `allOf` branches: `id` and `type` by one, `attributes`
+# by the other. Every key here is one the composed schema declares.
+version: 1
+
+meta:
+  name: R8 — allOf branches sharing a property
+
+apis:
+  items-api: ../../specs/validation-allof-v1.yml
+
+config:
+  baseUrl: "{{itemsBaseUrl}}"
+
+steps:
+  - id: update_item
+    operation: items-api#allofUpdateItem
+    pathParams:
+      itemId: item-1
+    body:
+      data:
+        id: item-1
+        type: Item
+        attributes:
+          amount: "10.00"

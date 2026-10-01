@@ -120,12 +120,12 @@ Three things follow from making it do something, and they are the whole of this 
   one. §13 records what it would take.
 - **Moving nodes.** Node positions are the engine's ranks (002 §5.2) and exist nowhere in the file.
   A node is placed by what it depends on, and changing where it is drawn means changing that.
-- **Editing the file's non-step blocks in forms** — `config:`, `authProfiles:`, `vars:`, `shared:`,
-  `stages:`, `params:`, `exports:`, `dataset:`. Each is a block the YAML tab already edits, none is
-  what a canvas is for, and 002 §4.4 covers `meta:`. `apis:` is the one exception, because the
-  legend is already its surface; and `shared:` gains an entry when a step publishes to a slot it
-  does not declare (§6.2), which is a consequence of an edit to the step rather than a form for the
-  block.
+- **Editing the file's non-step blocks in forms** — `authProfiles:`, `shared:`, `stages:`,
+  `dataset:`. Each is a block the YAML tab already edits, none is what a canvas is for, and 002 §4.4
+  covers `meta:`. `apis:` is an exception, because the legend is already its surface; `config:`,
+  `params:`, `vars:` and `exports:` are exceptions, because §6.8's pane edits them; and `shared:`
+  gains an entry when a step publishes to a slot it does not declare (§6.2), which is a consequence
+  of an edit to the step rather than a form for the block.
 - **Editing a sub-flow through its `uses:` node.** The node is a container (002 §5.4); its steps
   belong to another file, which has its own tab.
 - **Editing a stored run's flow.** 002 §10 pins a run to the graph it executed; that graph is a
@@ -197,6 +197,15 @@ follow, and the step that was first now follows it by the same rule, so becoming
 flow is one pick rather than an insert and a rewrite of the old head's `depends:`. On a flow with no
 steps at all the one control is drawn alone in the middle of the empty graph, with the words: *Add
 the first request*.
+
+**A `+` between two steps shows only while the pointer is in the gap.** A chain of ten steps with a
+control on every edge reads as a row of buttons, not as a flow. Each `+` between two steps has an
+invisible hover area: as wide as the gap between the ports of the two steps, and as tall as a step.
+The `+` fades in while the pointer is in that area, or while the `+` has keyboard focus, and it stays
+a normal control that takes a click and the Tab key. The `+` before the first step and after the last
+step always show: they are the way to add at an open end of the chain, and nothing else on the canvas
+shows that a step can go there. A click in the hover area that misses the `+` counts as a click on the
+empty canvas, which clears the selection (§6.8).
 
 **Choosing one opens the operation picker.** The picker lists the flow's bound APIs down one side and,
 for the chosen one, its operations — method, path, `operationId`, summary, tags — searched by a fuzzy
@@ -537,9 +546,33 @@ its key, never writes the default out.
 Escape. Selecting the selected node again already did — silently, which made this pane's predecessor,
 the empty half of the sheet, reachable only by a gesture nothing announced.
 
-This is not `config:` entire. `vars:`, `stages:`, `params:`, `exports:`, `dataset:`, `shared:` and
-`authProfiles:` are the YAML tab's until a surface is argued for each; what is here is the block the
-step editor already refers to.
+**Two more tabs edit the flow's interface** — 001 §12.1's `params:` (*inputs*) and `exports:`
+(*exports*). The graph draws both blocks as panels (002 §5.6), and a panel that shows a declaration
+the author cannot change from the canvas is half a surface. So a click on a panel, while the flow is
+editable, clears the selection and opens its tab. A click in a param's value box does not: that box
+holds a value for the next run, not the declaration. While a run is open the panels are not controls.
+
+- **Inputs** is a table of name · *required* · default · *secret*. A cleared flag or default deletes
+  its key, as in `config:`. A row nobody changed goes back as the file wrote it, so a `required:
+  false` stays written and a numeric default stays a number. A required param with no default on a
+  flow that is not a library gets 001 §12.5's warning under the table, in the words `bru flow
+  validate` uses.
+
+  Under it, a second table edits 001 §7.3's `vars:` — name · value. The panel shows params and vars
+  together, so the tab does too. It is a separate table because a caller cannot set a var: a var has
+  no `required` or `default`, only a value or an expression. A mapping value shows as compact JSON
+  and stays a mapping while its text is JSON; a `!file` var (§7.4) is opaque.
+- **Exports** is a table of name · source. The source is free text, because the format permits any
+  `steps.<step>.<output>` or `shared.<slot>` and the engine's diagnostics say when one names
+  nothing. The references the flow can export are offered as suggestions, read off the description
+  (002-C R4): every top-level step's outputs, a `uses:` step's library exports, and every slot.
+
+Each table is written whole, by §9.1's `params.define`, `vars.define` and `exports.define`. An entry
+§6.4 makes opaque is listed under its table and not in it, and the draft names it after the nearest
+earlier entry that is still in the draft — so removing its neighbour does not move it.
+
+This is not every block. `stages:`, `dataset:`, `shared:` and `authProfiles:` are the YAML tab's
+until a surface is argued for each.
 
 ## 7. The draft
 
@@ -715,7 +748,12 @@ type FlowEdit =
   | { kind: 'api.remove'; alias: string }
   | { kind: 'functions.use'; source: string }      // 001 §8.6's use: — a shared script, as the file reads it
   | { kind: 'functions.unuse'; source: string }
-  | { kind: 'functions.define'; define: Record<string, string> };  // §8.6's inline definitions, as a block
+  | { kind: 'functions.define'; define: Record<string, string> }   // §8.6's inline definitions, as a block
+  | { kind: 'params.define'; params: Record<string, ParamDraft> }  // 001 §12.1's params:, as a block
+  | { kind: 'exports.define'; exports: Record<string, string> }    // 001 §12.1's exports:, as a block
+  | { kind: 'vars.define'; vars: Record<string, EditValue> };      // 001 §7.3's vars:, as a block
+
+type ParamDraft = { required?: boolean; default?: EditValue; secret?: boolean };  // a key left out is its default
 
 type FlowEditRefusal =
   | 'unparseable'        // the text has no document to edit
@@ -757,6 +795,18 @@ in §5.2's position rather than a refusal — turning the first flag off is the 
 refusing it would mean *open the YAML first* for the one edit the pane exists to make. A block whose
 last key is unset is deleted, because a flow back at its defaults should read as one and a
 `config: {}` left behind says nothing while still having to be explained.
+
+**`params.define`, `exports.define` and `vars.define` write a block whole, and keep what did not change.** The
+draft is the block: an entry it leaves out is removed, and its order is the block's order — so a
+rename keeps the entry's place, which a removal and an addition would lose. An entry the draft did
+not change keeps its node, with its comments and its style. A changed param is written into the
+mapping it has, key by key, and a key the draft omits is deleted; a changed export or scalar var
+keeps its quoting. A new param is one flow-style line, as 001 §12.1 writes its example. An entry the
+read marks opaque — one with a local tag under it, and for a param one the format does not model, for
+an export one that is not a string — is kept exactly as written when the draft names it. The read and
+the writer use one rule for this, so the writer cannot change an entry the pane could not show. Each block is created in
+§5.2's position and removed with its last entry, for `config.patch`'s reason. A param key outside
+001 §12.1's three is refused `unknown-field`.
 
 `step.insert` with no `id` derives one from the operation, or from the `uses:` path, by §5.1's rule,
 and the result names every id `step.insert` and `step.duplicate` wrote, in order, as `inserted` —
@@ -870,6 +920,10 @@ type FlowEditModel = {
    * default written back out is a decision the author did not make.
    */
   config: Record<string, EditValue>;
+  /** 001 §12.1's params: and exports:, in file order. `opaque` marks an entry §6.8's tables do not edit (§6.4). */
+  params: (ParamDraft & { name: string; opaque?: true })[];
+  exports: { name: string; source: string; opaque?: true }[];
+  vars: { name: string; value?: EditValue; opaque?: true }[];   // 001 §7.3's vars:, in file order
   /**
    * The closed vocabularies the editor's controls need. Sent rather than duplicated in the renderer,
    * for 002-C R4's reason: a dropdown offering an operator the engine does not accept is the

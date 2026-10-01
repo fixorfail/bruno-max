@@ -1,5 +1,6 @@
 import React, { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
 import path from 'path';
+import classnames from 'classnames';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   IconChevronDown,
@@ -9,6 +10,8 @@ import {
   IconDotsVertical,
   IconCopy,
   IconEdit,
+  IconFolder,
+  IconFolderPlus,
   IconFoldDown,
   IconFoldUp,
   IconPlayerPlay,
@@ -30,21 +33,39 @@ import MenuDropdown from 'ui/MenuDropdown';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
 import { uuid } from 'utils/common';
 import { normalizePath } from 'utils/common/path';
+import { getRevealInFolderLabel } from 'utils/common/platform';
+import { isForkTab } from 'fork/tabTypes';
 import { usePersistedState } from 'hooks/usePersistedState';
 import { collectionUidForScope } from '../collectionScope';
 import {
   cancelSuiteRun,
   flowsFolderFor,
   listFlowSuites,
+  moveFlowEntry,
   readFlowProperties,
   rerunFailedFlows,
+  revealFlowPath,
   runFlowSelection
 } from '../actions';
-import { buildFlowTree, flowLabel, folderKeysOf, relativePathOf } from '../flowTree';
-import { folderToggled, foldersCollapsed, foldersExpanded, runOutcomeSeen } from '../slice';
+import {
+  ancestorFolderKeysOf,
+  baseDirectoryOf,
+  buildFlowTree,
+  emptyFoldersOf,
+  flowLabel,
+  flowsDirectoryOf,
+  folderBucketOf,
+  folderKeysOf,
+  relativePathOf
+} from '../flowTree';
+import { folderToggled, foldersCollapsed, foldersExpanded, libraryFolderCreated, runOutcomeSeen } from '../slice';
 import CreateFlow from '../CreateFlow';
+import CreateFlowFolder from '../CreateFlowFolder';
 import FlowProperties from '../FlowProperties';
 import RenameScript from '../RenameScript';
+import { retargetFlowTabs } from '../retargetTabs';
+import DraggableFlowRow from './DraggableFlowRow';
+import useFlowDrop from './useFlowDrop';
 import StyledWrapper, { SuiteProgress } from './StyledWrapper';
 
 /**
@@ -70,6 +91,8 @@ import StyledWrapper, { SuiteProgress } from './StyledWrapper';
  * path as the scope's workspace root; matching on that would hide every collection flow there is.
  * `workspace.collections` is the list upstream's `Sidebar/Collections` filters on, so the two sections
  * agree on what belongs to the workspace by construction.
+ *
+ * §4.1d's folder entries carry the same two roots, and are narrowed by the same rule.
  */
 const flowsInWorkspace = (flows, workspace) => {
   if (!workspace) {
@@ -219,7 +242,10 @@ const RowMenu = ({ items }) => {
  * duplicate `data-testid` fails in whichever test reaches for it second. A flow at the top of its
  * bucket has no folders, so the ids there are the filename ones that existed before folders did.
  */
-const FlowMenu = ({ relativePath, onEditYaml, onEditProperties, onDuplicate }) => (
+/** §4.1d's reveal, on every row and folder — upstream's label, so it reads as the collection tree's does. */
+const revealItem = (testId, onClick) => ({ testId, icon: IconFolder, label: getRevealInFolderLabel(), onClick });
+
+const FlowMenu = ({ relativePath, onEditYaml, onEditProperties, onDuplicate, onReveal }) => (
   <RowMenu
     items={[
       { testId: `flow-edit-yaml-${relativePath}`, icon: IconEdit, label: 'Edit Yaml', onClick: onEditYaml },
@@ -229,19 +255,37 @@ const FlowMenu = ({ relativePath, onEditYaml, onEditProperties, onDuplicate }) =
         label: 'Flow Properties',
         onClick: onEditProperties
       },
-      { testId: `flow-duplicate-${relativePath}`, icon: IconCopy, label: 'Duplicate', onClick: onDuplicate }
+      { testId: `flow-duplicate-${relativePath}`, icon: IconCopy, label: 'Duplicate', onClick: onDuplicate },
+      revealItem(`flow-reveal-${relativePath}`, onReveal)
     ]}
   />
 );
 
 /**
- * §4.5's row menu. One item, because a `.js` file has one thing about it to change: what it is
- * called. §4.3's `Edit Yaml` and §4.4's properties both act on a flow's `meta:`, which a script does
- * not have — and opening the script is what the row itself already does.
+ * §4.5's row menu: a rename, because a `.js` file has one thing about it to change — what it is
+ * called — and §4.1d's reveal. §4.3's `Edit Yaml` and §4.4's properties both act on a flow's `meta:`,
+ * which a script does not have, and opening the script is what the row itself already does.
  */
-const ScriptMenu = ({ relativePath, onRename }) => (
+const ScriptMenu = ({ relativePath, onRename, onReveal }) => (
   <RowMenu
-    items={[{ testId: `script-rename-${relativePath}`, icon: IconCursorText, label: 'Rename', onClick: onRename }]}
+    items={[
+      { testId: `script-rename-${relativePath}`, icon: IconCursorText, label: 'Rename', onClick: onRename },
+      revealItem(`flow-reveal-${relativePath}`, onReveal)
+    ]}
+  />
+);
+
+/**
+ * §4.1d: a folder's menu, and a group label's for the top of its `flows/` — a new folder inside it,
+ * and the directory in the file manager. `testIdSuffix` is the folder's path within its bucket, or
+ * the group's label.
+ */
+const FolderMenu = ({ testIdSuffix, onNewFolder, onReveal }) => (
+  <RowMenu
+    items={[
+      { testId: `flow-new-folder-${testIdSuffix}`, icon: IconFolderPlus, label: 'New Folder', onClick: onNewFolder },
+      revealItem(`flow-reveal-folder-${testIdSuffix}`, onReveal)
+    ]}
   />
 );
 
@@ -279,21 +323,27 @@ const SCRIPT_LABEL = 'Scripts';
  */
 const FIXTURE_LABEL = 'Fixtures';
 
-const sectionsOf = ({ flows, libraries, scripts, fixtures }) =>
+const sectionsOf = ({ flows, libraries, scripts, fixtures, folders }, libraryFolders) =>
   [
     { key: 'flows', label: undefined, flows },
     { key: 'libraries', label: LIBRARY_LABEL, flows: libraries },
     { key: 'scripts', label: SCRIPT_LABEL, flows: scripts },
     { key: 'fixtures', label: FIXTURE_LABEL, flows: fixtures }
   ]
-    .filter((section) => section.flows.length)
+    // §4.1d: an empty folder is drawn in the bucket it sits in — among the libraries only when it was
+    // made from their label this session, since the disk cannot say so.
+    .map((section) => ({
+      ...section,
+      folders: folders.filter((folder) => folderBucketOf(folder, libraryFolders) === section.key)
+    }))
+    .filter((section) => section.flows.length || section.folders.length)
     // §4.1a: each bucket is a tree of its own, counted from its own base — so a helper in
     // `flows/scripts/auth/` reads by where it sits among the helpers rather than repeating the
     // `Scripts` label as a `scripts` folder row directly beneath it.
     .map((section) => ({
       key: section.key,
       label: section.label,
-      tree: buildFlowTree(section.flows, section.key)
+      tree: buildFlowTree(section.flows, section.key, section.folders)
     }));
 
 /** Which of a group's four lists an entry belongs to — the watcher's flags, in precedence order. */
@@ -314,21 +364,41 @@ const bucketOf = (entry) => {
   return entry.library ? 'libraries' : 'flows';
 };
 
-const groupFlows = (flows) => {
+/**
+ * `folders` are §4.1d's folder entries, of which only the ones no file places are drawn from here. A
+ * scope holding nothing but an empty folder still gets its group, so the folder just made is a row.
+ */
+const groupFlows = (flows, folders, libraryFolders) => {
   const groups = new Map();
 
+  const groupOf = (entry) => {
+    const root = entry.collectionRoot || entry.workspaceRoot;
+    if (!groups.has(root)) {
+      groups.set(root, {
+        root,
+        label: entry.collectionRoot ? path.basename(entry.collectionRoot) : 'Workspace',
+        scope: { workspaceRoot: entry.workspaceRoot, collectionRoot: entry.collectionRoot },
+        flows: [],
+        libraries: [],
+        scripts: [],
+        fixtures: [],
+        folders: []
+      });
+    }
+    return groups.get(root);
+  };
+
   for (const flow of flows) {
-    const root = flow.collectionRoot || flow.workspaceRoot;
-    const label = flow.collectionRoot ? path.basename(flow.collectionRoot) : 'Workspace';
-    const group = groups.get(root) || { root, label, flows: [], libraries: [], scripts: [], fixtures: [] };
-    group[bucketOf(flow)].push(flow);
-    groups.set(root, group);
+    groupOf(flow)[bucketOf(flow)].push(flow);
+  }
+  for (const folder of emptyFoldersOf(folders, flows)) {
+    groupOf(folder).folders.push(folder);
   }
 
   // Workspace first, then collections by name — a stable order that does not depend on which
   // watcher reported first. Within a group, `buildFlowTree` orders each bucket.
   return [...groups.values()]
-    .map((group) => ({ ...group, sections: sectionsOf(group) }))
+    .map((group) => ({ ...group, sections: sectionsOf(group, libraryFolders) }))
     .sort((a, b) => {
       if (a.label === 'Workspace') return -1;
       if (b.label === 'Workspace') return 1;
@@ -374,15 +444,17 @@ const runnableFlowsOf = (groups) =>
  * more than cosmetic: the rows below carry the run marks and hover menus of flows the reader has
  * chosen not to look at.
  */
-const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow }) => {
+const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow, folderActions }) => {
   const expanded = isExpanded(folder.key);
+  const { isDropTarget, drop } = useFlowDrop({ directoryFor: () => folder.directory, onMove: folderActions.onMove });
 
   const toggle = () => onToggle(folder.key);
 
   return (
     <>
       <div
-        className="flow-folder"
+        ref={drop}
+        className={classnames('flow-folder', { 'is-drop-target': isDropTarget })}
         style={{ '--flow-depth': depth }}
         data-testid={`flow-folder-${folder.path}`}
         role="button"
@@ -400,9 +472,23 @@ const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow }) => {
           {expanded ? <IconChevronDown size={12} stroke={1.5} /> : <IconChevronRight size={12} stroke={1.5} />}
         </span>
         <span className="flow-name">{folder.name}</span>
+        <div className="flow-row-actions">
+          <FolderMenu
+            testIdSuffix={folder.path}
+            onNewFolder={() => folderActions.onNewFolder(folder)}
+            onReveal={() => folderActions.onReveal(folder.directory)}
+          />
+        </div>
       </div>
       {expanded ? (
-        <FlowNode node={folder} depth={depth + 1} isExpanded={isExpanded} onToggle={onToggle} renderRow={renderRow} />
+        <FlowNode
+          node={folder}
+          depth={depth + 1}
+          isExpanded={isExpanded}
+          onToggle={onToggle}
+          renderRow={renderRow}
+          folderActions={folderActions}
+        />
       ) : null}
     </>
   );
@@ -417,7 +503,7 @@ const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow }) => {
  */
 // A function declaration, so the mutual recursion with `FlowFolder` reads in render order — folder
 // row, then what is inside it — rather than being inverted to satisfy declaration order.
-function FlowNode({ node, depth, isExpanded, onToggle, renderRow }) {
+function FlowNode({ node, depth, isExpanded, onToggle, renderRow, folderActions }) {
   return (
     <>
       {node.folders.map((folder) => (
@@ -428,6 +514,7 @@ function FlowNode({ node, depth, isExpanded, onToggle, renderRow }) {
           isExpanded={isExpanded}
           onToggle={onToggle}
           renderRow={renderRow}
+          folderActions={folderActions}
         />
       ))}
       {node.flows.map((flow) => renderRow(flow, depth))}
@@ -435,9 +522,66 @@ function FlowNode({ node, depth, isExpanded, onToggle, renderRow }) {
   );
 }
 
+/**
+ * §4.1d: a scope's label, which is also the way into the top of its `flows/` — the menu makes a
+ * folder there, and a row dropped on it moves to the top of its own bucket, which is the only way
+ * out of a folder that sits directly in one.
+ */
+const FlowGroupLabel = ({ group, folderActions }) => {
+  const { isDropTarget, drop } = useFlowDrop({
+    directoryFor: (entry) => ((entry.collectionRoot || entry.workspaceRoot) === group.root ? baseDirectoryOf(entry) : undefined),
+    onMove: folderActions.onMove
+  });
+  const directory = flowsDirectoryOf(group.root);
+
+  return (
+    <div
+      ref={drop}
+      className={classnames('flow-group-label', { 'is-drop-target': isDropTarget })}
+      data-testid={`flow-group-${group.label}`}
+    >
+      <span className="flow-group-name">{group.label}</span>
+      <div className="flow-row-actions">
+        <FolderMenu
+          testIdSuffix={group.label}
+          onNewFolder={() => folderActions.onNewFolder({ directory })}
+          onReveal={() => folderActions.onReveal(directory)}
+        />
+      </div>
+    </div>
+  );
+};
+
+/**
+ * §4.1d: a bucket's label, with the folder menu for the top of the bucket's own directory, which no
+ * folder row stands for — without it, an entry could only go in a folder somebody had already made.
+ *
+ * The libraries' directory is `flows/` itself, shared with the flows. A folder made here is
+ * remembered as a libraries folder (`libraryFolders`), so it is drawn under this label while empty.
+ */
+const FlowSubgroupLabel = ({ group, section, folderActions }) => {
+  const flowsDirectory = flowsDirectoryOf(group.root);
+  const directory = section.key === 'libraries' ? flowsDirectory : `${flowsDirectory}/${section.key}`;
+
+  return (
+    <div className="flow-subgroup-label" data-testid={`flow-subgroup-${section.key}`}>
+      <span className="flow-subgroup-name">{section.label}</span>
+      <div className="flow-row-actions">
+        <FolderMenu
+          testIdSuffix={`subgroup-${section.key}`}
+          onNewFolder={() => folderActions.onNewFolder({ directory })}
+          onReveal={() => folderActions.onReveal(directory)}
+        />
+      </div>
+    </div>
+  );
+};
+
 const FlowSidebarSection = () => {
   const dispatch = useDispatch();
   const flows = useSelector((state) => state.flows.flows);
+  const folders = useSelector((state) => state.flows.folders);
+  const libraryFolders = useSelector((state) => state.flows.libraryFolders);
   const runs = useSelector((state) => state.flows.runs);
   const suiteRun = useSelector((state) => state.flows.suiteRun);
 
@@ -489,6 +633,12 @@ const FlowSidebarSection = () => {
 
   /** §4.7's duplicate — the source flow and the `meta:` the form opens on, or `null` while closed. */
   const [duplicatingFlow, setDuplicatingFlow] = useState(null);
+
+  /**
+   * §4.1d's new folder — its scope, the directory it goes in and that directory's folder key, or
+   * `null` while closed. The key is absent for the top of `flows/`, which has no folder row to open.
+   */
+  const [newFolder, setNewFolder] = useState(null);
 
   /**
    * §4.1b's search text.
@@ -567,13 +717,41 @@ const FlowSidebarSection = () => {
   };
 
   const workspaceFlows = useMemo(() => flowsInWorkspace(flows, activeWorkspace), [flows, activeWorkspace]);
+  const workspaceFolders = useMemo(() => flowsInWorkspace(folders, activeWorkspace), [folders, activeWorkspace]);
 
   /**
    * §4.1b filters the **entries**, before they are grouped, so what disappears is the whole listing
    * of a thing that did not match: a folder whose flows all went is not left behind as an empty
-   * folder row, and neither is a scope's group header or a `Libraries` label.
+   * folder row, and neither is a scope's group header or a `Libraries` label. §4.1d's empty folders
+   * match nothing, so a search drops them all.
    */
-  const groups = useMemo(() => groupFlows(matchingFlows(workspaceFlows, filter)), [workspaceFlows, filter]);
+  const groups = useMemo(
+    () => groupFlows(matchingFlows(workspaceFlows, filter), filter.trim() ? [] : workspaceFolders, libraryFolders),
+    [workspaceFlows, workspaceFolders, libraryFolders, filter]
+  );
+
+  /**
+   * §4.1d: the row of the active tab, when it is a file this section lists. Any of the fork's tab
+   * types counts — the run view, the raw editor and a script's or a fixture's editor are all views of
+   * the one file the row stands for.
+   */
+  const activeTab = useSelector((state) => state.tabs.tabs.find((tab) => tab.uid === state.tabs.activeTabUid));
+  const activePathname = isForkTab(activeTab) ? activeTab.pathname : undefined;
+  const activeEntry = activePathname ? workspaceFlows.find((flow) => flow.pathname === activePathname) : undefined;
+  const activeFolderKeys = activeEntry ? ancestorFolderKeysOf(activeEntry, bucketOf(activeEntry)).join('\n') : '';
+
+  /**
+   * §4.1d opens the folders the active row sits in, once per activation, so the highlight is seen.
+   *
+   * An effect, because the activation happens in upstream's tab strip, which this section does not
+   * own and which no fork code runs inside. Keyed on the folders rather than on the fold state, so a
+   * reader who then collapses one keeps it collapsed until a different flow becomes active.
+   */
+  useEffect(() => {
+    if (activeFolderKeys) {
+      dispatch(foldersExpanded({ keys: activeFolderKeys.split('\n') }));
+    }
+  }, [dispatch, activeFolderKeys]);
 
   /**
    * §4.1a's header actions act on the folders the section is currently showing, so the keys are
@@ -850,6 +1028,50 @@ const FlowSidebarSection = () => {
 
   const toggleFolder = (key) => dispatch(folderToggled({ key }));
 
+  const reveal = async (scope, pathname) => {
+    try {
+      await dispatch(revealFlowPath({ scope, pathname }));
+    } catch (error) {
+      toast.error(error?.message || 'An error occurred while revealing the file');
+    }
+  };
+
+  /**
+   * §4.1d's drop. The folders the file lands in are opened afterwards, so it is seen arriving — and
+   * computed from the moved entry rather than the drop target, because a library dropped on a folder
+   * of the flows is drawn under the `Libraries` label.
+   */
+  const moveEntry = async (entry, directory) => {
+    try {
+      const pathname = await dispatch(moveFlowEntry({ entry, directory }));
+      if (pathname !== entry.pathname) {
+        // The file keeps its name and its `meta:`, so every tab keeps the label it had.
+        dispatch(retargetFlowTabs({
+          from: entry.pathname,
+          to: pathname,
+          tabNameFor: (type) => (type === 'flow' ? flowLabel(entry) : entry.filename)
+        }));
+      }
+      const keys = ancestorFolderKeysOf({ ...entry, pathname }, bucketOf(entry));
+      if (keys.length) {
+        dispatch(foldersExpanded({ keys }));
+      }
+    } catch (error) {
+      toast.error(error?.message || 'An error occurred while moving the file');
+    }
+  };
+
+  /**
+   * §4.1d's folder actions for one bucket of one scope — its rows, its folders and its label. The
+   * bucket is what a new folder made there is remembered under.
+   */
+  const folderActionsFor = (group, bucket) => ({
+    onNewFolder: (folder) =>
+      setNewFolder({ scope: group.scope, parent: folder.directory, parentKey: folder.key, bucket }),
+    onReveal: (directory) => reveal(group.scope, directory),
+    onMove: moveEntry
+  });
+
   /**
    * §4.1a's fold, except while §4.1b is filtering — a filtered listing is drawn open.
    *
@@ -865,6 +1087,14 @@ const FlowSidebarSection = () => {
    */
   const renderRow = (flow, depth) => {
     const relativePath = relativePathOf(flow);
+    const rowProps = {
+      entry: flow,
+      depth,
+      isActive: flow.pathname === activePathname,
+      testId: `flow-row-${relativePath}`
+    };
+    const onReveal = () =>
+      reveal({ workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot }, flow.pathname);
 
     /**
      * §4.5: a script row opens the file and carries no flow menu. Neither item on it means anything
@@ -873,71 +1103,52 @@ const FlowSidebarSection = () => {
      */
     if (flow.script) {
       return (
-        <div
-          key={flow.pathname}
-          className="flow-row"
-          style={{ '--flow-depth': depth }}
-          data-testid={`flow-row-${relativePath}`}
-          onClick={() => openFlow(flow, 'flow-script')}
-        >
+        <DraggableFlowRow key={flow.pathname} {...rowProps} onClick={() => openFlow(flow, 'flow-script')}>
           <span className="flow-name">{flow.filename}</span>
           <div className="flow-row-actions">
-            <ScriptMenu relativePath={relativePath} onRename={() => setRenamingScript(flow)} />
+            <ScriptMenu relativePath={relativePath} onRename={() => setRenamingScript(flow)} onReveal={onReveal} />
           </div>
-        </div>
+        </DraggableFlowRow>
       );
     }
 
     /**
-     * §4.6: a fixture row opens the file as text and carries no menu. Like a script it has no
-     * `meta:` to edit and no YAML to edit it as; unlike one it has no rename either, because
-     * `!file` and `bodyFile` name a fixture by the path written in each flow that reads it and
-     * nothing here would rewrite them.
+     * §4.6: a fixture row opens the file as text, and its menu holds §4.1d's reveal alone. Like a
+     * script it has no `meta:` to edit and no YAML to edit it as; unlike one it has no rename either,
+     * because `!file` and `bodyFile` name a fixture by the path written in each flow that reads it
+     * and nothing here would rewrite them.
      */
     if (flow.fixture) {
       return (
-        <div
-          key={flow.pathname}
-          className="flow-row"
-          style={{ '--flow-depth': depth }}
-          data-testid={`flow-row-${relativePath}`}
-          onClick={() => openFlow(flow, 'flow-fixture')}
-        >
+        <DraggableFlowRow key={flow.pathname} {...rowProps} onClick={() => openFlow(flow, 'flow-fixture')}>
           <span className="flow-name">{flow.filename}</span>
-        </div>
+          <div className="flow-row-actions">
+            <RowMenu items={[revealItem(`flow-reveal-${relativePath}`, onReveal)]} />
+          </div>
+        </DraggableFlowRow>
       );
     }
 
     /**
-     * §8.5's connector file opens as plain YAML and carries no menu. Like a fixture it has no `meta:`
-     * to edit and no rename — the engine finds it by its exact path, so a renamed one is a file the
-     * run no longer reads.
+     * §8.5's connector file opens as plain YAML, and its menu holds §4.1d's reveal alone. Like a
+     * fixture it has no `meta:` to edit and no rename — the engine finds it by its exact path, so a
+     * renamed one is a file the run no longer reads, and for the same reason its row does not drag.
      */
     if (flow.connectors) {
       return (
-        <div
-          key={flow.pathname}
-          className="flow-row"
-          style={{ '--flow-depth': depth }}
-          data-testid={`flow-row-${relativePath}`}
-          onClick={() => openFlow(flow, 'flow-connectors')}
-        >
+        <DraggableFlowRow key={flow.pathname} {...rowProps} onClick={() => openFlow(flow, 'flow-connectors')}>
           <span className="flow-name">{flow.filename}</span>
-        </div>
+          <div className="flow-row-actions">
+            <RowMenu items={[revealItem(`flow-reveal-${relativePath}`, onReveal)]} />
+          </div>
+        </DraggableFlowRow>
       );
     }
 
     const run = runs[flow.pathname];
 
     return (
-      <div
-        key={flow.pathname}
-        className="flow-row"
-        style={{ '--flow-depth': depth }}
-        data-testid={`flow-row-${relativePath}`}
-        data-run-state={run?.state}
-        onClick={() => openFlow(flow, 'flow')}
-      >
+      <DraggableFlowRow key={flow.pathname} {...rowProps} runState={run?.state} onClick={() => openFlow(flow, 'flow')}>
         <span className="flow-name">{flowLabel(flow)}</span>
         <div className="flow-row-actions">
           {/* §4.1: the running indicator stands while the run executes; the pass/fail mark it leaves
@@ -951,9 +1162,10 @@ const FlowSidebarSection = () => {
             onEditYaml={() => openFlow(flow, 'flow-yaml')}
             onEditProperties={() => openFlowProperties(flow)}
             onDuplicate={() => openDuplicateFlow(flow)}
+            onReveal={onReveal}
           />
         </div>
-      </div>
+      </DraggableFlowRow>
     );
   };
 
@@ -979,6 +1191,21 @@ const FlowSidebarSection = () => {
       {renamingScript === null ? null : (
         <RenameScript script={renamingScript} onClose={() => setRenamingScript(null)} />
       )}
+      {newFolder === null ? null : (
+        <CreateFlowFolder
+          scope={newFolder.scope}
+          parent={newFolder.parent}
+          onCreated={(pathname) => {
+            if (newFolder.bucket === 'libraries') {
+              dispatch(libraryFolderCreated({ pathname }));
+            }
+            if (newFolder.parentKey) {
+              dispatch(foldersExpanded({ keys: [newFolder.parentKey] }));
+            }
+          }}
+          onClose={() => setNewFolder(null)}
+        />
+      )}
       <SidebarSection
         id="flows"
         title="API Flows"
@@ -1000,13 +1227,11 @@ const FlowSidebarSection = () => {
 
           {groups.map((group) => (
             <div key={group.root} className="flow-group">
-              <div className="flow-group-label">{group.label}</div>
+              <FlowGroupLabel group={group} folderActions={folderActionsFor(group, 'flows')} />
               {group.sections.map((section) => (
                 <div key={section.key} className="flow-subgroup">
                   {section.label ? (
-                    <div className="flow-subgroup-label" data-testid={`flow-subgroup-${section.key}`}>
-                      {section.label}
-                    </div>
+                    <FlowSubgroupLabel group={group} section={section} folderActions={folderActionsFor(group, section.key)} />
                   ) : null}
                   <FlowNode
                     node={section.tree}
@@ -1014,6 +1239,7 @@ const FlowSidebarSection = () => {
                     isExpanded={isFolderExpanded}
                     onToggle={toggleFolder}
                     renderRow={renderRow}
+                    folderActions={folderActionsFor(group, section.key)}
                   />
                 </div>
               ))}

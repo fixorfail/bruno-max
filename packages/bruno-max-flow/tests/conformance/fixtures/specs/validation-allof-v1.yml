@@ -1,0 +1,45 @@
+# R8.4 — a request body composed with `allOf` where two branches declare the same property. The
+# JSON:API shape does this all the time: a shared envelope declares `data.id` and `data.type`, and
+# the operation's own branch declares `data.attributes`.
+openapi: 3.0.3
+info:
+  title: Composed envelope
+  version: 1.0.0
+paths:
+  /allof-envelope/items/{itemId}:
+    patch:
+      operationId: allofUpdateItem
+      parameters:
+        - name: itemId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/Envelope'
+                - type: object
+                  properties:
+                    data:
+                      type: object
+                      properties:
+                        attributes:
+                          type: object
+                          properties:
+                            amount: { type: string }
+      responses:
+        '200':
+          description: OK
+components:
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            id: { type: string }
+            type: { type: string }

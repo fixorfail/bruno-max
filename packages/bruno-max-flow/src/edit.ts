@@ -65,6 +65,25 @@ export type ApiBindingDraft = {
   strictNulls?: boolean;
 };
 
+/** One entry of 001 §12.1's `params:`, as the file must show it. A key that is not given has its default value. */
+export type ParamDraft = { required?: boolean; default?: EditValue; secret?: boolean };
+
+/**
+ * A `params:` entry as the file declares it. `opaque` marks an entry that the pane shows but does
+ * not write (§6.4). An entry is opaque if it has a local tag, a key the schema does not know, or a
+ * value that is not a mapping.
+ */
+export type ParamEntry = ParamDraft & { name: string; opaque?: true };
+
+/** An `exports:` entry as the file declares it. `opaque` has the same function as in `ParamEntry`. */
+export type ExportEntry = { name: string; source: string; opaque?: true };
+
+/**
+ * A `vars:` entry as the file declares it (001 §7.3). An entry with a local tag, for example a
+ * `!file` source (§7.4), is opaque and has no `value`.
+ */
+export type VarEntry = { name: string; value?: EditValue; opaque?: true };
+
 export type FlowEdit
   = | { kind: 'step.insert'; step: StepDraft; after?: string; before?: string }
     | { kind: 'step.remove'; id: string }
@@ -86,7 +105,16 @@ export type FlowEdit
      * than one at a time, because a rename is the commonest edit to a named script and is otherwise
      * a removal and an addition that lose the entry's place.
      */
-    | { kind: 'functions.define'; define: Record<string, string> };
+    | { kind: 'functions.define'; define: Record<string, string> }
+    /**
+     * 001 §12.1's interface: the values that a flow takes, and the values that it gives back. The
+     * engine writes each block whole, as with `functions.define`. Thus a renamed entry keeps its
+     * position in the block.
+     */
+    | { kind: 'params.define'; params: Record<string, ParamDraft> }
+    | { kind: 'exports.define'; exports: Record<string, string> }
+    /** 001 §7.3's `vars:` — the values that a flow computes before its first step, written whole. */
+    | { kind: 'vars.define'; vars: Record<string, EditValue> };
 
 /**
  * One vocabulary for every edit, because they all fail for the same handful of reasons and
@@ -148,6 +176,12 @@ export type FlowEditModel = {
   functions: string[];
   /** §8.6's other half: the functions this flow defines inline, by name, in the order it declares them. */
   definitions: Record<string, string>;
+  /** 001 §12.1's `params:`, in the order the file declares them. */
+  params: ParamEntry[];
+  /** 001 §12.1's `exports:`, in the order the file declares them. */
+  exports: ExportEntry[];
+  /** 001 §7.3's `vars:`, in the order the file declares them. */
+  vars: VarEntry[];
   /**
    * Every name a `script:` in this flow may call — the inline definitions above, and what each
    * library the flow uses declares.
@@ -242,6 +276,23 @@ const slotsNamed = (shared: EditValue): string[] => {
 };
 
 const scalarText = (item: unknown): string => (YAML.isScalar(item) ? String(item.value) : String(item));
+
+/**
+ * The first tag anywhere under a value, which is what makes its key opaque (§6.4).
+ *
+ * The *subtree*, not the node: `outputs: { role: !... }` carries no tag on `outputs` itself, and an
+ * editor that re-emitted the mapping around the suppression would destroy it just the same.
+ */
+const tagUnder = (node: unknown): string | undefined => {
+  if (!YAML.isNode(node)) return undefined;
+  let found: string | undefined;
+  YAML.visit(node, {
+    Node: (unused, child) => {
+      if (child.tag && found === undefined) found = child.tag;
+    }
+  });
+  return found;
+};
 
 /**
  * §6.2: a slot a step publishes to is declared where the flow reads its slots from. The engine
@@ -870,6 +921,134 @@ const unuseScript = (document: YAML.Document, source: string) => {
   return undefined;
 };
 
+/** 001 §12.1's keys for one param, in the order the format writes them. */
+const PARAM_KEYS = ['required', 'default', 'secret'];
+
+/** The values are plain data from a parse or from structuredClone. Thus their JSON text is a correct comparison. */
+const sameValue = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
+
+/**
+ * For each block, the entries that the pane shows but does not write (§6.4). The read marks them
+ * `opaque`, and the writer keeps them unchanged when a draft names them. One rule serves both, so
+ * the writer cannot change an entry that the pane could not show.
+ */
+const OPAQUE: Record<'params' | 'exports' | 'vars', (node: unknown, declared: unknown) => boolean> = {
+  params: (node, declared) =>
+    tagUnder(node) !== undefined
+    || !YAML.isMap(node)
+    || Object.keys(asRecord(declared)).some((key) => !PARAM_KEYS.includes(key)),
+  exports: (node, declared) => tagUnder(node) !== undefined || typeof declared !== 'string',
+  vars: (node) => tagUnder(node) !== undefined
+};
+
+/**
+ * Writes a block of named entries whole — 001 §12.1's `params:` and `exports:`.
+ *
+ * The draft is the full block. The writer removes an entry that the draft does not contain, and uses
+ * the order of the draft. An entry that did not change keeps its node, thus its comments and style
+ * stay. `update` writes a changed entry into its existing node, and `create` makes a new entry. If
+ * the draft names an `OPAQUE` entry, the writer keeps it unchanged, whatever value the draft gives. If
+ * the flow has no block, the writer adds one in the §5.2 position. When the last entry goes, the
+ * block goes too, as with `config.patch`.
+ */
+const defineEntries = <T>(
+  document: YAML.Document,
+  key: 'params' | 'exports' | 'vars',
+  entries: Record<string, T>,
+  update: (pair: YAML.Pair<unknown, unknown>, value: T, was: unknown) => void,
+  create: (value: T) => unknown
+): undefined => {
+  const named = Object.entries(entries);
+  if (!named.length) {
+    if (document.has(key)) document.delete(key);
+    return undefined;
+  }
+
+  // Read the declared values before any change. The "did not change" test compares with them.
+  const declared = asRecord(asRecord(document.toJS())[key]);
+  if (!YAML.isMap(document.getIn([key]))) {
+    // A `params:` key with no value exists but holds no mapping. Replace it in its position, and do
+    // not add a second key.
+    if (document.has(key)) document.set(key, new YAML.YAMLMap());
+    else ensureBlock(document, key, {}, rootKeysBefore(key));
+  }
+
+  const block = document.getIn([key]) as YAML.YAMLMap;
+  block.items = named.map(([name, value]) => {
+    const existing = pairFor(block, name);
+    if (!existing) return document.createPair(name, create(value)) as YAML.Pair<unknown, unknown>;
+    if (!OPAQUE[key](existing.value, declared[name]) && !sameValue(declared[name], value)) {
+      update(existing, value, declared[name]);
+    }
+    return existing;
+  });
+  return undefined;
+};
+
+/**
+ * §12.1's `params:`. The writer writes a new param on one line, `email: { required: true }`, as in
+ * the §12.1 example. A changed param keeps its style. The writer deletes a key that the draft does
+ * not give, and does not write its default value.
+ */
+const defineParams = (document: YAML.Document, params: Record<string, ParamDraft>) => {
+  for (const [name, param] of Object.entries(params)) {
+    const unknown = Object.keys(param || {}).find((key) => !PARAM_KEYS.includes(key));
+    if (unknown) return refuse('unknown-field', `params.${name} has no ${unknown} field`);
+  }
+
+  return defineEntries(
+    document,
+    'params',
+    params,
+    (pair, param, was) => {
+      if (!YAML.isMap(pair.value)) {
+        pair.value = document.createNode(param || {});
+        return;
+      }
+      const before = asRecord(was);
+      for (const key of PARAM_KEYS) {
+        const value = param?.[key as keyof ParamDraft];
+        if (value === undefined) pair.value.delete(key);
+        else if (!sameValue(before[key], value)) writeOrderedKey(document, pair.value, key, value, PARAM_KEYS);
+      }
+    },
+    (param) => {
+      const node = document.createNode(param || {}) as YAML.YAMLMap;
+      node.flow = true;
+      return node;
+    }
+  );
+};
+
+/** §12.1's `exports:` — a name, and the reference that it gives back. A changed reference keeps its quotes. */
+const defineExports = (document: YAML.Document, exports: Record<string, string>) =>
+  defineEntries(
+    document,
+    'exports',
+    exports,
+    (pair, source) => {
+      if (YAML.isScalar(pair.value)) pair.value.value = source;
+      else pair.value = document.createNode(source);
+    },
+    (source) => source
+  );
+
+/**
+ * 001 §7.3's `vars:` — a name, and a value or an expression. A changed scalar keeps its quotes and
+ * its comment, as `writeOrderedKey` does for a step key. A value that is not a scalar gets a new node.
+ */
+const defineVars = (document: YAML.Document, vars: Record<string, EditValue>) =>
+  defineEntries(
+    document,
+    'vars',
+    vars,
+    (pair, value) => {
+      if (YAML.isScalar(pair.value) && isPrimitive(value)) pair.value.value = value;
+      else pair.value = document.createNode(value);
+    },
+    (value) => value
+  );
+
 const applyEdit = (document: YAML.Document, edit: FlowEdit, inserted: string[]): FlowEditResult | undefined => {
   switch (edit.kind) {
     case 'step.insert': return insertStep(document, edit, inserted);
@@ -886,6 +1065,9 @@ const applyEdit = (document: YAML.Document, edit: FlowEdit, inserted: string[]):
     case 'functions.use': return useScript(document, edit.source);
     case 'functions.unuse': return unuseScript(document, edit.source);
     case 'functions.define': return defineFunctions(document, edit.define);
+    case 'params.define': return defineParams(document, edit.params);
+    case 'exports.define': return defineExports(document, edit.exports);
+    case 'vars.define': return defineVars(document, edit.vars);
     // A kind this build does not know — a renderer newer than its engine — is said, not skipped:
     // an edit that changes nothing and reports nothing is the one failure nobody can see.
     default: return refuse('unknown-edit', `this engine has no ${(edit as { kind: string }).kind} edit`);
@@ -1003,23 +1185,6 @@ const positionOf = (lines: YAML.LineCounter, node: unknown): Position | undefine
   return { line, column: col };
 };
 
-/**
- * The first tag anywhere under a value, which is what makes its key opaque (§6.4).
- *
- * The *subtree*, not the node: `outputs: { role: !... }` carries no tag on `outputs` itself, and an
- * editor that re-emitted the mapping around the suppression would destroy it just the same.
- */
-const tagUnder = (node: unknown): string | undefined => {
-  if (!YAML.isNode(node)) return undefined;
-  let found: string | undefined;
-  YAML.visit(node, {
-    Node: (unused, child) => {
-      if (child.tag && found === undefined) found = child.tag;
-    }
-  });
-  return found;
-};
-
 const bindingOf = (alias: string, node: unknown, declared: unknown): ApiBindingDraft & { opaque: string[] } => {
   if (typeof declared === 'string') return { alias, source: declared, opaque: [] };
 
@@ -1058,6 +1223,28 @@ const bindingOf = (alias: string, node: unknown, declared: unknown): ApiBindingD
     ...(defaultQuery === undefined ? {} : { defaultQuery }),
     ...(strictNulls === undefined ? {} : { strictNulls }),
     opaque
+  };
+};
+
+/** The entries of a block as nodes, in file order. The list is empty if the flow does not declare the block. */
+const entriesOf = (document: YAML.Document, key: string): [string, unknown][] => {
+  const block = document.getIn([key]);
+  return YAML.isMap(block) ? block.items.map((pair) => [String(pair.key), pair.value]) : [];
+};
+
+/**
+ * One `params:` entry as written. If the pane cannot write the entry back unchanged, the entry is
+ * opaque and has only its name. A draft that names an opaque entry keeps it unchanged (`defineEntries`).
+ */
+const paramOf = (name: string, node: unknown, declared: unknown): ParamEntry => {
+  if (OPAQUE.params(node, declared)) return { name, opaque: true };
+  const fields = asRecord(declared);
+
+  return {
+    name,
+    ...(fields.required === undefined ? {} : { required: Boolean(fields.required) }),
+    ...(fields.default === undefined ? {} : { default: fields.default as EditValue }),
+    ...(fields.secret === undefined ? {} : { secret: Boolean(fields.secret) })
   };
 };
 
@@ -1134,6 +1321,16 @@ export const readFlowEditModel = (text: string): FlowEditModel | undefined => {
         .map(([name, source]) => [name, String(source)])
     ),
     config: asRecord(model.config) as Record<string, EditValue>,
+    params: entriesOf(document, 'params').map(([name, node]) => paramOf(name, node, asRecord(model.params)[name])),
+    exports: entriesOf(document, 'exports').map(([name, node]) => {
+      const source = asRecord(model.exports)[name];
+      const opaque = OPAQUE.exports(node, source);
+      return { name, source: typeof source === 'string' ? source : '', ...(opaque ? { opaque: true as const } : {}) };
+    }),
+    vars: entriesOf(document, 'vars').map(([name, node]) =>
+      (OPAQUE.vars(node, undefined)
+        ? { name, opaque: true as const }
+        : { name, value: asRecord(model.vars)[name] as EditValue })),
     vocabulary: {
       operators: [...OPERATORS],
       statuses: STATUSES,

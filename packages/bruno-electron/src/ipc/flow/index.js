@@ -27,6 +27,8 @@ const FlowsWatcher = require('../../app/flowsWatcher');
 const { createPorts } = require('./ports');
 const { buildVariables, collectSecrets } = require('./variables');
 const { collectionAuthProfile } = require('./collectionConfig');
+const { requireScope } = require('./scope');
+const { renameWithin, registerFlowFileIpc } = require('./files');
 
 /**
  * The Electron host for API Flows — 002 §11.3.
@@ -100,13 +102,6 @@ const queueEvent = (win, runId, event) => {
 const queueRequestLog = (win, log) => {
   pendingRequests.push(log);
   scheduleFlush(win);
-};
-
-const requireScope = (scope) => {
-  if (!scope || typeof scope.workspaceRoot !== 'string' || !scope.workspaceRoot) {
-    throw new Error('a flow scope needs a workspaceRoot');
-  }
-  return scope;
 };
 
 /**
@@ -351,28 +346,6 @@ const requireFlowFilename = (filename) => {
     throw new Error(`flow: ${filename} is not a valid flow filename`);
   }
   return filename;
-};
-
-/**
- * A rename inside one directory, refusing to land on a file already there.
- *
- * `rename` overwrites its target silently on POSIX, so the check is the only thing standing between
- * a rename and somebody else's file. It is not atomic with the rename that follows — the window is a
- * directory nobody else is writing to, and losing the race is what `wx` guards against in
- * `createFlowHandler`, for which a rename has no equivalent flag.
- */
-const renameWithin = async (pathname, target, kind) => {
-  if (target === pathname) {
-    return pathname;
-  }
-
-  const clash = await fs.promises.access(target).then(() => true, () => false);
-  if (clash) {
-    throw new Error(`a ${kind} already exists at ${target}`);
-  }
-
-  await fs.promises.rename(pathname, target);
-  return target;
 };
 
 /** 002 §4.4 — the `meta:` block the properties dialog opens on. */
@@ -1143,6 +1116,8 @@ const registerFlowIpc = (mainWindow) => {
     watcher.addWatcher(mainWindow, requireScope(scope));
     return watcher.listFlows(scope);
   });
+  ipcMain.handle('renderer:flow-list-folders', (event, scope) => watcher.listFolders(requireScope(scope)));
+  registerFlowFileIpc();
   ipcMain.handle('renderer:flow-unwatch-scope', (event, scope) => watcher.removeWatcher(requireScope(scope)));
 };
 

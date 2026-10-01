@@ -9,12 +9,14 @@ jest.mock('utils/common', () => ({
   uuid: () => `uid-${++mockUid}`
 }));
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { Provider } from 'react-redux';
+import { DndProvider } from 'react-dnd';
+import { HTML5Backend } from 'react-dnd-html5-backend';
 import { configureStore } from '@reduxjs/toolkit';
 import { ThemeProvider } from 'styled-components';
 import { SidebarAccordionProvider } from 'components/Sidebar/SidebarAccordionContext';
-import flowsReducer from 'fork/flows/slice';
+import flowsReducer, { flowFolderUpdated } from 'fork/flows/slice';
 import tabsReducer from 'providers/ReduxStore/slices/tabs';
 import themes from 'themes/index';
 import FlowSidebarSection from './index';
@@ -46,7 +48,10 @@ const renderSection = ({
   sources = {},
   collections = [],
   configurations = {},
-  suiteRun = null
+  suiteRun = null,
+  folders = [],
+  tabs = [],
+  activeTabUid = null
 }) => {
   const store = configureStore({
     reducer: {
@@ -58,7 +63,8 @@ const renderSection = ({
       workspaces: () => ({ workspaces, activeWorkspaceUid })
     },
     preloadedState: {
-      flows: { ...initialFlowsState(), flows, sources, configurations, suiteRun }
+      flows: { ...initialFlowsState(), flows, sources, configurations, suiteRun, folders },
+      tabs: { ...tabsReducer(undefined, { type: '@@INIT' }), tabs, activeTabUid }
     }
   });
 
@@ -67,14 +73,23 @@ const renderSection = ({
     ...render(
       <Provider store={store}>
         <ThemeProvider theme={theme}>
-          <SidebarAccordionProvider defaultExpanded={['flows']}>
-            <FlowSidebarSection />
-          </SidebarAccordionProvider>
+          <DndProvider backend={HTML5Backend}>
+            <SidebarAccordionProvider defaultExpanded={['flows']}>
+              <FlowSidebarSection />
+            </SidebarAccordionProvider>
+          </DndProvider>
         </ThemeProvider>
       </Provider>
     )
   };
 };
+
+/**
+ * Opens the menu of one row. By the row rather than by position, because §4.1d gives the group label
+ * and every folder a menu of their own.
+ */
+const openRowMenu = (relativePath) =>
+  fireEvent.click(within(screen.getByTestId(`flow-row-${relativePath}`)).getByTestId('flow-menu-trigger'));
 
 describe('FlowSidebarSection', () => {
   const workspaces = [
@@ -188,7 +203,7 @@ describe('FlowSidebarSection', () => {
   describe('the row menu (§4.3)', () => {
     const open = () => {
       const { store } = renderSection({ flows, workspaces, activeWorkspaceUid: 'one' });
-      fireEvent.click(screen.getAllByTestId('flow-menu-trigger')[0]);
+      openRowMenu('checkout.flow.yml');
       return store;
     };
 
@@ -278,12 +293,13 @@ describe('FlowSidebarSection', () => {
      * §4.5: one item, because a `.js` has one thing about it to change. `Edit Yaml` and the flow
      * properties both act on a `meta:` block a script does not have.
      */
-    it('carries a row menu holding Rename and nothing else', () => {
+    it('carries a row menu holding Rename and the reveal, and no flow item', () => {
       renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
 
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('text.js');
 
       expect(screen.getByTestId('script-rename-text.js')).toBeInTheDocument();
+      expect(screen.getByTestId('flow-reveal-text.js')).toBeInTheDocument();
       expect(screen.queryByTestId('flow-edit-yaml-text.js')).not.toBeInTheDocument();
       expect(screen.queryByTestId('flow-properties-text.js')).not.toBeInTheDocument();
     });
@@ -292,7 +308,7 @@ describe('FlowSidebarSection', () => {
       window.ipcRenderer = { invoke: jest.fn(async () => undefined) };
       renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
 
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('text.js');
       fireEvent.click(screen.getByTestId('script-rename-text.js'));
 
       // The stem, not the filename — the extension is the form's, not the author's.
@@ -303,7 +319,7 @@ describe('FlowSidebarSection', () => {
     it('does not open the script when the menu itself is clicked', () => {
       const { store } = renderSection({ flows: [mixed[2]], workspaces, activeWorkspaceUid: 'one' });
 
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('text.js');
 
       expect(store.getState().tabs.tabs).toHaveLength(0);
     });
@@ -335,7 +351,7 @@ describe('FlowSidebarSection', () => {
 
     const openMenu = (sources = {}) => {
       const rendered = renderSection({ flows: [named], workspaces, activeWorkspaceUid: 'one', sources });
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('checkout.flow.yml');
       return rendered;
     };
 
@@ -403,7 +419,7 @@ describe('FlowSidebarSection', () => {
 
     const openDuplicate = (sources = {}) => {
       const rendered = renderSection({ flows: [named], workspaces, activeWorkspaceUid: 'one', sources });
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('checkout.flow.yml');
       fireEvent.click(screen.getByTestId('flow-duplicate-checkout.flow.yml'));
       return rendered;
     };
@@ -477,7 +493,7 @@ describe('FlowSidebarSection', () => {
         workspaces,
         activeWorkspaceUid: 'one'
       });
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('text.js');
 
       expect(screen.queryByTestId('flow-duplicate-text.js')).not.toBeInTheDocument();
     });
@@ -502,7 +518,7 @@ describe('FlowSidebarSection', () => {
       const { store } = renderSection({ flows: [named], workspaces, activeWorkspaceUid: 'one' });
 
       fireEvent.click(screen.getByTestId('flow-row-checkout.flow.yml'));
-      fireEvent.click(screen.getByTestId('flow-menu-trigger'));
+      openRowMenu('checkout.flow.yml');
       fireEvent.click(screen.getByTestId('flow-edit-yaml-checkout.flow.yml'));
 
       expect(store.getState().tabs.tabs.map((tab) => [tab.type, tab.tabName])).toEqual([
@@ -815,7 +831,7 @@ describe('FlowSidebarSection', () => {
       expect(screen.getByTestId('flow-row-company/create.flow.yml')).toBeInTheDocument();
       expect(screen.getByTestId('flow-row-user/create.flow.yml')).toBeInTheDocument();
 
-      fireEvent.click(screen.getAllByTestId('flow-menu-trigger')[0]);
+      openRowMenu('company/create.flow.yml');
       expect(await screen.findByTestId('flow-edit-yaml-company/create.flow.yml')).toBeInTheDocument();
     });
 
@@ -1284,10 +1300,13 @@ describe('FlowSidebarSection', () => {
      * fixture is named by the path written into every flow that reads it, and nothing here rewrites
      * those.
      */
-    it('carries no row menu', () => {
+    it('carries a row menu holding the reveal alone', () => {
       renderSection({ flows: [fixtureIn('/home/dev/workspace-one', 'catalog.json')], workspaces, activeWorkspaceUid: 'one' });
 
-      expect(screen.queryByTestId('flow-menu-trigger')).not.toBeInTheDocument();
+      openRowMenu('catalog.json');
+
+      expect(screen.getByTestId('flow-reveal-catalog.json')).toBeInTheDocument();
+      expect(document.querySelectorAll('.dropdown-item')).toHaveLength(1);
     });
 
     /** §4.6's folders are counted from `flows/fixtures/`, so the label is not restated as a row. */
@@ -1758,10 +1777,367 @@ describe('FlowSidebarSection', () => {
      * No `meta:` to edit, and no rename: the engine finds this file by its exact path, so a renamed
      * one is a file the run no longer reads.
      */
-    it('carries no row menu', () => {
+    it('carries a row menu holding the reveal alone', () => {
       renderSection({ flows: [connectorsIn('/home/dev/workspace-one')], workspaces, activeWorkspaceUid: 'one' });
 
-      expect(screen.queryByTestId('flow-menu-trigger')).not.toBeInTheDocument();
+      openRowMenu('connectors.yml');
+
+      expect(screen.getByTestId('flow-reveal-connectors.yml')).toBeInTheDocument();
+      expect(document.querySelectorAll('.dropdown-item')).toHaveLength(1);
+    });
+  });
+
+  /** 002 §4.1d — new folders, moves, the reveal, and the row of the active tab. */
+  describe('managing files (§4.1d)', () => {
+    const root = '/home/dev/workspace-one';
+    const nested = (relativePath, extra = {}) => ({
+      pathname: `${root}/flows/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot: root,
+      ...extra
+    });
+    const folderAt = (relativePath) => ({ pathname: `${root}/flows/${relativePath}`, workspaceRoot: root });
+    const scope = { workspaceRoot: root, collectionRoot: undefined };
+
+    let invoke;
+
+    beforeEach(() => {
+      invoke = jest.fn(async () => undefined);
+      window.ipcRenderer = { invoke };
+    });
+
+    const openFolderMenu = (testId) =>
+      fireEvent.click(within(screen.getByTestId(testId)).getByTestId('flow-menu-trigger'));
+
+    describe('empty folders', () => {
+      it('draws a folder no file sits in, beside the ones files place', () => {
+        renderSection({
+          flows: [nested('company/create.flow.yml')],
+          folders: [folderAt('company'), folderAt('archive')],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        expect(screen.getByTestId('flow-folder-archive')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-folder-company')).toBeInTheDocument();
+      });
+
+      it('gives a scope holding only an empty folder its group', () => {
+        renderSection({ flows: [], folders: [folderAt('archive')], workspaces, activeWorkspaceUid: 'one' });
+
+        expect(screen.getByTestId('flow-group-Workspace')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-folder-archive')).toBeInTheDocument();
+      });
+
+      it('draws an empty script folder under the Scripts label', () => {
+        renderSection({ flows: [], folders: [folderAt('scripts/auth')], workspaces, activeWorkspaceUid: 'one' });
+
+        expect(screen.getByTestId('flow-subgroup-scripts')).toBeInTheDocument();
+        expect(screen.getByTestId('flow-folder-auth')).toBeInTheDocument();
+      });
+
+      it('drops empty folders while the search is filtering', () => {
+        renderSection({
+          flows: [nested('checkout.flow.yml', { terms: ['checkout'] })],
+          folders: [folderAt('archive')],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        fireEvent.change(screen.getByTestId('flows-search'), { target: { value: 'check' } });
+
+        expect(screen.queryByTestId('flow-folder-archive')).not.toBeInTheDocument();
+      });
+
+      it('ignores the folders of another workspace', () => {
+        renderSection({
+          flows: [],
+          folders: [{ pathname: '/home/dev/workspace-two/flows/other', workspaceRoot: '/home/dev/workspace-two' }],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        expect(screen.queryByTestId('flow-folder-other')).not.toBeInTheDocument();
+      });
+    });
+
+    describe('new folder', () => {
+      const createFolder = async (name) => {
+        fireEvent.change(await screen.findByTestId('create-flow-folder-name'), { target: { value: name } });
+        fireEvent.click(within(screen.getByTestId('create-flow-folder')).getByRole('button', { name: 'Create' }));
+      };
+
+      it('creates one inside a folder, and opens that folder', async () => {
+        const { store } = renderSection({ flows: [nested('company/create.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+
+        openFolderMenu('flow-folder-company');
+        fireEvent.click(screen.getByTestId('flow-new-folder-company'));
+        await createFolder('billing');
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-create-folder', {
+            scope,
+            parent: `${root}/flows/company`,
+            name: 'billing'
+          }));
+        await waitFor(() => expect(store.getState().flows.folderExpansion[`flows:${root}/flows/company`]).toBe(true));
+      });
+
+      it('creates one at the top of flows/ from the group label', async () => {
+        renderSection({ flows: [nested('checkout.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+
+        openFolderMenu('flow-group-Workspace');
+        fireEvent.click(screen.getByTestId('flow-new-folder-Workspace'));
+        await createFolder('payments');
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-create-folder', {
+            scope,
+            parent: `${root}/flows`,
+            name: 'payments'
+          }));
+      });
+
+      it.each([
+        ['scripts', nested('scripts/sign.js', { script: true })],
+        ['fixtures', nested('fixtures/catalog.json', { fixture: true })]
+      ])('creates one at the top of flows/%s from its label', async (bucket, entry) => {
+        renderSection({ flows: [entry], workspaces, activeWorkspaceUid: 'one' });
+
+        openFolderMenu(`flow-subgroup-${bucket}`);
+        fireEvent.click(screen.getByTestId(`flow-new-folder-subgroup-${bucket}`));
+        await createFolder('shared');
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-create-folder', {
+            scope,
+            parent: `${root}/flows/${bucket}`,
+            name: 'shared'
+          }));
+      });
+
+      it('draws a new empty script folder under the Scripts label', () => {
+        renderSection({
+          flows: [nested('scripts/sign.js', { script: true })],
+          folders: [folderAt('scripts/shared')],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        expect(screen.getByTestId('flow-folder-shared')).toBeInTheDocument();
+      });
+
+      /**
+       * Libraries sit in `flows/` itself, so the folder goes there — and is remembered as a libraries
+       * folder, because the disk cannot say so.
+       */
+      it('creates one in flows/ from the Libraries label, and draws it under that label', async () => {
+        const created = `${root}/flows/auth`;
+        invoke.mockImplementation(async (channel) => (channel === 'renderer:flow-create-folder' ? created : undefined));
+        const { store } = renderSection({
+          flows: [nested('login.flow.yml', { library: true })],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        openFolderMenu('flow-subgroup-libraries');
+        fireEvent.click(screen.getByTestId('flow-new-folder-subgroup-libraries'));
+        await createFolder('auth');
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-create-folder', { scope, parent: `${root}/flows`, name: 'auth' }));
+        await waitFor(() => expect(store.getState().flows.libraryFolders).toEqual([created]));
+
+        // The watcher's report of the new folder.
+        store.dispatch(flowFolderUpdated({ event: 'addDir', entry: folderAt('auth') }));
+
+        const folderRow = await screen.findByTestId('flow-folder-auth');
+        expect(folderRow.closest('.flow-subgroup').querySelector('[data-testid="flow-subgroup-libraries"]')).not.toBeNull();
+      });
+
+      it('draws an empty folder in flows/ under the flows when nothing chose the libraries', () => {
+        renderSection({
+          flows: [nested('login.flow.yml', { library: true })],
+          folders: [folderAt('auth')],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        expect(screen.getByTestId('flow-folder-auth').closest('.flow-subgroup').querySelector('.flow-subgroup-label')).toBeNull();
+      });
+
+      it('refuses a name upstream refuses, before asking the host', async () => {
+        renderSection({ flows: [nested('checkout.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+
+        openFolderMenu('flow-group-Workspace');
+        fireEvent.click(screen.getByTestId('flow-new-folder-Workspace'));
+        await createFolder('bad/name');
+
+        expect(await screen.findByText(/invalid|not allowed|cannot/i)).toBeInTheDocument();
+        expect(invoke).not.toHaveBeenCalledWith('renderer:flow-create-folder', expect.anything());
+      });
+    });
+
+    describe('reveal', () => {
+      it('reveals a flow file through the host', async () => {
+        renderSection({ flows: [nested('checkout.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+
+        openRowMenu('checkout.flow.yml');
+        fireEvent.click(screen.getByTestId('flow-reveal-checkout.flow.yml'));
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-reveal', { scope, pathname: `${root}/flows/checkout.flow.yml` }));
+      });
+
+      it('reveals a folder by its directory', async () => {
+        renderSection({ flows: [nested('company/create.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+
+        openFolderMenu('flow-folder-company');
+        fireEvent.click(screen.getByTestId('flow-reveal-folder-company'));
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-reveal', { scope, pathname: `${root}/flows/company` }));
+      });
+    });
+
+    describe('the active tab', () => {
+      const tab = (type, pathname) => ({ uid: `${type}-tab`, type, pathname, collectionUid: 'c', tabName: 'x' });
+
+      it('marks the row of the active flow tab, whatever view of the file it is', () => {
+        renderSection({
+          flows: [nested('checkout.flow.yml'), nested('refund.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one',
+          tabs: [tab('flow-yaml', `${root}/flows/checkout.flow.yml`)],
+          activeTabUid: 'flow-yaml-tab'
+        });
+
+        expect(screen.getByTestId('flow-row-checkout.flow.yml')).toHaveClass('is-active');
+        expect(screen.getByTestId('flow-row-refund.flow.yml')).not.toHaveClass('is-active');
+      });
+
+      it('marks nothing while a tab that is not a flow is active', () => {
+        renderSection({
+          flows: [nested('checkout.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one',
+          tabs: [tab('http-request', `${root}/flows/checkout.flow.yml`)],
+          activeTabUid: 'http-request-tab'
+        });
+
+        expect(screen.getByTestId('flow-row-checkout.flow.yml')).not.toHaveClass('is-active');
+      });
+
+      it('opens the folders the active row sits in, and lets the reader close them again', () => {
+        renderSection({
+          flows: [nested('company/billing/invoice.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one',
+          tabs: [tab('flow', `${root}/flows/company/billing/invoice.flow.yml`)],
+          activeTabUid: 'flow-tab'
+        });
+
+        expect(screen.getByTestId('flow-row-company/billing/invoice.flow.yml')).toHaveClass('is-active');
+
+        fireEvent.click(screen.getByTestId('flow-folder-company'));
+
+        expect(screen.queryByTestId('flow-row-company/billing/invoice.flow.yml')).not.toBeInTheDocument();
+      });
+    });
+
+    /**
+     * The drop is driven through react-dnd's HTML5 backend with the events a browser sends. jsdom has
+     * no `DataTransfer`, so each event carries the part of one the backend reads.
+     */
+    describe('moving a file', () => {
+      const dataTransfer = () => ({ setData: () => {}, getData: () => '', types: [], dropEffect: 'move', effectAllowed: 'all' });
+
+      const drag = (source, target) => {
+        const transfer = dataTransfer();
+        fireEvent.dragStart(source, { dataTransfer: transfer });
+        fireEvent.dragEnter(target, { dataTransfer: transfer });
+        fireEvent.dragOver(target, { dataTransfer: transfer });
+        fireEvent.drop(target, { dataTransfer: transfer });
+        fireEvent.dragEnd(source, { dataTransfer: transfer });
+      };
+
+      it('moves a flow into a folder through the host', async () => {
+        invoke.mockImplementation(async (channel) =>
+          (channel === 'renderer:flow-move' ? `${root}/flows/company/checkout.flow.yml` : undefined));
+        renderSection({
+          flows: [nested('checkout.flow.yml'), nested('company/create.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one'
+        });
+
+        drag(screen.getByTestId('flow-row-checkout.flow.yml'), screen.getByTestId('flow-folder-company'));
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-move', {
+            entry: `${root}/flows/checkout.flow.yml`,
+            scope,
+            directory: `${root}/flows/company`
+          }));
+      });
+
+      it('moves a flow out of its folder when it is dropped on the group label', async () => {
+        renderSection({ flows: [nested('company/create.flow.yml')], folders: [], workspaces, activeWorkspaceUid: 'one' });
+        fireEvent.click(screen.getByTestId('flow-folder-company'));
+
+        drag(screen.getByTestId('flow-row-company/create.flow.yml'), screen.getByTestId('flow-group-Workspace'));
+
+        await waitFor(() =>
+          expect(invoke).toHaveBeenCalledWith('renderer:flow-move', {
+            entry: `${root}/flows/company/create.flow.yml`,
+            scope,
+            directory: `${root}/flows`
+          }));
+      });
+
+      it('does not ask the host to move a flow into the folder it is already in', async () => {
+        renderSection({ flows: [nested('company/create.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+        fireEvent.click(screen.getByTestId('flow-folder-company'));
+
+        drag(screen.getByTestId('flow-row-company/create.flow.yml'), screen.getByTestId('flow-folder-company'));
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(invoke).not.toHaveBeenCalledWith('renderer:flow-move', expect.anything());
+      });
+
+      it('refuses to move a flow over unsaved YAML', async () => {
+        const pathname = `${root}/flows/checkout.flow.yml`;
+        renderSection({
+          flows: [nested('checkout.flow.yml'), nested('company/create.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one',
+          sources: { [pathname]: { content: 'version: 1\n# edited', saved: 'version: 1\n' } }
+        });
+
+        drag(screen.getByTestId('flow-row-checkout.flow.yml'), screen.getByTestId('flow-folder-company'));
+
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(invoke).not.toHaveBeenCalledWith('renderer:flow-move', expect.anything());
+      });
+
+      it('moves the open tabs of the moved flow with it', async () => {
+        const from = `${root}/flows/checkout.flow.yml`;
+        const to = `${root}/flows/company/checkout.flow.yml`;
+        invoke.mockImplementation(async (channel) => (channel === 'renderer:flow-move' ? to : undefined));
+        const { store } = renderSection({
+          flows: [nested('checkout.flow.yml', { name: 'Checkout' }), nested('company/create.flow.yml')],
+          workspaces,
+          activeWorkspaceUid: 'one',
+          tabs: [{ uid: 'flow-tab', type: 'flow', pathname: from, collectionUid: 'c', tabName: 'Checkout' }],
+          activeTabUid: 'flow-tab'
+        });
+
+        drag(screen.getByTestId('flow-row-checkout.flow.yml'), screen.getByTestId('flow-folder-company'));
+
+        await waitFor(() =>
+          expect(store.getState().tabs.tabs.map((entry) => [entry.type, entry.pathname, entry.tabName])).toEqual([
+            ['flow', to, 'Checkout']
+          ]));
+      });
     });
   });
 });

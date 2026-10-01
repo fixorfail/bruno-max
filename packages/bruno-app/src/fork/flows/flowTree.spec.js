@@ -1,4 +1,13 @@
-import { buildFlowTree, folderKeysOf, folderSegmentsOf, relativePathOf } from './flowTree';
+import {
+  ancestorFolderKeysOf,
+  buildFlowTree,
+  canMoveInto,
+  emptyFoldersOf,
+  folderBucketOf,
+  folderKeysOf,
+  folderSegmentsOf,
+  relativePathOf
+} from './flowTree';
 
 /**
  * 002 §4.1a. The watcher has always walked `flows/` recursively, so these entries are the shape the
@@ -142,5 +151,100 @@ describe('buildFlowTree', () => {
       'flows:/w/flows/company/billing',
       'flows:/w/flows/user'
     ]);
+  });
+});
+
+/** 002 §4.1d — the folders no file places, and where a file may be dropped. */
+describe('folders without files (§4.1d)', () => {
+  const folder = (pathname, extra = {}) => ({ pathname, workspaceRoot: '/w', ...extra });
+
+  it('draws an empty folder in the bucket it sits in', () => {
+    expect(folderBucketOf(folder('/w/flows/payments'))).toBe('flows');
+    expect(folderBucketOf(folder('/w/flows/scripts/auth'))).toBe('scripts');
+    expect(folderBucketOf(folder('/w/flows/fixtures/orders'))).toBe('fixtures');
+    expect(folderBucketOf(folder('/w/payments/flows/fixtures/x', { collectionRoot: '/w/payments' }))).toBe('fixtures');
+  });
+
+  it('draws a folder made from the Libraries label, and the folders inside it, among the libraries', () => {
+    const chosen = ['/w/flows/auth'];
+
+    expect(folderBucketOf(folder('/w/flows/auth'), chosen)).toBe('libraries');
+    expect(folderBucketOf(folder('/w/flows/auth/tokens'), chosen)).toBe('libraries');
+    expect(folderBucketOf(folder('/w/flows/authorize'), chosen)).toBe('flows');
+    expect(folderBucketOf(folder('/w/flows/scripts/auth'), ['/w/flows/scripts'])).toBe('scripts');
+  });
+
+  it('keeps only the folders no listed file sits under', () => {
+    const folders = [folder('/w/flows/company'), folder('/w/flows/empty'), folder('/w/flows/empty/nested')];
+    const files = [flow('/w/flows/company/create.flow.yml')];
+
+    expect(emptyFoldersOf(folders, files).map((entry) => entry.pathname)).toEqual(['/w/flows/empty', '/w/flows/empty/nested']);
+  });
+
+  it('adds an empty folder to the tree beside the ones files place', () => {
+    const tree = buildFlowTree(
+      [flow('/w/flows/company/create.flow.yml')],
+      'flows',
+      [folder('/w/flows/company/new'), folder('/w/flows/archive')]
+    );
+
+    expect(folderKeysOf(tree)).toEqual(['flows:/w/flows/archive', 'flows:/w/flows/company', 'flows:/w/flows/company/new']);
+    expect(tree.folders[1]).toMatchObject({ name: 'company', path: 'company', directory: '/w/flows/company' });
+    expect(tree.folders[1].folders[0]).toMatchObject({ name: 'new', path: 'company/new', directory: '/w/flows/company/new' });
+  });
+
+  it('counts an empty script folder from the scripts directory', () => {
+    const tree = buildFlowTree([], 'scripts', [folder('/w/flows/scripts/auth')]);
+
+    expect(tree.folders[0]).toMatchObject({ key: 'scripts:/w/flows/scripts/auth', path: 'auth' });
+  });
+
+  it('names the folders an entry sits in, outermost first', () => {
+    expect(ancestorFolderKeysOf(flow('/w/flows/a/b/x.flow.yml'), 'libraries')).toEqual([
+      'libraries:/w/flows/a',
+      'libraries:/w/flows/a/b'
+    ]);
+    expect(ancestorFolderKeysOf(flow('/w/flows/x.flow.yml'), 'flows')).toEqual([]);
+  });
+
+  describe('canMoveInto', () => {
+    const checkout = flow('/w/flows/checkout.flow.yml');
+
+    it('lets a flow move into a folder of flows/ and back out', () => {
+      expect(canMoveInto(checkout, '/w/flows/payments')).toBe(true);
+      expect(canMoveInto(flow('/w/flows/payments/checkout.flow.yml'), '/w/flows')).toBe(true);
+    });
+
+    it('refuses the folder the entry is already in', () => {
+      expect(canMoveInto(checkout, '/w/flows')).toBe(false);
+    });
+
+    it('keeps a flow out of the scripts and fixtures directories', () => {
+      expect(canMoveInto(checkout, '/w/flows/scripts')).toBe(false);
+      expect(canMoveInto(checkout, '/w/flows/fixtures/orders')).toBe(false);
+    });
+
+    it('keeps a script and a fixture inside their own directory', () => {
+      const script = flow('/w/flows/scripts/sign.js', { script: true });
+      const fixture = flow('/w/flows/fixtures/catalog.json', { fixture: true });
+
+      expect(canMoveInto(script, '/w/flows/scripts/auth')).toBe(true);
+      expect(canMoveInto(script, '/w/flows')).toBe(false);
+      expect(canMoveInto(fixture, '/w/flows/fixtures/orders')).toBe(true);
+      expect(canMoveInto(fixture, '/w/flows/payments')).toBe(false);
+    });
+
+    it('keeps an entry inside its own scope', () => {
+      expect(canMoveInto(checkout, '/other/flows/payments')).toBe(false);
+    });
+
+    it('never moves the connector file', () => {
+      expect(canMoveInto(flow('/w/flows/connectors.yml', { connectors: true }), '/w/flows/payments')).toBe(false);
+    });
+
+    it('compares a Windows path as POSIX text', () => {
+      const entry = flow('C:\\w\\flows\\checkout.flow.yml', { workspaceRoot: 'C:\\w' });
+      expect(canMoveInto(entry, 'C:/w/flows/payments')).toBe(true);
+    });
   });
 });

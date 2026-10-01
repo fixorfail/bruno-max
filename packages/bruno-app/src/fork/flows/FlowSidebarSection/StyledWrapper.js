@@ -1,4 +1,5 @@
 import styled from 'styled-components';
+import { rgba } from 'polished';
 
 /**
  * 002 §10's suite progress, in the section header beside the header's controls — which is outside
@@ -77,8 +78,18 @@ const StyledWrapper = styled.div`
     font-size: 0.75rem;
   }
 
+  /*
+   * §4.1d: the label's typography is on its name, not on the row. The row's menu renders inside the
+   * row (tippy's \`appendTo: 'parent'\`), and on the row it would set the menu items in small muted
+   * capitals instead of the title case every other sidebar menu uses.
+   */
   .flow-group-label {
+    display: flex;
+    align-items: center;
     padding: 0.25rem 0.75rem;
+  }
+
+  .flow-group-name {
     color: ${(props) => props.theme.colors.text.muted};
     font-size: 0.6875rem;
     text-transform: uppercase;
@@ -88,7 +99,12 @@ const StyledWrapper = styled.div`
   /* §4.1's libraries, under the scope they belong to. Between the group label's indent and the
      rows' own, so it reads as inside the group and over the rows rather than beside either. */
   .flow-subgroup-label {
+    display: flex;
+    align-items: center;
     padding: 0.25rem 0.75rem 0.125rem 1.125rem;
+  }
+
+  .flow-subgroup-name {
     color: ${(props) => props.theme.colors.text.muted};
     font-size: 0.625rem;
     text-transform: uppercase;
@@ -132,6 +148,30 @@ const StyledWrapper = styled.div`
   }
 
   /* The row's right edge — the run mark and the menu, which share it (§4.3). */
+  /*
+   * §4.1d: the row of the active tab, in the colour upstream gives a collection item whose tab is
+   * focused, so the two sidebars say "this is what you are looking at" the same way.
+   */
+  .flow-row.is-active {
+    background: ${(props) => rgba(props.theme.primary.text, 0.16)};
+
+    &:hover {
+      background: ${(props) => rgba(props.theme.primary.text, 0.16)};
+    }
+  }
+
+  .flow-row.is-dragging {
+    opacity: 0.5;
+  }
+
+  /* §4.1d: where a dragged row would land, in upstream's own drop-target colours. */
+  .flow-folder.is-drop-target,
+  .flow-group-label.is-drop-target {
+    background: ${(props) => props.theme.dragAndDrop.hoverBg};
+    outline: ${(props) => props.theme.dragAndDrop.borderStyle} ${(props) => props.theme.dragAndDrop.border};
+    outline-offset: -1px;
+  }
+
   .flow-row-actions {
     display: flex;
     align-items: center;
@@ -155,6 +195,9 @@ const StyledWrapper = styled.div`
   }
 
   .flow-row:hover .flow-menu,
+  .flow-folder:hover .flow-menu,
+  .flow-group-label:hover .flow-menu,
+  .flow-subgroup-label:hover .flow-menu,
   .flow-menu.is-open {
     visibility: visible;
   }

@@ -86,6 +86,33 @@ test.describe('B2 — the canvas edits the document', () => {
     await expect(flows.designer.readOnly()).toHaveCount(0);
   });
 
+  test('B2.1a a `+` between two steps shows only while the pointer is in the gap', async ({ restartApp }) => {
+    const page = await launch(restartApp);
+    const { flows } = buildCommonLocators(page);
+
+    await openFlow(page, 'designer-linear.flow.yml');
+    await expect(flows.designer.editLayer()).toBeAttached();
+
+    await test.step('Away from the gaps, only the two ends of the chain show a `+`', async () => {
+      await page.mouse.move(0, 0);
+      await expect(flows.designer.insertAfter('a')).toHaveCSS('opacity', '0');
+      await expect(flows.designer.insertAfter('b')).toHaveCSS('opacity', '0');
+      await expect(flows.designer.insertBefore('a')).toHaveCSS('opacity', '1');
+      await expect(flows.designer.insertAfter('c')).toHaveCSS('opacity', '1');
+    });
+
+    await test.step('In the gap after a, that `+` shows and the other stays hidden', async () => {
+      await flows.designer.insertBetween('a').hover();
+      await expect(flows.designer.insertAfter('a')).toHaveCSS('opacity', '1');
+      await expect(flows.designer.insertAfter('b')).toHaveCSS('opacity', '0');
+    });
+
+    await test.step('The shown `+` still opens the picker', async () => {
+      await flows.designer.insertAfter('a').click();
+      await expect(flows.designer.picker()).toBeVisible();
+    });
+  });
+
   test('B2.2 a finished run stays read-only until closed, and Edit flow closes it', async ({ restartApp }) => {
     const page = await launch(restartApp);
     const { flows } = buildCommonLocators(page);
@@ -390,7 +417,8 @@ test.describe('B4 — the step editor writes what it names', () => {
     await saveDraft(page);
 
     const text = readFlow(workspaceFixturePath!, 'designer-linear.flow.yml');
-    expect(text).toMatch(/pre:\n\s+timestamp: .*Date\.now\(\)/);
+    // 005 §9.1 writes every script as a `|-` block scalar, so the script is on the line below its name.
+    expect(text).toMatch(/pre:\n\s+timestamp: \|-\n\s+\(\) => String\(Date\.now\(\)\)/);
   });
 
   test('B4.11 a shared script is added to the flow\'s functions.use, relative to the flow', async ({ restartApp, workspaceFixturePath }) => {

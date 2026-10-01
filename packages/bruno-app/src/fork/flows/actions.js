@@ -5,6 +5,7 @@ import {
   describeSucceeded,
   describeFailed,
   flowsLoaded,
+  foldersLoaded,
   pastRunLoaded,
   sourceLoaded,
   sourceLoadFailed,
@@ -90,6 +91,7 @@ const restoreSession = () => async (dispatch) => {
 export const watchScope = (scope) => async (dispatch) => {
   const flows = await ipc().invoke('renderer:flow-watch-scope', scope);
   dispatch(flowsLoaded({ ...scope, flows }));
+  dispatch(foldersLoaded({ ...scope, folders: await ipc().invoke('renderer:flow-list-folders', scope) }));
   await dispatch(restoreSession());
 };
 
@@ -392,6 +394,36 @@ export const renameFlowScript = ({ script, filename }) => async () =>
     filename
   });
 
+/** The pair the host resolves a flow's ports, environment and script `require` against (§7.2). */
+const scopeOf = (flow) => ({ workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot });
+
+/** §4.1d: a new, empty folder in `parent`, which belongs to `scope`. Resolves to its path. */
+export const createFlowFolder = ({ scope, parent, name }) => async () =>
+  ipc().invoke('renderer:flow-create-folder', { scope, parent, name });
+
+/** §4.1d: a listed file or folder, shown in the platform's file manager. */
+export const revealFlowPath = ({ scope, pathname }) => async () =>
+  ipc().invoke('renderer:flow-reveal', { scope, pathname });
+
+/**
+ * §4.1d: a listed file into another folder of its bucket. Resolves to where it went; the caller
+ * retargets its tabs, as §4.5's rename does, because `retargetTabs` reaches upstream's tabs slice and
+ * this module is reached from the store (`registry.spec.js`).
+ *
+ * **A flow is refused over unsaved YAML**, for §4.4's reason sharpened: the host rewrites the moved
+ * flow's relative paths on disk, and the draft still holds the old ones — the next save would put
+ * them back, now pointing one folder off. A script or a fixture is moved as it is, so its editing
+ * session goes with it, draft included, as §4.5's rename carries one.
+ */
+export const moveFlowEntry = ({ entry, directory }) => async (dispatch, getState) => {
+  const source = getState().flows.sources[entry.pathname];
+  if (!entry.script && !entry.fixture && source && source.content !== source.saved) {
+    throw new Error('This flow has unsaved YAML changes — save or discard them first');
+  }
+
+  return ipc().invoke('renderer:flow-move', { entry: entry.pathname, scope: scopeOf(entry), directory });
+};
+
 /**
  * §7.2's param inputs, as the engine has to see them.
  *
@@ -553,9 +585,6 @@ export const rerunFailedFlows = ({ scopeRoot, suite }) => async (dispatch, getSt
     retryOf: basenameOf(suite.dir)
   });
 };
-
-/** The pair the host resolves a flow's ports, environment and script `require` against (§7.2). */
-const scopeOf = (flow) => ({ workspaceRoot: flow.workspaceRoot, collectionRoot: flow.collectionRoot });
 
 /**
  * 002 §4.1b: the flows the sidebar is currently showing, run as one sequential suite.

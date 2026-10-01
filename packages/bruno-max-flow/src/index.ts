@@ -48,6 +48,9 @@ export { readFlowProperties, writeFlowProperties } from './meta';
 // 002 §4.1c's opening document, for the same reason: a host that emitted the skeleton `meta:` is
 // spliced into would be writing the format too.
 export { writeNewFlowDocument } from './meta';
+// 002 §4.1d's move, for the same reason: the paths a flow writes are found by reading the format, and
+// a host that found them itself would have to know §5.4's local tags.
+export { rebaseFlowPaths } from './relocate';
 // §5.2's identity, exported because a roster, a report and a rerun are matched to each other by it:
 // three hosts deriving it separately would be three chances for those three to disagree.
 export { flowIdentity } from './meta';
@@ -74,6 +77,10 @@ export type {
   StepPatch,
   StepDraft,
   ApiBindingDraft,
+  ParamDraft,
+  ParamEntry,
+  ExportEntry,
+  VarEntry,
   FlowEdit,
   FlowEditRefusal,
   FlowEditResult,

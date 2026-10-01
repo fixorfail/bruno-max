@@ -368,6 +368,23 @@ describe('R8.4 — Inline overrides against the operation schema', () => {
     expect(of(await validate(entry, { files }), 'unknown-field')[0].message).toContain('body.lines[].quantitiy');
   });
 
+  /**
+   * Two `allOf` branches that declare the same property describe one object between them, so the
+   * keys under it are the union of both. A shallow merge kept only the last branch's `data`.
+   */
+  it('reads a property declared by two allOf branches as the union of both', async () => {
+    expect(await validate(flow('allof-shared-property.flow.yml'))).toEqual([]);
+  });
+
+  it('still reports a typo under a property two allOf branches share', async () => {
+    const { entry, files } = variant(flow('allof-shared-property.flow.yml'), (document) => {
+      document.steps[0].body.data.attributes.amonut = '10.00';
+    });
+    const [complaint] = of(await validate(entry, { files }), 'unknown-field');
+
+    expect(complaint.message).toContain('body.data.attributes.amonut');
+  });
+
   /** A schema that documents nothing about its own keys cannot tell a typo from a field. */
   it('leaves a free-form object alone', async () => {
     const { entry, files } = drift((document) => {

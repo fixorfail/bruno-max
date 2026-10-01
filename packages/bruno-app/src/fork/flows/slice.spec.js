@@ -1,5 +1,8 @@
 import reducer, {
   flowsLoaded,
+  foldersLoaded,
+  flowFolderUpdated,
+  libraryFolderCreated,
   flowTreeUpdated,
   flowDependencyChanged,
   describeSucceeded,
@@ -110,6 +113,42 @@ describe('the flows slice', () => {
     state = reducer(state, flowsLoaded({ workspaceRoot, flows: [] }));
 
     expect(state.flows).toEqual([other]);
+  });
+
+  /** 002 §4.1d: folders are kept apart from the tree, per scope, and follow the watcher. */
+  describe('folders', () => {
+    const folder = { pathname: '/workspace/flows/payments', workspaceRoot };
+    const other = { pathname: '/other/flows/archive', workspaceRoot: '/other' };
+
+    it('replaces one scope on reload without disturbing another', () => {
+      let state = reducer(undefined, foldersLoaded({ workspaceRoot: '/other', folders: [other] }));
+      state = reducer(state, foldersLoaded({ workspaceRoot, folders: [folder] }));
+      state = reducer(state, foldersLoaded({ workspaceRoot, folders: [] }));
+
+      expect(state.folders).toEqual([other]);
+      expect(state.flows).toEqual([]);
+    });
+
+    it('adds and removes a folder the watcher reports, without touching descriptions', () => {
+      let state = reducer(undefined, describeSucceeded({ pathname, description: { nodes: [] } }));
+      state = reducer(state, flowFolderUpdated({ event: 'addDir', entry: folder }));
+      state = reducer(state, flowFolderUpdated({ event: 'addDir', entry: folder }));
+
+      expect(state.folders).toEqual([folder]);
+      expect(state.descriptions[pathname]).toBeDefined();
+
+      state = reducer(state, flowFolderUpdated({ event: 'unlinkDir', entry: folder }));
+      expect(state.folders).toEqual([]);
+    });
+
+    it('remembers a folder made for libraries once, and forgets it when the folder goes', () => {
+      let state = reducer(undefined, libraryFolderCreated({ pathname: folder.pathname }));
+      state = reducer(state, libraryFolderCreated({ pathname: folder.pathname }));
+      expect(state.libraryFolders).toEqual([folder.pathname]);
+
+      state = reducer(state, flowFolderUpdated({ event: 'unlinkDir', entry: folder }));
+      expect(state.libraryFolders).toEqual([]);
+    });
   });
 
   it('drops a deleted flow and its description', () => {

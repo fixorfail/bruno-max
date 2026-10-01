@@ -244,7 +244,8 @@ test.describe('U3 — diagnostics', () => {
 
     await test.step('and choosing no environment is offered, and takes effect', async () => {
       await page.getByTestId('flow-environment').click();
-      await environment.listOption('No Environment').click();
+      // Upstream's dropdown gives the "No Environment" row its own test id, apart from the list rows.
+      await environment.noEnvironmentItem().click();
 
       await expect(page.getByTestId('flow-environment')).toContainText('No Environment');
     });

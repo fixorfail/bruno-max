@@ -1,5 +1,6 @@
 import {
   flowTreeUpdated,
+  flowFolderUpdated,
   flowDependencyChanged,
   runEventsReceived,
   suiteEventReceived,
@@ -44,6 +45,11 @@ export const registerFlowIpcEvents = (dispatch) => {
     dispatch(flowDependencyChanged());
   });
 
+  /** §4.1d: a folder under a watched `flows/`, which the sidebar draws even while it is empty. */
+  const removeFolderListener = ipcRenderer.on('main:flow-folder-updated', (event, entry) => {
+    dispatch(flowFolderUpdated({ event, entry }));
+  });
+
   const removeRunEventListener = ipcRenderer.on('main:flow-run-event', (batch) => {
     dispatch(runEventsReceived(batch));
   });
@@ -78,6 +84,7 @@ export const registerFlowIpcEvents = (dispatch) => {
   return () => {
     removeTreeListener();
     removeDependencyListener();
+    removeFolderListener();
     removeRunEventListener();
     removeSuiteEventListener();
     removeRequestLogListener();

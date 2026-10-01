@@ -469,7 +469,12 @@ const FlowGraph = ({
   onEditApi,
   onRemoveApi,
   onConnect,
-  onDisconnect
+  onDisconnect,
+  /**
+   * 005 §6.8: a click on a panel opens the settings tab that edits its block — `'inputs'` for
+   * `params:`, `'exports'` for `exports:`. The panels are controls only while the drawing is editable.
+   */
+  onOpenSettings
 }) => {
   const graph = useMemo(
     () => layoutGraph(description, { expandedSubflows }),
@@ -643,6 +648,22 @@ const FlowGraph = ({
   const selectionOffset = useRef(null);
   useSelectedNodeInView({ containerRef: viewportRef, nodeRefs, selectedStep, offsetRef: selectionOffset });
 
+  /**
+   * A click in a param's value box does not open the tab. That box holds a value for the next run
+   * (002 §5.6), not the declaration.
+   */
+  const panelProps = (tab) =>
+    editable && onOpenSettings
+      ? {
+          'role': 'button',
+          'aria-label': tab === 'inputs' ? 'Edit the flow\'s params' : 'Edit the flow\'s exports',
+          'data-editable': 'true',
+          'onClick': (event) => {
+            if (!event.target.closest('input')) onOpenSettings(tab);
+          }
+        }
+      : {};
+
   const selectNode = (id) => {
     const selecting = id !== selectedStep;
     const offset = selecting ? nodeViewportOffset(viewportRef.current, nodeRefs.current.get(id)) : null;
@@ -673,9 +694,13 @@ const FlowGraph = ({
              is what opens the pane over the flow's own `config:`. Selecting the selected node again
              already did this; nothing said so, and the setting under it was reachable only by
              guessing at the gesture. `currentTarget` is the test: a click that landed on a node, an
-             edge or a control is that thing's, whatever it does with it. */
+             edge or a control is that thing's, whatever it does with it. The hover area of a `+`
+             between two steps is empty canvas that only reveals the `+`, so a click on it counts
+             as a click on the drawing. */
           onClick={(event) => {
-            if (event.target === event.currentTarget) onSelectStep(null);
+            if (event.target === event.currentTarget || event.target.classList.contains('flow-insert-hover')) {
+              onSelectStep(null);
+            }
           }}
         >
           <defs>
@@ -687,7 +712,12 @@ const FlowGraph = ({
           {/* 002 §5.6: what the run starts from, in the gutter to the left of rank 0. Editable while
               the tab shows the flow as it stands; a record of values once it shows a stored run. */}
           {inputs ? (
-            <g className="flow-panel flow-inputs" transform={`translate(${inputs.x}, ${inputs.y})`} data-testid="flow-inputs">
+            <g
+              className="flow-panel flow-inputs"
+              transform={`translate(${inputs.x}, ${inputs.y})`}
+              data-testid="flow-inputs"
+              {...panelProps('inputs')}
+            >
               <rect className="panel-box" width={inputs.width} height={inputs.height} rx="4" />
               <foreignObject x="0" y="0" width={inputs.width} height={inputs.height}>
                 <div className="panel-body" xmlns="http://www.w3.org/1999/xhtml">
@@ -764,6 +794,7 @@ const FlowGraph = ({
               className="flow-panel flow-exports"
               transform={`translate(${exportsPanel.x}, ${exportsPanel.y})`}
               data-testid="flow-exports"
+              {...panelProps('exports')}
             >
               <rect className="panel-box" width={exportsPanel.width} height={exportsPanel.height} rx="4" />
               <foreignObject x="0" y="0" width={exportsPanel.width} height={exportsPanel.height}>

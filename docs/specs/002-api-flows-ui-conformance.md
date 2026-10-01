@@ -1275,6 +1275,55 @@ sitting beside a flow — legal `use:` targets since 001 §8.6 and never meant t
 section would be a file browser rather than a place helpers are kept. Reading the file would be a
 read per script on every tree change, for a field a script does not have.
 
+### U5.6d The watcher reports folders on their own channel
+
+`renderer:flow-list-folders` lists each directory under `flows/`, empty or not, with its scope. It
+does not list `flows/` itself, `flows/scripts/`, `flows/fixtures/`, or a directory under a
+dot-directory. A folder added or removed emits `main:flow-folder-updated` with `addDir` or
+`unlinkDir`. `renderer:flow-watch-scope` still lists files only.
+
+*Pins 002 §4.1d.* Jest, in `packages/bruno-electron/src/app/flowsWatcher.spec.js`. A folder that a
+New Folder made has no file in it. Without a report of its own it is
+not a row, and the author cannot drop a file into it. It is not a tree entry, because every reader of
+the tree takes an entry as a file that it can open.
+
+### U5.6e A move keeps a file in its bucket and a flow's paths correct
+
+`renderer:flow-move` moves a flow into a folder and out of one, and rewrites the flow's relative
+`apis:`, `functions.use:`, `dataset:`, `uses:`, `bodyFile:` and `!file` paths so that they name the
+same files. A flow with no relative path is moved byte for byte. The channel refuses:
+
+- a file that is already at the destination;
+- a flow that does not parse;
+- a script out of `flows/scripts/`, a fixture out of `flows/fixtures/`, and a flow into either;
+- the connector file;
+- a file outside the scope's `flows/`, and a destination that is not a folder.
+
+`renderer:flow-create-folder` refuses a name that is taken, a dot-name, an ignored name, and
+`scripts` or `fixtures` at the top of `flows/`. `renderer:flow-reveal` refuses a path outside the
+scope's `flows/`.
+
+*Pins 002 §4.1d.* Jest, in `packages/bruno-electron/src/ipc/flow/files.spec.js`, with the rewrite
+itself in `packages/bruno-max-flow/tests/conformance/relocate.spec.js`. A move that does not rewrite the moved flow's paths breaks every one of them. A
+move that changes a file's bucket removes the file from the sidebar.
+
+### U5.6f The section manages its files
+
+In the sidebar: an empty folder is a row in the bucket that holds it, and a search removes it. New
+Folder on a folder row makes the folder inside that folder and opens it; on a group label, it makes
+the folder at the top of `flows/`; on the `Scripts` or `Fixtures` label, at the top of `flows/scripts/`
+or `flows/fixtures/`, where it is drawn under that label. On the `Libraries` label it makes the folder
+at the top of `flows/`, and the folder is drawn under `Libraries` while it is empty. The menu items on
+every label are in title case, not in the label's capitals. Each row, folder and group label reveals its path through
+`renderer:flow-reveal`. A row dropped on a folder row moves into that folder, and a row dropped on
+its group label moves to the top of its bucket. A flow is not moved while its YAML has unsaved
+changes, and no move is asked for into the folder the file is already in. The moved flow's tabs
+follow it. The row of the active fork tab is marked, and the folders that hold it open; a folder the
+reader then closes stays closed.
+
+*Pins 002 §4.1d.* Jest, in `packages/bruno-app/src/fork/flows/FlowSidebarSection/index.spec.js`, and
+end to end in `tests/flows/manage-files.spec.ts`.
+
 ### U5.7 A flow tab is a tab the app can actually hold
 
 Opening a workspace-scoped flow and a collection-scoped one each produce a tab that renders in the
@@ -1565,6 +1614,7 @@ UI inventing a word where the engine gave it one — not the engine explaining i
 | U4.21 | §4.1, §10, §11.3 | A rerun that refuses a rebuilt roster, or hides itself when the answer is "nothing to retry" |
 | U5.1–U5.3 | §7.2, §11.3 | Tiers merged in main, or a secret flattened in the renderer |
 | U5.4–U5.6 | §11.3, §8.1, §4.1 | A cancel that misses, a batch that mixes runs, a watcher a broken flow defeats |
+| U5.6d–U5.6f | §4.1d, §11.3 | An empty folder that is not a row, a move that breaks the moved flow's paths or changes its bucket |
 | U5.6a | §7.3, 001 §8.2 | Every script position failing for a flow that has no collection |
 | U5.6b | §4.5 | A watcher reading `meta:` out of a `.js`, or listing helpers it was never meant to |
 | U5.7 | §4.2 | A tab the app's collection-scoped tab model cannot hold |

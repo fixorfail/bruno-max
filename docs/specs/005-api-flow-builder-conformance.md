@@ -47,6 +47,8 @@ packages/bruno-max-flow/tests/conformance/
   edit-order.spec.js               # B1.10–B1.11
   edit-tags.spec.js                # B3.1–B3.3
   edit-refusals.spec.js            # B1.12–B1.16
+  edit-interface.spec.js           # B1.23–B1.24
+  edit-vars.spec.js                # B1.25
   operations.spec.js               # B7.1–B7.7
 
 packages/bruno-electron/src/ipc/flow/index.spec.js    # §7 — the existing file, the existing pattern
@@ -104,7 +106,12 @@ editor:   flow-step-editor, flow-step-editor-tab-<name>, flow-step-field-<key>,
           flow-step-shared-script-add
 settings: flow-settings, flow-settings-tab-<name>, flow-settings-defaults, flow-settings-runs,
           flow-settings-retry, flow-config-flag-<key> (tri-state), flow-config-<key>,
-          flow-config-retry-<key>, flow-settings-refusal
+          flow-config-retry-<key>, flow-settings-refusal,
+          flow-settings-inputs, flow-settings-params-table, flow-param-required-<uid>,
+          flow-param-secret-<uid>, flow-settings-params-library-hint, flow-settings-param-opaque-<name>,
+          flow-settings-exports, flow-settings-exports-table, flow-export-source-<uid>,
+          flow-settings-export-suggestions, flow-settings-export-opaque-<name>,
+          flow-settings-vars, flow-settings-vars-table, flow-settings-var-opaque-<name>
 status:   flow-designer-state, flow-designer-readonly, flow-designer-edit, flow-run-saves-first
 ```
 
@@ -328,6 +335,44 @@ another key.
 *Pins 005 §9.1, 001 §8.2.* Three spellings of one kind of value in one file; a writer that reformats
 what the edit was not about.
 
+### B1.23 `params:` is written whole, and keeps what did not change
+
+`params.define` on a flow with no `params:` writes the block where §5.2 reads it, one flow-style line
+per param: `email: { required: true }`. The model's own params, handed back as the draft, are
+`changed: false`. A changed key of one param changes that line only, with its style and its trailing
+comment; a key the draft omits is deleted rather than written as its default; a rename keeps the
+param's place. The last param removed takes the block with it. A `params:` key holding nothing is
+replaced in place, not declared twice. A key outside 001 §12.1's three is refused `unknown-field`. A
+param with a local tag under it reads as `{ name, opaque: true }`, and naming it in a draft keeps it
+byte for byte.
+
+*Pins 005 §9.1, §9.2, §6.4, 001 §12.1.* A block rebuilt from the draft, so every comment goes; a
+`required: false` spelled out or deleted by an edit to another param; a `!file` default destroyed.
+
+### B1.24 `exports:` is written whole, and keeps what did not change
+
+`exports.define` writes the block after `params:`, before `steps:`. A changed reference is written
+in place with its quoting and its trailing comment; a new export is one line at the end; an empty
+draft removes the block. A draft equal to the block is `changed: false`. An export whose value is not
+a string reads as opaque, with an empty source.
+
+*Pins 005 §9.1, §9.2, 001 §12.1.* A quoted reference unquoted by an edit to its neighbour; an
+`exports: {}` left behind.
+
+For both blocks, an entry the read marks opaque without a tag — a param with a key 001 §12.1 does not
+give it, an export that is not a string — is `changed: false` when the draft names it.
+
+### B1.25 `vars:` is written whole, and keeps what did not change
+
+`vars.define` on a flow with no `vars:` writes the block where §5.2 reads it. The model reads each var
+as written, in order, and a `!file` var as `{ name, opaque: true }`. The block the file holds, handed
+back as the draft, is `changed: false`, with the `!file` var byte for byte. A changed scalar keeps its
+quotes and its trailing comment; a rename keeps the var's place; the last var removed takes the block
+with it.
+
+*Pins 005 §9.1, §9.2, §6.4, 001 §7.3, §7.4.* A `!file` source destroyed by an edit to another var; a
+quoted expression unquoted.
+
 ## 4. B2 — The canvas edits the document
 
 Fixture: `designer-linear` open in the flow tab, no run.
@@ -357,6 +402,18 @@ changes*; save. Read the file from the temp workspace: it differs from the commi
 exactly two added lines.
 
 *Pins 005 §5.1, §7.1, §9.1.* End to end, and on bytes; a new step the author has to find and click.
+
+### B2.3a A `+` between two steps waits for the pointer
+
+Open `designer-linear.flow.yml` with the pointer away from the drawing. `flow-insert-after-a` and
+`flow-insert-after-b` have opacity 0; `flow-insert-before-a` and `flow-insert-after-c` have opacity 1.
+Hover `flow-insert-between-a`: `flow-insert-after-a` has opacity 1, and `flow-insert-after-b` still
+has opacity 0. Click `flow-insert-after-a`: the picker opens. In Jest, each `+` between two steps is
+inside a `flow-insert-between-*` group with a hover area, the two end controls are not, and a click
+on the hover area clears the selection.
+
+*Pins 005 §5.1.* A control on every edge that nobody asked to see; an end of the chain with no way in;
+a gap that swallows the click that clears the selection.
 
 ### B2.4 The empty flow offers its first request
 
@@ -465,6 +522,20 @@ settings again.
 
 *Pins 005 §6.8, §6.5, §9.1, 001 §5.2.* A pane reachable only by re-clicking the selected node; a
 flow-level flag offering *inherit*; a cleared field writing the default out.
+
+### B2.16 The graph's panels open the flow's interface
+
+Open a flow that declares `params:`, `vars:` and `exports:`. Click the inputs panel: the selection
+clears and the settings sheet shows the *inputs* tab, with the params and, under them, the vars. Select a step, then click the exports panel: the step
+editor closes and the sheet shows the *exports* tab. Click in a param's value box: the sheet does not
+change. Open a stored run: the panels are not controls. On the *inputs* tab, tick *secret* on one
+param: one `params.define` carries every param, and the others go back as the model read them. On
+the *exports* tab, the suggestions are each top-level output, each `uses:` step's library exports and
+each slot — never a step inside an expanded sub-flow.
+
+*Pins 005 §6.8, §9.1, 001 §12.1, 002 §5.6.* A panel that draws a declaration nobody can reach; a
+click meant for a run's value that throws away the selected step; a suggestion the flow cannot
+export.
 
 ## 5. B3 — Opaque fields
 
@@ -576,7 +647,7 @@ that could not be read shown as one that exports nothing.
 Open `designer-linear`, select `b`, open the Scripts tab: `flow-step-scripts` says the step computes
 nothing. `flow-step-script-add`, name the entry `timestamp` in `flow-step-script-name-0`, type a
 script into its editor. Save and read the file: `b` gains `pre:` with `timestamp:` holding the
-script. In Jest: an entry with no name writes nothing; an edit to one entry's script writes the whole
+script as a `|-` block scalar (§9.1). In Jest: an entry with no name writes nothing; an edit to one entry's script writes the whole
 mapping with the others as they were; removing the last entry unsets `pre`; a `uses:` step is not
 offered the tab.
 
