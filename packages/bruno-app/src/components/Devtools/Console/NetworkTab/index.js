@@ -11,6 +11,7 @@ import {
 } from 'providers/ReduxStore/slices/logs';
 import { useResizableColumns } from 'hooks/useResizableColumns';
 import { selectDevtoolsRequests } from 'fork/registry';
+import { formatDuration } from 'utils/common';
 import StyledWrapper from './StyledWrapper';
 import { sortRequests } from './utils';
 
@@ -57,12 +58,6 @@ const RequestRow = ({ request, isSelected, onClick, gridTemplateColumns }) => {
       second: '2-digit',
       fractionalSecondDigits: 3
     });
-  };
-
-  const formatDuration = (duration) => {
-    if (!duration) return '-';
-    if (duration < 1000) return `${Math.round(duration)}ms`;
-    return `${(duration / 1000).toFixed(2)}s`;
   };
 
   const formatSize = (size) => {
@@ -123,7 +118,7 @@ const RequestRow = ({ request, isSelected, onClick, gridTemplateColumns }) => {
       </div>
 
       <div className="request-duration">
-        {formatDuration(res?.duration)}
+        {res?.duration ? formatDuration(res.duration) : '-'}
       </div>
 
       <div className="request-size">

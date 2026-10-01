@@ -58,6 +58,7 @@ const registerAiIpc = require('./ipc/ai');
 const registerAiAutocompleteIpc = require('./ipc/ai/autocomplete');
 const { registerMountIpc } = require('./ipc/mount');
 const { registerSqliteIpc } = require('./ipc/sqlite');
+const sqliteService = require('./services/sqlite');
 const { registerWsdlIpc } = require('./ipc/wsdl');
 const collectionWatcher = require('./app/collection-watcher');
 const WorkspaceWatcher = require('./app/workspace-watcher');
@@ -545,7 +546,8 @@ app.on('ready', async () => {
   registerAiIpc(mainWindow);
   registerAiAutocompleteIpc(mainWindow);
   registerMountIpc();
-  registerSqliteIpc(mainWindow);
+  sqliteService.openDatabase();
+  registerSqliteIpc();
   appDocuments.handleProtocol();
   registerAppDocumentIpc(appDocuments, mainWindow);
   registerWsdlIpc();
@@ -585,11 +587,11 @@ app.on('before-quit', (event) => {
 
     try { await require('./ipc/mount').shutdown({ force: true }); } catch { }
 
-    try { await require('./ipc/sqlite').reclaimDiskSpace(); } catch {}
+    try { await sqliteService.reclaimDiskSpace(); } catch {}
 
     try { await require('./ipc/flow').shutdown(); } catch {}
 
-    try { require('./ipc/sqlite').shutdown(); } catch {}
+    try { sqliteService.shutdown(); } catch {}
 
     if (useSingleInstance && gotTheLock) {
       try { app.releaseSingleInstanceLock(); } catch {}
