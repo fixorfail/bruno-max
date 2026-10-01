@@ -1868,6 +1868,14 @@ the run ended without the step reporting rather than repeating `running` beside 
 waiting on asynchronous state, and a 20-attempt poll that renders as "running" for a minute is
 indistinguishable from a hang.
 
+**A loop says how far it has gone, as a poll does** ([006](./006-step-loops.md) §9). A step with
+`loop:` is one node, and it stays `running` while its iterations go by, so the node's last line says
+`iteration 3/8`, from `step:iteration`, and keeps `iteration 3/8` after the step ends, from
+`StepResult.loop`. A cursor cannot say the total, and the node says `iteration 3`. Where an
+iteration retries, the node says both: `iteration 3/8 · attempt 2/3`. The attempt is that of the
+iteration, taken from `step:attempt`, which names its iteration for this reason. The footer marks the
+step `loop 25`, with the largest number of iterations it can run.
+
 **The halo moves, and its colour separates the two states.** Motion is what distinguishes a request
 in flight from a step drawn in a state it reached and stopped in — a static border says the same
 thing about a step that is working and one that is wedged. It turns *around the box* rather than
@@ -1999,6 +2007,19 @@ together. A fifth tab listing the attempts put the choice in one place and its e
 selected attempt 3, remained on a tab that showed only a list of attempts, and nothing appeared to
 happen. The chooser therefore sits between the step's id and its outcome, beside what it re-keys. It
 carries no label, because it always shows a value and that value names what it is.
+
+**A step with `loop:` has an iteration chosen beside its attempt** ([006](./006-step-loops.md) §9).
+The iteration selector sits before the attempt selector on the same header and does the same thing:
+001 §14.5 writes the attempts of each iteration to `<step>/iteration-<n>/`, so choosing an iteration
+re-keys the capture every tab is read from, and the attempt selector then offers the attempts of
+*that* iteration. It opens on the iteration that decided the step — the match, or the failure, and
+else the last — on its final attempt, which is the one the step's own outcome was built from. While
+the loop runs it follows the newest attempt that has a capture, as above: the retrying iteration's
+earlier attempt, and else the iteration before. The labels count from 1, as attempts do, and the
+title of the selector gives `loop.index`, which is what a flow and the capture directory call it.
+A `uses:` step that loops has no iteration to choose, because its requests are the steps inside its
+sub-flow. The attempts of an iteration are known from `StepResult.loop.attemptsPerIteration` once the
+step ends, and from `step:attempt` while it runs.
 
 **Every tab is the chosen attempt's, or none of them is.** Reading the verdict from `StepResult`
 while reading the request and response from a capture is the mix that makes a poll unreadable: 001's
@@ -2444,6 +2465,7 @@ type ReadCaptureOptions = {
   scopeRoot: string;                   // as on ReadRunOptions
   stepId: string;
   iteration?: number;
+  loopIteration?: number;              // `loop.index`, for an attempt of a step with `loop:` (006 §8)
   attempt: number;
   ports: { readFile: ReadFile };
 };
@@ -2842,7 +2864,9 @@ type ReadRunRequest = {
 };
 
 // renderer:flow-read-capture  ->  StepCapture (§11.2)
-type ReadCaptureRequest = { dir: string; scopeRoot: string; stepId: string; iteration?: number; attempt: number };
+type ReadCaptureRequest = {
+  dir: string; scopeRoot: string; stepId: string; iteration?: number; loopIteration?: number; attempt: number;
+};
 
 // main:flow-run-event
 type RunEventBatch = { runId: string; events: FlowEvent[] };

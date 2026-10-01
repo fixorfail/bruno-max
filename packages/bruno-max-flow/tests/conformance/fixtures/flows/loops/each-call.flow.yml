@@ -1,0 +1,34 @@
+# 006 §1's fourth loop (C41434): one RPC for each match, and every call must pass. There is no
+# `until:`, so every value runs, and `steps.call_each.iterations` holds each call's outputs in order.
+# `summarize` reads them whole, which also reads every output the loop declares (006 §10).
+version: 1
+
+meta:
+  name: 006 — one call for each item, every call must pass
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+steps:
+  - id: call_each
+    operation: loops-api#loopRpc
+    loop:
+      over:
+        - acct-1
+        - acct-2
+        - acct-3
+      as: key
+      max: 10
+    body:
+      key: "{{loop.key}}"
+    outputs:
+      result: data.result
+    assert:
+      - res.body.data.ok eq true
+
+  - id: summarize
+    operation: loops-api#loopRpc
+    body:
+      key: "got {{steps.call_each.iterations}}"
+    assert:
+      - steps.call_each.count eq 3

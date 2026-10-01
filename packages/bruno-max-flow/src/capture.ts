@@ -123,18 +123,27 @@ const pathSegment = (segment: string): string => {
   return `${safe.slice(0, MAX_SEGMENT - 8)}-${createHash('sha1').update(segment).digest('hex').slice(0, 7)}`;
 };
 
-/** `iteration` is absent for a flow with no `dataset:`, which nests nothing (§14.5). */
-export const stepCaptureDir = (runDir: string, stepId: string, iteration?: number): string =>
+/**
+ * `iteration` is absent for a flow with no `dataset:`. That flow nests nothing (§14.5).
+ *
+ * `loopIteration` is from 006 §8. The iterations of a `loop:` step nest below the step. The
+ * iterations of a dataset nest above it. A step without `loop:` passes no value and keeps its path.
+ */
+export const stepCaptureDir = (runDir: string, stepId: string, iteration?: number, loopIteration?: number): string =>
   path.join(
     runDir,
     ...(iteration === undefined ? [] : [`iteration-${iteration}`]),
-    ...stepId.split('/').map(pathSegment)
+    ...stepId.split('/').map(pathSegment),
+    ...(loopIteration === undefined ? [] : [`iteration-${loopIteration}`])
   );
 
 export const attemptFile = (attempt: number): string => `attempt-${attempt}.json`;
 
 /** The reader's half of the name above — 002 §11.2's `capturedSteps` finds a step by its presence. */
 export const ATTEMPT_FILE = /^attempt-\d+\.json$/;
+
+/** The reader side of `loopIteration` in `stepCaptureDir`. A looped step keeps its attempts here. */
+export const LOOP_ITERATION_DIRECTORY = /^iteration-\d+$/;
 
 const TEXTUAL = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|[^;]*\+(json|xml))/i;
 
@@ -315,6 +324,8 @@ export type AttemptRecord = {
   stepId: string;
   /** Nests the capture only when the flow has a dataset (§14.5). */
   iteration?: number;
+  /** `loop.index`, for an attempt of a `loop:` step (006 §8). */
+  loopIteration?: number;
   attempt: number;
   startedAt: string;
   durationMs: number;
@@ -343,7 +354,10 @@ export type Capture = {
    * under way and an iteration is the unit that has one set of them.
    */
   vars(iteration: number, values: Record<string, unknown>): void;
-  /** Returns the step's directory, for `StepResult.capturePath`. */
+  /**
+   * Returns the directory of the step, for `StepResult.capturePath`. For an attempt of a `loop:`
+   * step it is also the directory of the step. The directories of its iterations are inside it.
+   */
   attempt(record: AttemptRecord): Promise<string>;
   finish(result: RunResult): Promise<void>;
 };
@@ -550,7 +564,8 @@ export const createCapture = (setup: CaptureSetup): Capture => {
     },
 
     attempt: async (record) => {
-      const target = stepCaptureDir(dir, record.stepId, record.iteration);
+      const stepDir = stepCaptureDir(dir, record.stepId, record.iteration);
+      const target = stepCaptureDir(dir, record.stepId, record.iteration, record.loopIteration);
       // A binary body is written out as a sibling and the capture only names it, so the two writes
       // are collected here and both settle before the JSON that points at one of them lands.
       const siblings: Promise<void>[] = [];
@@ -572,6 +587,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
       const capture: StepCapture = setup.secrets.mask({
         stepId: record.stepId,
         iteration: record.iteration === undefined ? 0 : record.iteration,
+        ...(record.loopIteration === undefined ? {} : { loopIteration: record.loopIteration }),
         attempt: record.attempt,
         startedAt: record.startedAt,
         durationMs: record.durationMs,
@@ -584,7 +600,7 @@ export const createCapture = (setup: CaptureSetup): Capture => {
 
       await Promise.all(siblings);
       await writeJson(setup, path.join(target, attemptFile(record.attempt)), capture);
-      return target;
+      return stepDir;
     },
 
     finish: async (result) => {

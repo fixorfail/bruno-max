@@ -766,3 +766,85 @@ describe('the flow listing', () => {
     expect(lines).toEqual([]);
   });
 });
+
+/**
+ * L12.1 — a loop is one line, and the line says how far it went (006 §9).
+ *
+ * Properties and not exact text, as everything in this file is: the console is not a stable format.
+ */
+describe('L12.1 — the step line of a loop', () => {
+  const looped = (loop, over = {}) =>
+    step({ id: 'find_vendor', status: 'success', attempts: loop.count, loop, ...over });
+
+  const lineOf = (result) => {
+    const { reporter, lines } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:end', id: result.id, index: 0, result });
+    return lines.find((entry) => entry.includes(result.id));
+  };
+
+  it('shows the iteration it ended at, out of the most it could run', () => {
+    expect(lineOf(looped({ count: 3, of: 8, matched: true, index: 2, value: 'v3' }))).toContain('iteration 3/8');
+  });
+
+  it('shows the iteration without a total where the source cannot say how many there are', () => {
+    const found = lineOf(looped({ count: 3, matched: true, index: 2, value: 2 }));
+
+    expect(found).toContain('iteration 3');
+    expect(found).not.toContain('iteration 3/');
+  });
+
+  it('says so where the loop ran no iteration', () => {
+    expect(lineOf(looped({ count: 0, of: 0, matched: false }))).toContain('no iterations');
+  });
+
+  it('prints neither for a step with no loop', () => {
+    expect(lineOf(step())).not.toContain('iteration');
+  });
+
+  it('prints an attempt count only for the requests beyond one for each iteration', () => {
+    expect(lineOf(looped({ count: 3, of: 3, matched: true }))).not.toContain('attempts');
+    expect(lineOf(looped({ count: 3, of: 3, matched: true }, { attempts: 4 }))).toContain('4 attempts');
+  });
+
+  it('names loop.index and the value in the failure block where an assertion failed', () => {
+    const { reporter, text } = capture({ tty: false, env: {} });
+    const result = looped(
+      { count: 2, of: 3, matched: false, index: 1, value: 'acct-2' },
+      {
+        status: 'failed',
+        reason: 'assertion-failed',
+        assertions: [{ expr: 'res.body.data.ok eq true', passed: false, expected: true, actual: false }]
+      }
+    );
+    reporter.flowStarted('flows/loop.flow.yml');
+    reporter.onEvent({ type: 'step:end', id: result.id, index: 0, result });
+    reporter.flowFinished({
+      runId: 'r-1',
+      status: 'failed',
+      summary: { total: 1, passed: 0, failed: 1, skipped: 0, cancelled: 0 },
+      diagnostics: [],
+      iterations: [{ index: 0, status: 'failed', steps: [result] }]
+    });
+
+    expect(text()).toContain('loop.index 1');
+    expect(text()).toContain('"acct-2"');
+  });
+
+  it('says which iteration is in flight on a TTY row, and rewrites the row it already has', () => {
+    const { reporter, lines } = capture({ tty: true, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'find_vendor', index: 0, operation: 'POST /vendors' });
+    reporter.onEvent({ type: 'step:iteration', id: 'find_vendor', index: 0, iteration: 2, of: 8, value: 'v3' });
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain('iteration 3/8');
+    expect(lines[1]).toContain('find_vendor');
+  });
+
+  it('writes nothing for an iteration off a TTY, where a row cannot be rewritten', () => {
+    const { reporter, lines } = capture({ tty: false, env: {} });
+    reporter.onEvent({ type: 'step:start', id: 'find_vendor', index: 0, operation: 'POST /vendors' });
+    reporter.onEvent({ type: 'step:iteration', id: 'find_vendor', index: 0, iteration: 0, of: 3, value: 'v1' });
+
+    expect(lines).toEqual([]);
+  });
+});

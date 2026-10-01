@@ -47,6 +47,8 @@ to document this.
 | [002-C](./002-api-flows-ui-conformance.md) | API Flows UI — conformance scenarios | Implemented — see `ui-registry.spec.js` for which scenarios cite their id |
 | [005](./005-api-flow-builder.md) | API Flow Builder — edit a flow in its graph | Implemented; §9 is the writer every other part depends on |
 | [005-C](./005-api-flow-builder-conformance.md) | API Flow Builder — conformance scenarios | Implemented — round-trip asserted on bytes, canvas asserted on the file |
+| [006](./006-step-loops.md) | Step loops — build a step's request again for each value | Implemented in the engine and the console; §12 holds the app and the builder |
+| [006-C](./006-step-loops-conformance.md) | Step loops — conformance scenarios | Implemented — see `loops-registry.spec.js` for which scenarios cite their id |
 
 **Start with [001's "How to read this"](./001-api-flows.md#how-to-read-this)** — it routes by what
 you are doing and marks which sections are contracts rather than reasoning.

@@ -1,0 +1,35 @@
+# The sub-flow that per-key-subflow.flow.yml invokes once for each key: two requests for one key, as
+# 006 §1's fifth loop (C6755367) needs. It reads `params.key` only, because §12.3's isolation keeps
+# the caller's `loop.*` out of a sub-flow, and a value moves in through `with:`.
+version: 1
+
+meta:
+  name: 006 — two pages for one ledger object key
+  library: true
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+params:
+  key:
+    required: true
+
+exports:
+  total: steps.page_2.total
+
+steps:
+  - id: page_1
+    operation: loops-api#loopSearchObject
+    pathParams:
+      key: "{{params.key}}"
+    query:
+      page: 1
+
+  - id: page_2
+    operation: loops-api#loopSearchObject
+    pathParams:
+      key: "{{params.key}}"
+    query:
+      page: 2
+    outputs:
+      total: total

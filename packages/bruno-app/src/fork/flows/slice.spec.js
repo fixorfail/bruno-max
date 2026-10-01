@@ -815,3 +815,99 @@ describe('the flows slice', () => {
     });
   });
 });
+
+/**
+ * L13.2 — the slice folds a loop's iterations the way it folds a poll's attempts (006 §8, §9).
+ *
+ * It stores what the engine said and derives nothing: which iteration is newest, how many attempts
+ * each has had, and — once the step ends — the summary the engine built.
+ */
+describe('L13.2 — the slice folds the iterations of a loop', () => {
+  const node = (state) => state.runs[pathname].steps[0].call_each;
+
+  it('says which iteration a looping step is on, and out of how many', () => {
+    const state = withEvents(started(), 'run-1', [
+      { type: 'step:start', id: 'call_each', index: 0 },
+      { type: 'step:iteration', id: 'call_each', index: 0, iteration: 2, of: 8, value: 'acct-3' }
+    ]);
+
+    expect(node(state)).toMatchObject({ state: 'running', iteration: 2, iterationOf: 8 });
+  });
+
+  it('leaves the total unset for a cursor, which cannot say it', () => {
+    const state = withEvents(started(), 'run-1', [
+      { type: 'step:start', id: 'call_each', index: 0 },
+      { type: 'step:iteration', id: 'call_each', index: 0, iteration: 0, value: 1 }
+    ]);
+
+    expect(node(state).iterationOf).toBeUndefined();
+  });
+
+  it('keeps the attempt of each iteration, because under concurrency they interleave', () => {
+    const state = withEvents(started(), 'run-1', [
+      { type: 'step:start', id: 'call_each', index: 0 },
+      { type: 'step:iteration', id: 'call_each', index: 0, iteration: 0, of: 3, value: 'a' },
+      { type: 'step:iteration', id: 'call_each', index: 0, iteration: 1, of: 3, value: 'b' },
+      { type: 'step:attempt', id: 'call_each', index: 0, iteration: 0, attempt: 1 },
+      { type: 'step:attempt', id: 'call_each', index: 0, iteration: 1, attempt: 1 },
+      { type: 'step:attempt', id: 'call_each', index: 0, iteration: 1, attempt: 2 }
+    ]);
+
+    expect(node(state).iterationAttempts).toEqual({ 0: 1, 1: 2 });
+  });
+
+  it('folds the attempts of a step with no loop as it always did', () => {
+    const state = withEvents(started(), 'run-1', [
+      { type: 'step:start', id: 'call_each', index: 0 },
+      { type: 'step:attempt', id: 'call_each', index: 0, attempt: 2 }
+    ]);
+
+    expect(node(state)).toMatchObject({ state: 'retrying', attempt: 2 });
+    expect(node(state).iterationAttempts).toBeUndefined();
+  });
+
+  it('replaces what the events said with the summary of the result at the end', () => {
+    const loop = { count: 3, of: 3, matched: true, attemptsPerIteration: [1, 2, 1] };
+    const state = withEvents(started(), 'run-1', [
+      { type: 'step:start', id: 'call_each', index: 0 },
+      { type: 'step:iteration', id: 'call_each', index: 0, iteration: 2, of: 3, value: 'c' },
+      {
+        type: 'step:end',
+        id: 'call_each',
+        index: 0,
+        result: { id: 'call_each', kind: 'operation', status: 'success', attempts: 4, loop, assertions: [], outputs: {} }
+      }
+    ]);
+
+    expect(node(state)).toMatchObject({ state: 'success', attempts: 4, loop });
+    expect(node(state).iteration).toBeUndefined();
+  });
+
+  it('carries the summary of a stored run the same way', () => {
+    const loop = { count: 2, matched: true, index: 1, value: 'v2' };
+    const state = reducer(
+      undefined,
+      pastRunLoaded({
+        pathname,
+        stored: {
+          runId: 'run-old',
+          dir: '/workspace/.bruno-runs/old',
+          state: 'complete',
+          status: 'passed',
+          capturedSteps: ['call_each'],
+          result: {
+            iterations: [
+              {
+                index: 0,
+                status: 'passed',
+                steps: [{ id: 'call_each', kind: 'operation', status: 'success', attempts: 2, loop, assertions: [], outputs: {} }]
+              }
+            ]
+          }
+        }
+      })
+    );
+
+    expect(state.runs[pathname].steps[0].call_each.loop).toEqual(loop);
+  });
+});

@@ -247,6 +247,22 @@ const applyEvent = (state, event) => {
       // what keeps a 20-attempt poll from reading as a hang (§8.2).
       node.attempt = event.attempt;
       node.state = event.attempt > 1 ? 'retrying' : 'running';
+      // 006 §8: an attempt of a loop names its iteration, and the attempts of several iterations
+      // interleave under `concurrency` — so the number above says nothing about whose it is. Kept
+      // per iteration, which is what lets the pane offer an iteration's attempts while it runs.
+      if (event.iteration !== undefined) {
+        node.iterationAttempts = { ...node.iterationAttempts, [event.iteration]: event.attempt };
+      }
+      nodesFor(run, event.index)[event.id] = node;
+      break;
+    }
+
+    // 006 §8: an iteration of a `loop:` step starts. The newest one is what the node says it is on,
+    // as `attempt` is the newest attempt; `of` is absent for a cursor, which cannot say.
+    case 'step:iteration': {
+      const node = nodesFor(run, event.index)[event.id] || { state: 'running' };
+      node.iteration = event.iteration;
+      node.iterationOf = event.of;
       nodesFor(run, event.index)[event.id] = node;
       break;
     }
@@ -263,7 +279,8 @@ const applyEvent = (state, event) => {
         validation,
         outputs,
         capturePath,
-        kind
+        kind,
+        loop
       } = event.result;
       nodesFor(run, event.index)[event.id] = {
         state: status,
@@ -271,6 +288,9 @@ const applyEvent = (state, event) => {
         // 001 §14.6's occurrence beside its rule: `reason` is the vocabulary, this is what happened.
         message,
         attempts,
+        // 006 §4's summary of a step with `loop:`, which replaces what the iteration events said
+        // while it ran. Absent on every other step.
+        loop,
         durationMs,
         // 004 §7: how much of `durationMs` was the flow's own pacing rather than the API's latency.
         // Absent on every step of a flow that declares no `rateLimit:`.
@@ -572,6 +592,7 @@ const slice = createSlice({
               reason: step.reason,
               message: step.message,
               attempts: step.attempts,
+              loop: step.loop,
               durationMs: step.durationMs,
               assertions: step.assertions,
               validation: step.validation,

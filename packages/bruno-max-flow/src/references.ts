@@ -31,6 +31,14 @@ const BUILT_IN = new Set(['status', 'duration', 'ok', 'skipped']);
 const RAW_ACCESS = new Set(['body', 'headers']);
 
 /**
+ * The names that a `loop:` step publishes in addition to the metadata of §8.3 (006 §4).
+ * They are built-ins for the same reason as that metadata. They are always present. They say
+ * nothing about data flow. Only a step with `loop:` has them. For a step without `loop:`,
+ * `steps.x.count` is still a name that the step does not produce.
+ */
+export const LOOP_BUILT_INS = ['matched', 'iterations', 'count', 'index'];
+
+/**
  * A reference is a *declared* data path when it reads a name the producing step declares as an
  * output (§8.1). Built-in metadata is neither declared nor raw — it is always there and says
  * nothing about data flow — and `body` / `headers` are §8.3's raw access, which is permitted and
@@ -52,7 +60,7 @@ export const referenceKind = (
   const root = reference.field?.split('.')[0].split('[')[0];
   if (root === undefined || root === '') return 'unknown';
   if (producer?.outputs.some((output) => output.name === root) || exports.includes(root)) return 'declared';
-  if (BUILT_IN.has(root)) return 'built-in';
+  if (BUILT_IN.has(root) || (producer?.loop && LOOP_BUILT_INS.includes(root))) return 'built-in';
   return RAW_ACCESS.has(root) ? 'raw' : 'unknown';
 };
 
@@ -100,8 +108,11 @@ const expressionReferences = (step: NormalizedStep, where: string): Reference[] 
  * whichever was remembered.
  */
 export const referencesOf = (step: NormalizedStep, flow: NormalizedFlow): Reference[] => {
+  // 006 §2: the engine reads `over:` and `start:` when the loop starts. They read the steps that
+  // they name, in the same way as a body. They make a dependency edge, and the validator checks
+  // that the step is an ancestor.
   const inline = referencesIn(
-    [step.body, step.query, step.headers, step.pathParams, step.args, step.bodyFile],
+    [step.body, step.query, step.headers, step.pathParams, step.args, step.bodyFile, step.loop?.over, step.loop?.start],
     step.id
   );
 
@@ -131,6 +142,40 @@ export const referencesOf = (step: NormalizedStep, flow: NormalizedFlow): Refere
   return [...inline, ...expressionReferences(step, step.id), ...profile, ...bindingRefs];
 };
 
+/** Matches `{{loop}}` and `{{loop.x}}`. It does not match other text that contains the word. */
+const INTERPOLATED_LOOP = /\{\{\s*loop\s*[.}]/;
+
+/** Matches an operand or expression with `loop` as the first segment. This is the rule of §10.2. */
+const BARE_LOOP = /(^|\s)loop(\.|\s|$)/;
+
+/**
+ * Tells if a step addresses the `loop.*` namespace in a position that can hold a reference (006 §3).
+ *
+ * The positions are the same as in `referencesOf`. Two expression positions are added. They read
+ * a reserved root without braces. A script that reads `ctx.loop` is not found. The check reads
+ * text only, and §8.2 has the same limit for `ctx.steps`.
+ */
+export const readsLoop = (step: NormalizedStep): boolean => {
+  const interpolated = JSON.stringify([step.body, step.query, step.headers, step.pathParams, step.args, step.bodyFile]);
+  const expressions = [...step.assert.map((assertion) => assertion.source), ...step.when.flatMap((when) => (typeof when === 'string' ? [when] : []))];
+
+  return INTERPOLATED_LOOP.test(interpolated)
+    || expressions.some((expression) => INTERPOLATED_LOOP.test(expression) || BARE_LOOP.test(expression));
+};
+
+const OUTPUT_READ = /\b(?:previous|outputs)\s*\??\.\s*([A-Za-z_$][\w$]*)|\b(?:previous|outputs)\s*\[\s*['"]([^'"]+)['"]\s*\]/g;
+
+/**
+ * The outputs of a `loop:` step that its own `next:` and `until:` read (006 §10).
+ * `next` reads the outputs of the iteration before as `previous`, and `until` reads the outputs of
+ * the iteration as `ctx.outputs`. A cursor loop declares an output for this reason, and for no other.
+ * The scan reads text, as the scan of `ctx.steps` in §8.2 does. A script that reads the outputs in
+ * another way, for example by destructuring, is not found.
+ */
+const loopScriptReads = (step: NormalizedStep): string[] =>
+  [step.loop?.next, step.loop?.until].flatMap((source) =>
+    source ? [...source.matchAll(OUTPUT_READ)].map((match) => match[1] || match[2]) : []);
+
 /**
  * What one flow reads out of its own run state, indexed by what is read.
  *
@@ -152,9 +197,12 @@ export const readsOf = (flow: NormalizedFlow): FlowReads => {
   const wholeSteps = new Set<string>();
   const slots = new Set<string>();
 
+  const looped = new Set(flow.steps.filter((step) => step.loop).map((step) => step.id));
+
   const read = (stepId: string, field: string | undefined) => {
     const name = field?.split('.')[0].split('[')[0];
-    if (!name) wholeSteps.add(stepId);
+    // `steps.x.iterations` is every output of every iteration of a loop (006 §4), so it reads them all.
+    if (!name || (name === 'iterations' && looped.has(stepId))) wholeSteps.add(stepId);
     else outputs.set(stepId, new Set([...(outputs.get(stepId) || []), name]));
   };
 
@@ -165,6 +213,7 @@ export const readsOf = (flow: NormalizedFlow): FlowReads => {
     }
     // Publishing an output into a slot is a use of it, whoever reads the slot afterwards.
     for (const { output } of step.shared) read(step.id, output);
+    for (const name of loopScriptReads(step)) read(step.id, name);
   }
   /**
    * §12.1: an export is a read. A library whose slot leaves only through the boundary reads it

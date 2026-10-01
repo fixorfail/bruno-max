@@ -79,6 +79,7 @@ Follow `references/mapping.md`. The mappings that matter most:
 | `beforeEach` login | A library flow, or a first step |
 | `test.each` / `@pytest.mark.parametrize` | `dataset:` — one iteration per row |
 | A polling `while` loop | `retry:` with `shouldRetry` |
+| A `for` loop that sends a different request for each value, or reads page after page until a match | `loop:` — `over:` for a list, `start:` and `next:` for a cursor, `until:` to stop at the first match (dsl.md) |
 | `if (x) {...} else {...}` | `when:` on each branch, or `depends: status:` |
 | `try/finally` cleanup | A step depending on `status: [success, failed, cancelled]` |
 | Computation between requests | `outputs: script:` — a function expression |

@@ -213,6 +213,27 @@ const OUTPUT = {
 /** §7's merge layers: open mappings, since their keys are the operation's fields. */
 const OVERRIDES = { type: 'object' };
 
+/**
+ * 006 §2's `loop:` block.
+ *
+ * The schema gives the shape of each key. The rules between the keys are in `bru flow validate`,
+ * where each has a code of its own (006 §10). `over`, `start` and `max` have no type here for that
+ * reason. A `max` of `"5"` is `loop-max-missing`, and a second error for it would say the same thing.
+ */
+const LOOP = {
+  type: 'object',
+  properties: {
+    over: {},
+    start: {},
+    next: { type: 'string' },
+    as: { type: 'string' },
+    until: { type: 'string' },
+    max: {},
+    concurrency: { type: 'integer', minimum: 1 }
+  },
+  additionalProperties: false
+};
+
 const STEP = {
   type: 'object',
   allOf: [
@@ -250,6 +271,8 @@ const STEP = {
       required: CONDITION.required,
       additionalProperties: false
     },
+    /** 006: the step runs once for each value, and the engine builds the request again each time. */
+    loop: LOOP,
     body: {},
     bodyFile: { type: 'string' },
     query: OVERRIDES,

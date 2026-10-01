@@ -647,9 +647,9 @@ const readRunHandler = ({ scopeRoot, dir, stepIds, iteration }) => {
   return readRun({ dir, scopeRoot, stepIds, iteration, ports: { readFile, listDirectory } });
 };
 
-const readCaptureHandler = ({ scopeRoot, dir, stepId, iteration, attempt }) => {
+const readCaptureHandler = ({ scopeRoot, dir, stepId, iteration, loopIteration, attempt }) => {
   const { readFile } = createPorts({});
-  return readCapture({ dir, scopeRoot, stepId, iteration, attempt, ports: { readFile } });
+  return readCapture({ dir, scopeRoot, stepId, iteration, loopIteration, attempt, ports: { readFile } });
 };
 
 /**

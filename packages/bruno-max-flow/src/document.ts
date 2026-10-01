@@ -152,6 +152,24 @@ export type RetryPolicy = {
   shouldRetry?: string;
 };
 
+/**
+ * The `loop:` block of 006, with the defaults applied.
+ *
+ * `over` and `start` stay as the author wrote them: a list, a value, or a whole-value reference.
+ * The engine can resolve them only when the loop starts.
+ * `max` is `NaN` when the file gives no number. `NaN` is never a valid bound.
+ * The validator reports it as `loop-max-missing`. A run refuses it as `invalid-request`.
+ */
+export type LoopSpec = {
+  over?: unknown;
+  start?: unknown;
+  next?: string;
+  as: string;
+  until?: string;
+  max: number;
+  concurrency: number;
+};
+
 export type OutputSpec = {
   /** §8.7's fourth source: `pre` takes the value from what the step computed before its request. */
   name: string;
@@ -229,6 +247,8 @@ export type NormalizedStep = {
   shared: { slot: string; output: string }[];
   assert: AssertionSpec[];
   retry: RetryPolicy;
+  /** Absent when the step sends one request. That is the case for nearly every step. */
+  loop?: LoopSpec;
   flags: StepFlags;
   /**
    * §10.1's null tolerance for this step's response check, resolved — the step's own `strictNulls:`
@@ -533,6 +553,22 @@ const normalizeRetry = (raw: unknown, fallback?: Partial<RetryPolicy>): RetryPol
   };
 };
 
+/** A step with no `loop:` gets `undefined`. It is not a loop of one iteration. */
+const normalizeLoop = (raw: unknown): LoopSpec | undefined => {
+  if (raw === undefined || raw === null) return undefined;
+
+  const mapping = asRecord(raw);
+  return {
+    over: mapping.over,
+    start: mapping.start,
+    next: mapping.next === undefined ? undefined : String(mapping.next),
+    as: mapping.as === undefined ? 'value' : String(mapping.as),
+    until: mapping.until === undefined ? undefined : String(mapping.until),
+    max: typeof mapping.max === 'number' ? mapping.max : Number.NaN,
+    concurrency: mapping.concurrency === undefined ? 1 : Number(mapping.concurrency)
+  };
+};
+
 /**
  * §6.2's `rateLimit:`. Absent yields `undefined` rather than a policy of "unlimited", because a
  * binding that declares nothing must not out-argue one that does (004 §6's strictest-wins merge).
@@ -815,6 +851,7 @@ export const normalizeFlow = (
       shared: normalizeShared(raw.shared),
       assert: asArray(raw.assert).map(parseAssertion),
       retry: normalizeRetry(raw.retry, config.retry),
+      loop: normalizeLoop(raw.loop),
       flags: {
         failOnStatusCode: flag(raw, config, 'failOnStatusCode'),
         failOnUnresolved: flag(raw, config, 'failOnUnresolved'),

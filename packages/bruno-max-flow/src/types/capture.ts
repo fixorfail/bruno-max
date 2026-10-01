@@ -65,6 +65,11 @@ export type StepCapture = {
   /** Namespaced for sub-flow internals (§14.5). */
   stepId: string;
   iteration: number;
+  /**
+   * `loop.index` of the iteration that this attempt belongs to, for a `loop:` step (006 §8).
+   * The attempts of each iteration start again at 1. This field tells two attempts apart.
+   */
+  loopIteration?: number;
   /** 1-based, matching §11.1's numbering. */
   attempt: number;
   startedAt: string;

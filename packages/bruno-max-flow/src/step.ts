@@ -614,6 +614,21 @@ export const shouldRetryByDefault = (outcome: AttemptOutcome): boolean =>
   outcome.reason === 'transport-error' || (outcome.response?.status ?? 0) >= 500;
 
 /**
+ * The response as a predicate receives it. `shouldRetry` and the `until` of a loop both use it.
+ * It is the `ExecutedResponse` without the fields that only a host reads.
+ * It is `undefined` when no response arrived, for example after a transport error.
+ */
+export const responseView = (response?: ExecutedResponse): Record<string, unknown> | undefined =>
+  response
+    ? {
+        status: response.status,
+        headers: response.headers,
+        body: response.body,
+        responseTime: response.responseTimeMs
+      }
+    : undefined;
+
+/**
  * §11.1's predicate, given this attempt rather than the run's settled state.
  *
  * `failures` and `outputs` are the two things that belong to the attempt being judged and to nothing
@@ -637,19 +652,29 @@ export const wantsRetry = async (
   const failures = outcome.assertions.filter((assertion) => !assertion.passed);
   return Boolean(
     await runScript(policy.shouldRetry, [
-      outcome.response
-        ? {
-            status: outcome.response.status,
-            headers: outcome.response.headers,
-            body: outcome.response.body,
-            responseTime: outcome.response.responseTimeMs
-          }
-        : undefined,
+      responseView(outcome.response),
       attempt,
       { ...context, failures, outputs: outcome.outputs }
     ])
   );
 };
+
+/**
+ * The `until` of 006 §3. It tells if the iteration that just ran is the iteration that the loop
+ * looks for.
+ *
+ * It receives what `wantsRetry` gives to `shouldRetry`, without the attempt number. The engine
+ * judges an iteration one time, on its last attempt. `ctx.outputs` holds the values of that attempt.
+ * `res` comes from the caller. It is `responseView` of the response. For a `uses:` step it is the
+ * exports of the sub-flow (006 §7). A `uses:` step has no other value to test.
+ */
+export const loopUntilMatches = async (
+  until: string,
+  res: unknown,
+  outputs: Record<string, unknown>,
+  context: EvaluationContext,
+  runScript: ScriptRunner
+): Promise<boolean> => Boolean(await runScript(until, [res, { ...context, outputs }]));
 
 export const sleepFor = async (clock: Clock, ms: number, signal?: AbortSignal): Promise<void> => {
   if (ms > 0) await clock.sleep(ms, signal);

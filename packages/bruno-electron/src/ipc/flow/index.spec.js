@@ -1587,6 +1587,31 @@ describe('a suite of flows', () => {
 });
 
 /**
+ * L13.1 — a capture is read by the iteration of a loop as well as by its attempt (006 §8).
+ *
+ * The engine nests the two differently, so a host that named only the attempt would be reading the
+ * first iteration's file whichever iteration the reader had chosen.
+ */
+describe('L13.1 — the host boundary names the iteration of a loop', () => {
+  it('hands loopIteration through to the engine beside the dataset iteration', async () => {
+    const { readCapture } = require('@bruno-max/flow');
+    const { readCaptureHandler } = require('./index');
+    readCapture.mockResolvedValue({ stepId: 'call_each', loopIteration: 2, attempt: 1 });
+
+    await readCaptureHandler({
+      scopeRoot: '/w',
+      dir: '/w/.bruno-runs/suite-a/run-1',
+      stepId: 'call_each',
+      iteration: 1,
+      loopIteration: 2,
+      attempt: 1
+    });
+
+    expect(readCapture.mock.calls.pop()[0]).toMatchObject({ stepId: 'call_each', iteration: 1, loopIteration: 2, attempt: 1 });
+  });
+});
+
+/**
  * 005-C §8, B6 — the host boundary the three new channels add: a structured edit, the step editor's
  * read, and the operations picker. `applyFlowEdits`, `readFlowEditModel` and `listFlowOperations` are
  * the engine's own real functions here, for `readFlowProperties`/`writeFlowProperties`'s reason above

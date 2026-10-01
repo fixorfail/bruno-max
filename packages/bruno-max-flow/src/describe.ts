@@ -169,6 +169,7 @@ const nodesOf = (
       markers: {
         conditional: step.when.length > 0,
         retryMaxAttempts: step.retry.maxAttempts > 1 ? step.retry.maxAttempts : undefined,
+        loopMaxIterations: step.loop ? step.loop.max : undefined,
         allowsErrorStatus: !step.flags.failOnStatusCode,
         usesSharedSlot:
           step.shared.length > 0

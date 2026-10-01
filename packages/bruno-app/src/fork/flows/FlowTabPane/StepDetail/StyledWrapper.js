@@ -25,7 +25,9 @@ const StyledWrapper = styled(BottomSheet)`
     }
   }
 
-  .detail-attempt {
+  /* A loop's iteration (006 §9) is chosen beside the attempt it contains, and looks like it. */
+  .detail-attempt,
+  .detail-iteration {
     font-size: 0.75rem;
     color: ${(props) => props.theme.colors.text.muted};
     background: ${(props) => props.theme.sidebar.collection.item.bg};

@@ -376,6 +376,91 @@ const followedAttempt = (node, running) =>
   inFlight(node, running) ? Math.max(1, (node.attempt || 1) - 1) : attemptCount(node);
 
 /**
+ * Whether this step repeats its request for each value of a loop (006). A `uses:` container
+ * dispatches nothing itself — the iterations are of the steps inside the sub-flow — so it has no
+ * iteration to choose and keeps the absence message §9 gives it.
+ */
+const isLooped = (node) => node.kind !== 'subflow' && (node.loop !== undefined || node.iteration !== undefined);
+
+/**
+ * How many iterations there are to choose between: the summary once the step has ended, and the
+ * iterations announced so far while it runs. A cursor cannot say how many there will be, and the
+ * pane does not guess.
+ */
+const iterationCount = (node) => (node.loop ? node.loop.count : (node.iteration ?? -1) + 1);
+
+/**
+ * The iteration that decided the step — the match, or the failure — and else the last one. As with
+ * the final attempt, this is the one the step's own outcome was built from, so opening a step on it
+ * is opening its verdict. `loop.index` starts at 0, as the capture directory does.
+ */
+const decidingIteration = (node) =>
+  node.loop ? (node.loop.index ?? Math.max(0, node.loop.count - 1)) : (node.iteration ?? 0);
+
+/**
+ * How many attempts one iteration has. The result says so where an iteration retried, and says
+ * nothing where none did; a running step says it per iteration, because under `concurrency` their
+ * attempts interleave.
+ */
+const attemptsOf = (node, loopIteration) => {
+  if (loopIteration === undefined) {
+    return attemptCount(node);
+  }
+  return (node.loop ? node.loop.attemptsPerIteration?.[loopIteration] : node.iterationAttempts?.[loopIteration]) || 1;
+};
+
+/**
+ * Where the pane opens on a loop, as `followedAttempt` is where it opens on a poll.
+ *
+ * The deciding iteration's final attempt once the step has ended. While it runs, the newest attempt
+ * that has a capture: the current iteration's previous attempt where it is retrying, and otherwise
+ * the iteration before it. The first attempt of the first iteration has none, and is offered and
+ * reported as unfinished.
+ */
+const followed = (node, running) => {
+  if (!isLooped(node)) {
+    return { attempt: followedAttempt(node, running) };
+  }
+  if (inFlight(node, running)) {
+    const current = node.iteration ?? 0;
+    const now = node.iterationAttempts?.[current] || 1;
+    if (now > 1 || current === 0) {
+      return { loopIteration: current, attempt: Math.max(1, now - 1) };
+    }
+    return { loopIteration: current - 1, attempt: attemptsOf(node, current - 1) };
+  }
+  const loopIteration = decidingIteration(node);
+  return { loopIteration, attempt: attemptsOf(node, loopIteration) };
+};
+
+/** Whether the attempt shown is the one the step's own outcome was built from. */
+const isDecidingAttempt = (node, loopIteration, attempt) =>
+  loopIteration === undefined
+    ? attempt === attemptCount(node)
+    : loopIteration === decidingIteration(node) && attempt === attemptsOf(node, loopIteration);
+
+/**
+ * 006 §9's iterations, beside §9's attempts and built like them: a control on the step's header that
+ * re-keys the capture every tab is read from. The label counts from 1, as attempts do. The title
+ * gives `loop.index`, which is the number that a flow and the capture directory use.
+ */
+const IterationSelector = ({ iteration, count, onSelect }) => (
+  <select
+    className="detail-iteration"
+    value={iteration}
+    title={`loop.index ${iteration}`}
+    onChange={(event) => onSelect(Number(event.target.value))}
+    data-testid="flow-step-iteration"
+  >
+    {Array.from({ length: count }, (unused, index) => index).map((index) => (
+      <option key={index} value={index}>
+        {`Iteration ${index + 1}`}
+      </option>
+    ))}
+  </select>
+);
+
+/**
  * §9's attempts, as a control on the step's header rather than a tab of its own.
  *
  * Choosing an attempt re-keys the capture every tab is read from (001 §14.5 writes one file per
@@ -414,7 +499,7 @@ const AttemptSelector = ({ attempt, count, onSelect }) => (
  * stopped has one for each attempt it made, and a step that made none — skipped, or cancelled before
  * it dispatched — never will.
  */
-const captureState = (node, attempt, running) => {
+const captureState = (node, attempt, running, loopIteration) => {
   if (!node) {
     return 'absent';
   }
@@ -424,6 +509,13 @@ const captureState = (node, attempt, running) => {
     return 'subflow';
   }
   if (inFlight(node, running)) {
+    if (loopIteration !== undefined) {
+      // An iteration before the newest has ended, and the newest has written every attempt before
+      // its own current one (006 §8).
+      return loopIteration < (node.iteration ?? 0) || (node.iterationAttempts?.[loopIteration] || 0) > attempt
+        ? 'written'
+        : 'pending';
+    }
     return (node.attempt || 0) > attempt ? 'written' : 'pending';
   }
   if (node.attempts === 0) {
@@ -445,7 +537,7 @@ const captureState = (node, attempt, running) => {
  * that captured nothing, and a `uses:` step that sends nothing of its own are five different
  * absences, and which one it is decides where the reader looks next.
  */
-const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
+const absenceFor = ({ captureStatus, perAttempt, tab, attempt, loopIteration }) => {
   if (captureStatus === 'subflow') {
     return RAN_A_SUBFLOW[tab];
   }
@@ -457,7 +549,9 @@ const absenceFor = ({ captureStatus, perAttempt, tab, attempt }) => {
   }
 
   if (captureStatus === 'pending') {
-    return `Attempt ${attempt} has not finished`;
+    return loopIteration === undefined
+      ? `Attempt ${attempt} has not finished`
+      : `Iteration ${loopIteration + 1}, attempt ${attempt} has not finished`;
   }
   if (captureStatus === 'unwritten') {
     return 'This step ran, but its capture was not written — the run reports why';
@@ -481,6 +575,8 @@ const StepDetail = ({ stepId, node, declaredOutputs, running, scopeRoot, runDir,
    * pinning to whichever number was current when it was opened.
    */
   const [chosen, setChosen] = useState(null);
+  // The same for the iteration of a loop (006 §9): `null` follows, and a choice pins.
+  const [chosenIteration, setChosenIteration] = useState(null);
   /**
    * `idle` and `failed` are distinct from a capture that loaded and simply has no request in it.
    * Collapsing them is how "the read failed" renders as "nothing was sent" — a claim about the run
@@ -492,11 +588,24 @@ const StepDetail = ({ stepId, node, declaredOutputs, running, scopeRoot, runDir,
   // 4 of a poll is not an attempt the run replacing it need have made.
   useEffect(() => {
     setChosen(null);
+    setChosenIteration(null);
     setRead({ status: 'idle' });
   }, [stepId, runDir]);
 
-  const attempt = chosen || (node ? followedAttempt(node, running) : 1);
-  const captureStatus = captureState(node, attempt, running);
+  const following = node ? followed(node, running) : { attempt: 1 };
+  const loopIteration = chosenIteration === null ? following.loopIteration : chosenIteration;
+  // Choosing an iteration opens it on its final attempt, as opening a step does: attempt 3 of
+  // iteration 1 is not an attempt that iteration 2 need have made.
+  const attempt = chosen || (chosenIteration === null || !node ? following.attempt : attemptsOf(node, loopIteration));
+  const captureStatus = captureState(node, attempt, running, loopIteration);
+  // A loop is still going while its iterations are read. The step ending is what makes an
+  // iteration that was in flight readable, so the read is made again then (006 §9).
+  const loopInFlight = loopIteration !== undefined && inFlight(node, running);
+
+  const selectIteration = (number) => {
+    setChosenIteration(number);
+    setChosen(null);
+  };
 
   useEffect(() => {
     if (!runDir) {
@@ -511,14 +620,14 @@ const StepDetail = ({ stepId, node, declaredOutputs, running, scopeRoot, runDir,
 
     let current = true;
     setRead({ status: 'loading' });
-    dispatch(readStepCapture({ scopeRoot, dir: runDir, stepId, iteration, attempt }))
+    dispatch(readStepCapture({ scopeRoot, dir: runDir, stepId, iteration, loopIteration, attempt }))
       .then((capture) => current && setRead({ status: 'loaded', capture }))
       .catch((error) => current && setRead({ status: 'failed', error: error.message }));
 
     return () => {
       current = false;
     };
-  }, [dispatch, runDir, stepId, iteration, attempt, captureStatus]);
+  }, [dispatch, runDir, stepId, iteration, loopIteration, attempt, captureStatus, loopInFlight]);
 
   if (!node) {
     return (
@@ -555,15 +664,20 @@ const StepDetail = ({ stepId, node, declaredOutputs, running, scopeRoot, runDir,
    * show without qualification. On an earlier attempt they belong to a different call, and the step's
    * verdict is on its node in the graph either way.
    */
-  const showsStepOutcome = attempt === attemptCount(node);
-  const absence = absenceFor({ captureStatus, perAttempt, tab, attempt });
+  const showsStepOutcome = isDecidingAttempt(node, loopIteration, attempt);
+  const absence = absenceFor({ captureStatus, perAttempt, tab, attempt, loopIteration });
   // Pre-terminal, with nothing left to move it: the run is over and this step never reported an end.
   const unreported = !running && RUNNING_STATES.has(node.state);
 
   const header = (
     <>
       <span className="detail-step">{stepId}</span>
-      {perAttempt ? <AttemptSelector attempt={attempt} count={attemptCount(node)} onSelect={setChosen} /> : null}
+      {perAttempt && loopIteration !== undefined && iterationCount(node) > 0 ? (
+        <IterationSelector iteration={loopIteration} count={iterationCount(node)} onSelect={selectIteration} />
+      ) : null}
+      {perAttempt ? (
+        <AttemptSelector attempt={attempt} count={attemptsOf(node, loopIteration)} onSelect={setChosen} />
+      ) : null}
 
       {/* §8.2's in-flight states, beside the attempt this pane is reading — a step still going
             shows no status here (its outcome is not its own until it settles) and no duration, so

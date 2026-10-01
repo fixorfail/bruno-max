@@ -486,8 +486,12 @@ export const cancelFlowRun = (runId) => async () => ipc().invoke('renderer:flow-
  */
 export const scopeRootOf = (flow) => flow.collectionRoot || flow.workspaceRoot;
 
-export const readStepCapture = ({ scopeRoot, dir, stepId, iteration, attempt }) => async () =>
-  ipc().invoke('renderer:flow-read-capture', { scopeRoot, dir, stepId, iteration, attempt });
+/**
+ * `iteration` is the dataset row (001 §14.5). `loopIteration` is `loop.index`, for an attempt of a
+ * step with `loop:` (006 §8): the two nest on opposite sides of the step, and a reader names both.
+ */
+export const readStepCapture = ({ scopeRoot, dir, stepId, iteration, loopIteration, attempt }) => async () =>
+  ipc().invoke('renderer:flow-read-capture', { scopeRoot, dir, stepId, iteration, loopIteration, attempt });
 
 /** §10: the runs under `.bruno-runs/` for the scope that owns this flow, newest first. */
 export const listFlowRuns = (flow) => async () =>

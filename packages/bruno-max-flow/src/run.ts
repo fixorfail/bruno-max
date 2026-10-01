@@ -17,6 +17,7 @@ import {
   type FlowConfig,
   parseAssertion,
   parseDocument,
+  type LoopSpec,
   type NormalizedFlow,
   type NormalizedStep
 } from './document';
@@ -25,11 +26,14 @@ import { createFileReader, FileAccessError, parseStructured, resolveSubflowTarge
 import { loadLibrary, withLibrary } from './functions';
 import { markRunActive, markRunFinished } from './history';
 import { interpolateScalar, interpolateValue, scopeVariables, type Scope } from './interpolate';
+import { describeIteration, interpolateLoopSource, loopScope, loopShapeError } from './loop';
 import { materialize, MaterializationError, type AuthProfile, type Materialized } from './materialize';
 import { resolveSpecSource, SpecLoader } from './openapi';
 import { createRedactor, createSecretTracker, MASK, type Redactor, type SecretTracker } from './redact';
 import {
+  loopUntilMatches,
   lowerCasedKeys,
+  responseView,
   runAttempt,
   retryDelay,
   runPreScripts,
@@ -48,6 +52,7 @@ import type {
   IterationResult,
   RunResult,
   RunStatus,
+  StepReason,
   StepResult,
   StepStatus
 } from './types/result';
@@ -242,6 +247,89 @@ type FlowRun = {
 };
 
 const terminal = new Set<StepStatus>(['success', 'failed', 'skipped', 'cancelled']);
+
+/**
+ * One iteration of a `loop:` step, as the executors receive it (006 §3).
+ * A step without `loop:` has no turn. It runs as it ran before.
+ */
+type LoopTurn = {
+  /** `loop.index`. */
+  index: number;
+  /** The `loop.*` namespace for this iteration. */
+  scope: Record<string, unknown>;
+  /**
+   * The time when `maxDuration` of the whole loop ends, on the injected clock. The loop bounds
+   * each iteration. An iteration never starts a new bound of its own.
+   */
+  budgetEnds?: number;
+  /**
+   * Set only when the loop has `concurrency` above 1 (006 §6). It aborts when the run stops, and
+   * when a sibling iteration fails.
+   */
+  signal?: AbortSignal;
+};
+
+/** What a `loop:` step publishes in `steps.<id>`, in addition to its outputs (006 §4). */
+type LoopPublication = {
+  matched: boolean;
+  count: number;
+  index?: number;
+  iterations: Record<string, unknown>[];
+};
+
+/** What the executor of a step gives back to `execute`, which records it and publishes it. */
+type Produced = {
+  steps: StepResult[];
+  response?: ExecutedResponse;
+  preview?: AttemptPreview;
+  loop?: LoopPublication;
+};
+
+/** An iteration of a loop that has run. */
+type IterationRun = {
+  index: number;
+  value: unknown;
+  scope: Record<string, unknown>;
+  /** The values of `pre:` for this iteration. `until` and `next` receive them in `ctx`. */
+  pre: Record<string, unknown>;
+  /** The result of the iteration, as it is for a step without `loop:`. */
+  result: StepResult;
+  /** The steps inside the sub-flow, for a `uses:` step. */
+  internals: StepResult[];
+  response?: ExecutedResponse;
+  preview?: AttemptPreview;
+};
+
+/**
+ * How a loop ended. `done` is a success. `at` is the iteration that decided the result.
+ * `skipped` means that the first iteration found a reference that no step produced.
+ */
+type Verdict
+  = | { kind: 'done'; matched: boolean; at?: IterationRun }
+    | { kind: 'failed'; reason?: StepReason; message: string; at?: IterationRun }
+    | { kind: 'cancelled'; at?: IterationRun }
+    | { kind: 'skipped'; message: string };
+
+/** Where the values of a loop come from (006 §2). */
+type LoopSource = { kind: 'list'; items: unknown[] } | { kind: 'cursor'; first: unknown; next: string };
+
+/** The value of the next iteration, or the end of the loop. */
+type Upcoming = { present: false } | { present: true; value: unknown };
+
+/** A cursor ends at `null` or `undefined` (006 §2). */
+const cursorValue = (value: unknown): Upcoming =>
+  value === null || value === undefined ? { present: false } : { present: true, value };
+
+const errorText = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+
+/**
+ * The requests of each iteration, in the place of its `loop.index`. An iteration that the loop
+ * cancelled is not in `ran`, and its place holds 0.
+ */
+const attemptsByIndex = (ran: IterationRun[]): number[] => {
+  const byIndex = new Map(ran.map((done) => [done.index, done.result.attempts]));
+  return Array.from({ length: Math.max(...byIndex.keys()) + 1 }, (unused, index) => byIndex.get(index) ?? 0);
+};
 
 /** §7.4's boundary: the collection or workspace root that owns the flows. */
 const scopeRoot = (state: RunState): string =>
@@ -481,8 +569,11 @@ const executeFlow = async (
    * §8.7's `pre` is the one namespace that is not run-scoped: it holds what *this* step computed, so
    * it is a parameter rather than run state. A scope built without one carries an empty `pre`, which
    * is what every position outside a step's own materialization sees.
+   *
+   * `loop` is a parameter for the same reason (006 §3). It holds the iteration of the step that the
+   * engine builds. A scope without it has no `loop` namespace.
    */
-  const scopeFor = (pre: Record<string, unknown> = {}): Scope => ({
+  const scopeFor = (pre: Record<string, unknown> = {}, loop?: Record<string, unknown>): Scope => ({
     vars: { ...state.environment, ...resolvedVars },
     tiers: { env: state.environment, vars: resolvedVars },
     namespaces: {
@@ -492,6 +583,7 @@ const executeFlow = async (
       shared: slots,
       flow: { runId: state.runId, name: flow.meta.name, iteration: run.iteration },
       pre,
+      ...(loop ? { loop } : {}),
       process: { env: state.options.variables.processEnv || {} }
     }
   });
@@ -590,8 +682,12 @@ const executeFlow = async (
     slots[slot] = value;
   };
 
-  /** §8.3's built-in metadata, alongside the step's declared outputs under the same id. */
-  const publish = (step: NormalizedStep, result: StepResult, response?: ExecutedResponse) => {
+  /**
+   * §8.3's built-in metadata, alongside the step's declared outputs under the same id.
+   * A `loop:` step also publishes `matched`, `iterations`, `count` and, when an `until` matched,
+   * `index` (006 §4). They come last, so they win over a declared output of the same name.
+   */
+  const publish = (step: NormalizedStep, result: StepResult, response?: ExecutedResponse, loop?: LoopPublication) => {
     stepState[step.id] = {
       /**
        * §8.3's undeclared access to the response itself. Both are absent where there is no response
@@ -608,7 +704,15 @@ const executeFlow = async (
       status: response?.status,
       ok: result.status === 'success',
       skipped: result.status === 'skipped',
-      duration: result.durationMs
+      duration: result.durationMs,
+      ...(loop
+        ? {
+            matched: loop.matched,
+            iterations: loop.iterations,
+            count: loop.count,
+            ...(loop.index === undefined ? {} : { index: loop.index })
+          }
+        : {})
     };
     const declaredAt = flow.steps.indexOf(step);
     for (const { slot, output } of step.shared) {
@@ -618,9 +722,12 @@ const executeFlow = async (
 
   const executeOperation = async (
     step: NormalizedStep,
-    pre: Record<string, unknown>
+    pre: Record<string, unknown>,
+    turn?: LoopTurn
   ): Promise<{ result: StepResult; response?: ExecutedResponse; preview?: AttemptPreview }> => {
     const startedAt = state.clock.now();
+    // The scope of every position that this step builds or evaluates. In a loop it has `loop.*`.
+    const scope = () => scopeFor(pre, turn?.scope);
     const binding = step.operation ? flow.apis[step.operation.alias] : undefined;
     const spec = step.operation ? indexed[step.operation.alias] : undefined;
     const resolved = spec?.operations.get(step.operation?.operationId || '');
@@ -637,7 +744,7 @@ const executeFlow = async (
         );
       }
 
-      materialized = await materialize(step, binding, resolved, profiles, flow.config, scopeFor(pre), readFile);
+      materialized = await materialize(step, binding, resolved, profiles, flow.config, scope(), readFile);
     } catch (cause) {
       // A fixture that could not be read fails the step with a reason rather than crashing the run
       // (§14.6). Everything else materialization refuses is a shape `bru flow validate` reports
@@ -690,8 +797,15 @@ const executeFlow = async (
      * is: the clock is the engine's only source of time (§13.2), and a step whose budget was a real
      * timer would elapse differently under a host that supplies its own — including the conformance
      * harness, where a poll's delays are the *only* thing that advances time.
+     *
+     * In a loop, the loop owns the budget (006 §5). Each iteration would otherwise start a new
+     * budget, and `maxDuration` would bound one iteration and not the whole loop.
      */
-    const budgetEnds = step.maxDuration === undefined ? undefined : startedAt + step.maxDuration;
+    const budgetEnds = turn
+      ? turn.budgetEnds
+      : step.maxDuration === undefined
+        ? undefined
+        : startedAt + step.maxDuration;
     const overBudget = () => budgetEnds !== undefined && state.clock.now() >= budgetEnds;
 
     /**
@@ -733,7 +847,10 @@ const executeFlow = async (
 
       if (!isCleanup(step) || stoppedAt === undefined) {
         return {
-          signal: state.flowContext.signal,
+          // In a loop with `concurrency`, the signal of the loop aborts when the run stops or when a
+          // sibling iteration fails (006 §6). `dispatchAborted` follows the run only. A request
+          // that the loop cancels is not a cancelled run.
+          signal: turn?.signal || state.flowContext.signal,
           settled: () => {
             dispatchAborted = state.flowContext.signal.aborted;
           }
@@ -775,7 +892,17 @@ const executeFlow = async (
       const attemptStartedAt = state.clock.now();
       /** Kept apart from the attempt's elapsed time: a paced request is not a slow one. */
       let attemptWaitMs = 0;
-      state.emit({ type: 'step:attempt', id: stepId, index: run.iteration, attempt, status: 'sent', durationMs: 0 });
+      state.emit({
+        type: 'step:attempt',
+        id: stepId,
+        index: run.iteration,
+        // Which iteration of a loop this is an attempt of. Under `concurrency` the attempts of
+        // several iterations interleave, and the number of the attempt cannot say whose it is.
+        ...(turn ? { iteration: turn.index } : {}),
+        attempt,
+        status: 'sent',
+        durationMs: 0
+      });
 
       dispatchAborted = false;
       const outcome = await runAttempt({
@@ -784,7 +911,7 @@ const executeFlow = async (
         resolved,
         materialized,
         // §8.7: step-local, so an assertion and an output script inside this step see it too.
-        scope: scopeFor(pre),
+        scope: scope(),
         runScript,
         dispatch: async () => {
           const bound = beginDispatch();
@@ -822,7 +949,7 @@ const executeFlow = async (
               cookieJar: jar,
               // The scope the request was built from, `pre` included — not one rebuilt for the
               // host, which could only differ from it.
-              variables: scopeVariables(scopeFor(pre)),
+              variables: scopeVariables(scope()),
               timeoutMs: attemptTimeout(),
               signal: bound.signal
             });
@@ -837,6 +964,7 @@ const executeFlow = async (
       capturePath = await recordAttempt(state, {
         stepId,
         iteration: state.nestIterations ? run.iteration : undefined,
+        loopIteration: turn?.index,
         attempt,
         startedAt: new Date(attemptStartedAt).toISOString(),
         // Net of §6.2's pacing: this number answers "how long did the API take", and a request held
@@ -869,7 +997,7 @@ const executeFlow = async (
     const asksToRetry = async () => {
       if (predicateError) return false;
       try {
-        return await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scopeFor(pre)), runScript);
+        return await wantsRetry(step.retry, outcome, attemptsRun, evaluationContext(scope()), runScript);
       } catch (cause) {
         predicateError = `shouldRetry threw: ${cause instanceof Error ? cause.message : String(cause)}`;
         return false;
@@ -989,19 +1117,25 @@ const executeFlow = async (
   const executeSubflow = async (
     step: NormalizedStep,
     child: NormalizedFlow,
-    pre: Record<string, unknown>
+    pre: Record<string, unknown>,
+    turn?: LoopTurn
   ): Promise<StepResult[]> => {
     const startedAt = state.clock.now();
 
     // §8.7: the caller's computed values are in scope while `with:` is resolved, and go no further —
     // §12.2's isolation is what stops them, since the sub-flow builds its own scopes.
-    const args = interpolateValue(step.args, scopeFor(pre)).value as Vars;
+    // In a loop, `loop.*` is in scope here too, and stops at the same boundary (006 §7).
+    const callerScope = scopeFor(pre, turn?.scope);
+    const args = interpolateValue(step.args, callerScope).value as Vars;
     const params = paramsFor(child.params, args);
 
     const inner = await executeFlow(state, {
       flow: child,
-      prefix: `${prefix}${step.id}/`,
-      params: interpolateValue(params, scopeFor(pre)).value as Vars,
+      // Each iteration of a loop has a namespace of its own, so the steps of two iterations never
+      // share an id or a capture directory (006 §7). A step id cannot contain `-`, so the
+      // segment cannot be the id of a step in the sub-flow.
+      prefix: `${prefix}${step.id}/${turn ? `iteration-${turn.index}/` : ''}`,
+      params: interpolateValue(params, callerScope).value as Vars,
       iteration: run.iteration,
       profiles
     });
@@ -1029,6 +1163,297 @@ const executeFlow = async (
       },
       ...inner.results
     ];
+  };
+
+  /**
+   * A step with `loop:` (006). The loop runs the lifecycle of the step one time for each value.
+   * `when:` and `depends:` have already answered for the whole loop. The loop repeats the rest,
+   * from `pre:` on. The same checks decide if an iteration passes, as for a step without a loop.
+   * The loop only decides if it goes on.
+   */
+  const executeLoop = async (step: NormalizedStep, spec: LoopSpec, child?: NormalizedFlow): Promise<Produced> => {
+    const startedAt = state.clock.now();
+    const stepId = `${prefix}${step.id}`;
+    const loopEnds = step.maxDuration === undefined ? undefined : startedAt + step.maxDuration;
+    const overBudget = () => loopEnds !== undefined && state.clock.now() >= loopEnds;
+    // A cleanup step keeps running during the grace window, as it does when it has no loop (§11.3).
+    const interrupted = () => stopped(state) && !(isCleanup(step) && withinCleanupGrace(state));
+
+    const refused = (message: string): Produced => ({
+      steps: [{ ...skip(step, prefix, undefined, `${step.id}: ${message}`), status: 'failed', reason: 'invalid-request' }]
+    });
+
+    // Nobody validated the flow if this fails (§14.3), and the run sends no request.
+    const shapeError = loopShapeError(spec);
+    if (shapeError) return refused(shapeError);
+
+    const resolved = interpolateLoopSource(spec.over !== undefined ? spec.over : spec.start, scopeFor());
+    if (resolved.unresolved.length) {
+      return {
+        steps: [skip(step, prefix, 'unresolved-dependency', `never produced: ${resolved.unresolved.join(', ')}`)]
+      };
+    }
+
+    let source: LoopSource;
+    if (spec.over !== undefined) {
+      if (!Array.isArray(resolved.value)) {
+        return refused(`loop.over is not a list — it resolved to ${resolved.value === null ? 'null' : typeof resolved.value}`);
+      }
+      source = { kind: 'list', items: resolved.value };
+    } else {
+      // `loopShapeError` has checked that `next:` is present when `start:` is.
+      source = { kind: 'cursor', first: resolved.value, next: spec.next as string };
+    }
+    const of = source.kind === 'list' ? Math.min(source.items.length, spec.max) : undefined;
+
+    const runIteration = async (
+      index: number,
+      value: unknown,
+      previous: Record<string, unknown> | undefined,
+      signal?: AbortSignal
+    ): Promise<IterationRun> => {
+      const scope = loopScope(spec, value, index, previous);
+      const turn: LoopTurn = { index, scope, budgetEnds: loopEnds, signal };
+
+      state.emit({
+        type: 'step:iteration',
+        id: stepId,
+        index: run.iteration,
+        iteration: index,
+        ...(of === undefined ? {} : { of }),
+        value: state.secrets.mask(value)
+      });
+
+      // §8.7 again, with `loop.*` in scope. A throw fails the step and sends no request.
+      let pre: Record<string, unknown> = {};
+      if (step.pre.length) {
+        const computed = await runPreScripts(step.pre, evaluationContext(scopeFor({}, scope)), runScript);
+        if (computed.error) {
+          const result: StepResult = {
+            ...skip(step, prefix, undefined, computed.error.message),
+            status: 'failed',
+            reason: 'script-error'
+          };
+          return { index, value, scope, pre, result, internals: [] };
+        }
+        pre = computed.values;
+      }
+
+      if (child) {
+        const [result, ...internals] = await executeSubflow(step, child, pre, turn);
+        return { index, value, scope, pre, result, internals };
+      }
+      // Each iteration takes a place in the budget of the run for itself. The loop holds none
+      // between two iterations, and other steps can use the place.
+      const { result, response, preview } = await state.budget.run(() => executeOperation(step, pre, turn));
+      return { index, value, scope, pre, result, internals: [], response, preview };
+    };
+
+    const failedAt = (at: IterationRun): Verdict => ({
+      kind: 'failed',
+      reason: at.result.reason,
+      message: `${describeIteration(at.index, at.value)} failed${at.result.message ? `: ${at.result.message}` : ''}`,
+      at
+    });
+
+    const scriptFailed = (at: IterationRun, position: string, cause: unknown): Verdict => ({
+      kind: 'failed',
+      reason: 'script-error',
+      message: `${describeIteration(at.index, at.value)}: ${position} threw: ${errorText(cause)}`,
+      at
+    });
+
+    const exceeded = (count: number): Verdict => ({
+      kind: 'failed',
+      reason: 'max-duration-exceeded',
+      message: `the ${step.maxDuration}ms budget of the loop elapsed after ${count} iterations`
+    });
+
+    const maxReached: Verdict = {
+      kind: 'failed',
+      reason: 'loop-max-reached',
+      message: `${spec.max} iterations ran, and the loop has more values`
+    };
+
+    const nextValue = async (done: IterationRun): Promise<Upcoming> => {
+      if (source.kind === 'list') {
+        return done.index + 1 < source.items.length
+          ? { present: true, value: source.items[done.index + 1] }
+          : { present: false };
+      }
+      // `loop.*` in this call is the iteration that just ended, so `ctx.loop.<as>` is the cursor
+      // that a script can add to.
+      return cursorValue(
+        await runScript(source.next, [done.result.outputs, evaluationContext(scopeFor(done.pre, done.scope))])
+      );
+    };
+
+    /** One iteration at a time. The only way for a loop with `until` or `next`. */
+    const iterateInOrder = async (): Promise<{ verdict: Verdict; ran: IterationRun[] }> => {
+      const ran: IterationRun[] = [];
+      let upcoming: Upcoming = source.kind === 'list'
+        ? (source.items.length ? { present: true, value: source.items[0] } : { present: false })
+        : cursorValue(source.first);
+      let previous: Record<string, unknown> | undefined;
+
+      while (upcoming.present) {
+        if (interrupted()) return { verdict: { kind: 'cancelled' }, ran };
+        if (overBudget()) return { verdict: exceeded(ran.length), ran };
+
+        const done = await runIteration(ran.length, upcoming.value, previous);
+        const { result } = done;
+
+        // A reference that no step produced is the same for every iteration, because no step
+        // publishes until the loop ends. So it can happen only in the first iteration, and the
+        // loop has sent nothing. The step is skipped, as a step without `loop:` is (§11.2).
+        if (result.status === 'skipped') {
+          return { verdict: { kind: 'skipped', message: `${describeIteration(done.index, done.value)}: ${result.message}` }, ran };
+        }
+        ran.push(done);
+        if (result.status === 'cancelled') return { verdict: { kind: 'cancelled', at: done }, ran };
+        if (result.status === 'failed') return { verdict: failedAt(done), ran };
+
+        if (spec.until) {
+          let matched: boolean;
+          try {
+            matched = await loopUntilMatches(
+              spec.until,
+              child ? result.outputs : responseView(done.response),
+              result.outputs,
+              evaluationContext(scopeFor(done.pre, done.scope)),
+              runScript
+            );
+          } catch (cause) {
+            return { verdict: scriptFailed(done, 'until', cause), ran };
+          }
+          if (matched) return { verdict: { kind: 'done', matched: true, at: done }, ran };
+          // With `until`, a loop that ran `max` iterations without a match is a loop with no match.
+          if (ran.length >= spec.max) return { verdict: { kind: 'done', matched: false }, ran };
+        }
+
+        try {
+          upcoming = await nextValue(done);
+        } catch (cause) {
+          return { verdict: scriptFailed(done, 'next', cause), ran };
+        }
+        if (!upcoming.present) return { verdict: { kind: 'done', matched: !spec.until }, ran };
+        // Without `until`, a loop that stops at `max` with values left has not done its work.
+        if (ran.length >= spec.max) return { verdict: maxReached, ran };
+        previous = result.outputs;
+      }
+
+      return { verdict: { kind: 'done', matched: !spec.until }, ran };
+    };
+
+    /**
+     * Up to `concurrency` iterations at the same time (006 §6). The first failure aborts the
+     * requests in flight and stops the start of new ones. The step reports the lowest index of the
+     * iterations that failed. `loop.previous` is `undefined` here, because no iteration waits.
+     */
+    const iterateTogether = async (items: unknown[]): Promise<{ verdict: Verdict; ran: IterationRun[] }> => {
+      const total = Math.min(items.length, spec.max);
+      const settled: IterationRun[] = [];
+      const halt = new AbortController();
+      const haltWithRun = () => halt.abort();
+      let taken = 0;
+
+      const worker = async () => {
+        while (taken < total && !halt.signal.aborted && !interrupted() && !overBudget()) {
+          const index = taken;
+          taken += 1;
+          const done = await runIteration(index, items[index], undefined, halt.signal);
+          // The loop itself cancelled this request. A request that the loop cancels does not fail.
+          if (halt.signal.aborted && done.result.reason === 'transport-error') continue;
+          settled.push(done);
+          if (done.result.status !== 'success') halt.abort();
+        }
+      };
+      state.flowContext.signal.addEventListener('abort', haltWithRun, { once: true });
+      try {
+        await Promise.all(Array.from({ length: Math.min(spec.concurrency, total) }, worker));
+      } finally {
+        state.flowContext.signal.removeEventListener('abort', haltWithRun);
+      }
+
+      const unresolved = settled.find((done) => done.result.status === 'skipped');
+      if (unresolved) {
+        return {
+          verdict: { kind: 'skipped', message: `${describeIteration(unresolved.index, unresolved.value)}: ${unresolved.result.message}` },
+          ran: []
+        };
+      }
+
+      const ran = settled.sort((first, second) => first.index - second.index);
+      const cancelled = ran.find((done) => done.result.status === 'cancelled');
+      if (cancelled) return { verdict: { kind: 'cancelled', at: cancelled }, ran };
+      const failed = ran.find((done) => done.result.status === 'failed');
+      if (failed) return { verdict: failedAt(failed), ran };
+
+      if (ran.length < total) return { verdict: interrupted() ? { kind: 'cancelled' } : exceeded(ran.length), ran };
+      if (items.length > spec.max) return { verdict: maxReached, ran };
+      return { verdict: { kind: 'done', matched: true }, ran };
+    };
+
+    const { verdict, ran } = source.kind === 'list' && spec.concurrency > 1
+      ? await iterateTogether(source.items)
+      : await iterateInOrder();
+
+    if (verdict.kind === 'skipped') {
+      return { steps: [skip(step, prefix, 'unresolved-dependency', verdict.message)] };
+    }
+    // A step that the run stopped before it sent a request has not started (§11.3).
+    if (verdict.kind === 'cancelled' && !ran.length) return { steps: [skip(step, prefix, 'run-cancelled')] };
+
+    const at = verdict.at;
+    const matched = verdict.kind === 'done' && verdict.matched;
+    // The outputs of the step are the outputs of the iteration that `until` matched, and no other.
+    const matchedAt = spec.until && matched ? at : undefined;
+    const waited = ran.reduce((total, done) => total + (done.result.rateLimitWaitMs || 0), 0);
+
+    const result: StepResult = {
+      ...identity(step, prefix),
+      status: verdict.kind === 'done' ? 'success' : verdict.kind === 'cancelled' ? 'cancelled' : 'failed',
+      reason: verdict.kind === 'done' ? undefined : verdict.kind === 'cancelled' ? 'run-cancelled' : verdict.reason,
+      message: verdict.kind === 'failed'
+        ? verdict.message
+        : verdict.kind === 'cancelled'
+          ? `the run stopped after ${ran.length} iterations`
+          : undefined,
+      attempts: ran.reduce((total, done) => total + done.result.attempts, 0),
+      durationMs: state.clock.now() - startedAt,
+      rateLimitWaitMs: waited || undefined,
+      loop: {
+        count: ran.length,
+        ...(of === undefined ? {} : { of }),
+        matched,
+        ...(at ? { index: at.index, value: at.value } : {}),
+        ...(ran.some((done) => done.result.attempts > 1) ? { attemptsPerIteration: attemptsByIndex(ran) } : {})
+      },
+      assertions: at ? at.result.assertions : [],
+      validation: at ? at.result.validation : undefined,
+      outputs: matchedAt ? matchedAt.result.outputs : {},
+      capturePath: ran.map((done) => done.result.capturePath).find(Boolean)
+    };
+
+    return {
+      steps: [result, ...ran.flatMap((done) => done.internals)],
+      response: at ? at.response : undefined,
+      preview: at ? at.preview : undefined,
+      loop: {
+        matched,
+        count: ran.length,
+        iterations: ran.map((done) => done.result.outputs),
+        ...(matchedAt ? { index: matchedAt.index } : {})
+      }
+    };
+  };
+
+  /** What `execute` does with the result of a step, whichever executor made it. */
+  const commit = (step: NormalizedStep, produced: Produced): void => {
+    const [own, ...internals] = produced.steps;
+    record(step, own, produced.preview);
+    results.push(...internals);
+    publish(step, own, produced.response, produced.loop);
   };
 
   const execute = async (step: NormalizedStep): Promise<void> => {
@@ -1078,6 +1503,12 @@ const executeFlow = async (
       }
     }
 
+    // A loop runs `pre:` itself, once for each iteration, because `pre:` can read `loop.*` (006 §3).
+    if (step.loop) {
+      commit(step, await executeLoop(step, step.loop, child));
+      return;
+    }
+
     /**
      * §8.7, after `when:` and before anything is built: a condition is the cheaper question and the
      * one that can make the rest unnecessary, so a step about to be skipped computes nothing.
@@ -1105,7 +1536,7 @@ const executeFlow = async (
     // A `uses:` step does not draw from the budget while its internals run: its internals draw
     // from the same run-wide pool (§9.2), and a container holding a slot too would deadlock a
     // sub-flow at `concurrency: 1` — the setting §9.2 recommends for debugging.
-    const produced
+    const produced: Produced
       = child
         ? { steps: await executeSubflow(step, child, pre), response: undefined, preview: undefined }
         : await state.budget.run(async () => {
@@ -1113,10 +1544,7 @@ const executeFlow = async (
             return { steps: [result], response, preview };
           });
 
-    const [own, ...internals] = produced.steps;
-    record(step, own, produced.preview);
-    results.push(...internals);
-    publish(step, own, produced.response);
+    commit(step, produced);
   };
 
   const pending = new Set(flow.steps.map((step) => step.id));

@@ -1,0 +1,79 @@
+openapi: 3.0.3
+# The service the 006 loop flows bind. The five loops that 006 §1 names were found in a partner
+# API's functional tests, and these operations are the smallest set that lets each one be written:
+# a list, a read by id, a create, a matching call, an RPC, and a paged search over one key.
+# Every path starts with /loops, because the harness identifies a request by method and path and
+# another document in this folder already owns /orders and /things.
+info: { title: Loops API, version: 1.0.0 }
+servers:
+  - url: https://loops.example.com
+paths:
+  /loops/vendors:
+    get:
+      operationId: loopListVendors
+      parameters:
+        - { name: partnership_type, in: query, schema: { type: string } }
+        - { name: 'page[number]', in: query, schema: { type: integer } }
+      responses:
+        '200': { description: One page of vendors }
+    post:
+      operationId: loopCreateVendor
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        '201': { description: Created }
+  /loops/vendors/{pk}:
+    parameters:
+      - { name: pk, in: path, required: true, schema: { type: string } }
+      - { name: X-Label, in: header, schema: { type: string } }
+    get:
+      operationId: loopGetVendor
+      responses:
+        '200': { description: One vendor }
+        '404': { description: No such vendor }
+  /loops/matches:
+    post:
+      operationId: loopMatchVendor
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                vendor_id: { type: string }
+      responses:
+        '200': { description: Whether the vendor matches }
+  /loops/rpc:
+    post:
+      operationId: loopRpc
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                key: { type: string }
+      responses:
+        '200': { description: The result of the call }
+        '500': { description: The call failed }
+  /loops/objects:
+    get:
+      operationId: loopListObjects
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: One page of ledger objects }
+  /loops/objects/{key}/search:
+    parameters:
+      - { name: key, in: path, required: true, schema: { type: string } }
+    get:
+      operationId: loopSearchObject
+      parameters:
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: One page of results for one key }

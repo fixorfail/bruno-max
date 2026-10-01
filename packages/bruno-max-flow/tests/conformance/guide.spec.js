@@ -706,7 +706,7 @@ describe('§10.2 names every reserved root', () => {
   const { RESERVED_ROOTS } = require('../../src/interpolate');
   const SPEC = path.join(__dirname, '../../../../docs/specs/001-api-flows.md');
 
-  const COUNTED = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+  const COUNTED = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 
   it('lists them all, and counts them correctly', () => {
     const text = fs.readFileSync(SPEC, 'utf8');

@@ -22,6 +22,7 @@ export type StepReason
     | 'file-read-failed'
     | 'script-error'
     | 'subflow-failed'
+    | 'loop-max-reached'
     | 'unmet-dependency'
     | 'condition-false'
     | 'unresolved-dependency'
@@ -37,6 +38,32 @@ export type AssertionResult = {
   passed: boolean;
   expected?: unknown;
   actual?: unknown;
+};
+
+/**
+ * What a `loop:` step reports in addition to the status of every step (006 §4).
+ * A step that sends one request does not have it.
+ *
+ * `index` and `value` name the iteration that decided the result. That iteration is the one that
+ * matched `until`, or the one that failed. Both are absent when no iteration decided the result.
+ * This is the case when the values ended, or when the run stopped before the first iteration.
+ */
+export type LoopOutcome = {
+  /** The number of iterations that ran. */
+  count: number;
+  /** The largest number of iterations that the source allows. Absent when the source cannot say. */
+  of?: number;
+  /** `until` ended the loop. If the step has no `until`, the end of the values ended it. */
+  matched: boolean;
+  /** `loop.index` of the deciding iteration. It starts at 0, as in a flow and in a capture directory. */
+  index?: number;
+  value?: unknown;
+  /**
+   * The requests that each iteration sent, in the place of its `loop.index`. Present only where an
+   * iteration retried. Without it, each iteration sent one request. A reader that opens one
+   * iteration needs it to know how many attempts that iteration has.
+   */
+  attemptsPerIteration?: number[];
 };
 
 export type StepResult = {
@@ -65,8 +92,14 @@ export type StepResult = {
    * stable format: hosts display it, and nothing parses it.
    */
   message?: string;
+  /**
+   * The number of requests sent. For a `loop:` step it is the total of all iterations.
+   * Each iteration sends one request, unless `retry:` repeats it.
+   */
   attempts: number;
   durationMs: number;
+  /** The summary of a `loop:` step (006 §4). */
+  loop?: LoopOutcome;
   /**
    * §6.2's pacing, in ms: what this step spent waiting its turn at the API's bucket, summed over
    * its attempts (004 §7). Absent when the step waited for nothing, which is every step of a flow
@@ -211,7 +244,18 @@ export type FlowEvent
    * operation step.
    */
   | { type: 'step:start'; id: string; index: number; operation?: string; steps?: number }
-  | { type: 'step:attempt'; id: string; index: number; attempt: number; status: string; durationMs: number }
+  /**
+   * `iteration` is `loop.index`, for an attempt of a `loop:` step (006 §8). It is absent for every
+   * other step.
+   */
+  | { type: 'step:attempt'; id: string; index: number; iteration?: number; attempt: number; status: string; durationMs: number }
+  /**
+   * An iteration of a `loop:` step starts (006 §8). The event comes before the first attempt.
+   * `index` is the iteration of the run, as on every step event. `iteration` is `loop.index`.
+   * `of` is the largest number of iterations that the source allows. A cursor cannot say it.
+   * `value` is `loop.<as>`. The engine masks it, as it masks every value that a run reports (§14.4).
+   */
+  | { type: 'step:iteration'; id: string; index: number; iteration: number; of?: number; value: unknown }
   | {
     type: 'step:end';
     id: string;

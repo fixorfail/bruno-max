@@ -63,12 +63,47 @@ const connectorMarker = (node) => {
   return named.length ? { key: 'connector', glyph: '⧉', title: named.join('; ') } : undefined;
 };
 
+/**
+ * Where a step is in its repeats, on the last line of its box: a poll's attempt (§8.2), and a
+ * loop's iteration (006 §9). `iteration 3/8` while it runs and when it has ended, as the console
+ * says it; a cursor cannot say how many there will be, and the box does not guess.
+ *
+ * Both can be true of one step — a loop whose iterations retry — and then the box says both, with
+ * the iteration first, because the attempt is one of the iteration.
+ */
+const progressOf = (state, node) => {
+  const parts = [];
+
+  if (state?.loop) {
+    const { count, of } = state.loop;
+    parts.push(count === 0 ? 'no iterations' : `iteration ${count}${of === undefined ? '' : `/${of}`}`);
+  } else if (state?.iteration !== undefined) {
+    parts.push(`iteration ${state.iteration + 1}${state.iterationOf === undefined ? '' : `/${state.iterationOf}`}`);
+  }
+
+  if (state?.state === 'retrying' && node.markers.retryMaxAttempts) {
+    const attempt = state.iteration === undefined ? state.attempt : state.iterationAttempts?.[state.iteration];
+    parts.push(`attempt ${attempt || state.attempt}/${node.markers.retryMaxAttempts}`);
+  }
+
+  return parts.join(' · ');
+};
+
 /** §5.1's markers, each shown only when the step carries the thing it marks. */
 const markersFor = (node, joinsAny) => {
   const markers = [];
   if (node.markers.conditional) markers.push({ key: 'when', glyph: 'when', title: 'Conditional (when:)' });
   if (node.markers.retryMaxAttempts) {
     markers.push({ key: 'retry', glyph: `↻ ${node.markers.retryMaxAttempts}`, title: 'Retries' });
+  }
+  // The word the file wrote, as `when` and `uses` are. The graph stays static — the loop repeats
+  // inside this one node — so the most iterations it can run is the one fact about it to draw.
+  if (node.markers.loopMaxIterations) {
+    markers.push({
+      key: 'loop',
+      glyph: `loop ${node.markers.loopMaxIterations}`,
+      title: `Loop (loop:) — at most ${node.markers.loopMaxIterations} iterations`
+    });
   }
   // The word the file wrote, the way `when` is. A sub-flow was marked `⊂` — the subset sign, which
   // is a symbol for a relationship nobody draws that way and had to be learned from the tooltip.
@@ -1042,9 +1077,9 @@ const FlowGraph = ({
                       <span className="node-status">
                         {state ? [state.state, state.reason].filter(Boolean).join(' · ') : ''}
                       </span>
-                      {state?.state === 'retrying' && node.markers.retryMaxAttempts ? (
-                        <span className="node-attempts">
-                          {`attempt ${state.attempt}/${node.markers.retryMaxAttempts}`}
+                      {progressOf(state, node) ? (
+                        <span className="node-attempts" data-testid={`flow-node-progress-${node.id}`}>
+                          {progressOf(state, node)}
                         </span>
                       ) : null}
                     </div>

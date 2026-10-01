@@ -17,6 +17,7 @@ import {
   CAPTURE_DIRNAME,
   FLOW_DESCRIPTION_FILE,
   FLOW_SOURCE_FILE,
+  LOOP_ITERATION_DIRECTORY,
   RUN_INPUTS_FILE,
   RUN_DIRECTORY,
   SUITE_DIRECTORY,
@@ -257,14 +258,20 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
   );
 
   const stepIds = description ? description.nodes.map((node) => node.id) : options.stepIds || [];
+  // A `loop:` step keeps its attempts one level down, in `iteration-<n>` (006 §8). Its own directory
+  // has no attempt file. The directory of the first iteration has one, and one file is enough.
+  const holdsAttempts = async (directory: string): Promise<boolean> =>
+    (await options.ports.listDirectory(directory, context)).some((entry) => ATTEMPT_FILE.test(entry));
+
   const captured = await Promise.all(
     stepIds.map(async (stepId) => {
       try {
-        const entries = await options.ports.listDirectory(
-          stepCaptureDir(options.dir, stepId, options.iteration),
-          context
-        );
-        return entries.some((entry) => ATTEMPT_FILE.test(entry)) ? stepId : undefined;
+        const directory = stepCaptureDir(options.dir, stepId, options.iteration);
+        const entries = await options.ports.listDirectory(directory, context);
+        const looped = entries.find((entry) => LOOP_ITERATION_DIRECTORY.test(entry));
+        const found = entries.some((entry) => ATTEMPT_FILE.test(entry))
+          || (looped !== undefined && (await holdsAttempts(path.join(directory, looped))));
+        return found ? stepId : undefined;
       } catch {
         return undefined;
       }
@@ -292,7 +299,7 @@ export const readRun = async (options: ReadRunOptions): Promise<StoredRun> => {
 export const readCapture = async (options: ReadCaptureOptions): Promise<StepCapture> => {
   containedRunDir(options.dir, options.scopeRoot);
   const file = path.join(
-    stepCaptureDir(options.dir, options.stepId, options.iteration),
+    stepCaptureDir(options.dir, options.stepId, options.iteration, options.loopIteration),
     attemptFile(options.attempt)
   );
   const capture = await readJson<StepCapture>(options.ports.readFile, file, readContext(options.scopeRoot));

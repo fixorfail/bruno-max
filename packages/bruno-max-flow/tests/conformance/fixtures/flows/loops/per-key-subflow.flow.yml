@@ -1,0 +1,32 @@
+# 006 §1's fifth loop (C6755367): several requests for each ledger object key. The loop is on a
+# `uses:` step, so each iteration invokes the sub-flow with `with:` built again, and `until:` is
+# asked about the sub-flow's exports (006 §7).
+version: 1
+
+meta:
+  name: 006 — a sub-flow for each item
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+steps:
+  - id: search_each_key
+    uses: ./per-key-child.flow.yml
+    loop:
+      over:
+        - key-1
+        - key-2
+        - key-3
+      as: key
+      until: |
+        (res, ctx) => res.total >= 4
+      max: 10
+    with:
+      key: "{{loop.key}}"
+
+  - id: record_total
+    operation: loops-api#loopRpc
+    depends: [search_each_key]
+    when: steps.search_each_key.matched eq true
+    body:
+      key: "total {{steps.search_each_key.total}}"

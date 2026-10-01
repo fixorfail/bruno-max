@@ -946,3 +946,167 @@ describe('the assertions it lists', () => {
     expect(cells).toEqual(['✗', 'res.body.items isEmpty', '[]', '']);
   });
 });
+
+/**
+ * L13.3 — the iterations of a loop are chosen on the step's header, as its attempts are (006 §9).
+ *
+ * One selection governs every tab, because the engine writes each iteration's attempts to a
+ * directory of their own, and the pane reads the capture of the iteration and the attempt it shows.
+ */
+describe('L13.3 — StepDetail and the iterations of a loop', () => {
+  const looped = {
+    state: 'success',
+    attempts: 4,
+    kind: 'operation',
+    assertions: [],
+    outputs: {},
+    capturePath: '/runs/one/call_each',
+    loop: { count: 3, of: 3, matched: true, index: 2, value: 'c', attemptsPerIteration: [1, 2, 1] }
+  };
+
+  const captureFor = ({ loopIteration, attempt }) => ({
+    response: {
+      status: 200,
+      headers: {},
+      responseTimeMs: 1,
+      body: { kind: 'text', contentType: 'text/plain', text: `iteration ${loopIteration} attempt ${attempt}` }
+    }
+  });
+
+  beforeEach(() => {
+    window.ipcRenderer = { invoke: jest.fn((channel, request) => Promise.resolve(captureFor(request))) };
+  });
+
+  it('offers every iteration, beside the attempts, and opens on the one that decided the step', () => {
+    renderPane({ stepId: 'call_each', iteration: undefined, node: looped });
+
+    const options = [...screen.getByTestId('flow-step-iteration').options].map((option) => option.text);
+    expect(options).toEqual(['Iteration 1', 'Iteration 2', 'Iteration 3']);
+    // `loop.index` 2 is the third iteration, and the title says which number a flow would call it.
+    expect(screen.getByTestId('flow-step-iteration')).toHaveValue('2');
+    expect(screen.getByTestId('flow-step-iteration')).toHaveAttribute('title', 'loop.index 2');
+    const header = [...document.querySelector('.sheet-header').children].map((element) => element.className);
+    expect(header.slice(0, 3)).toEqual(['detail-step', 'detail-iteration', 'detail-attempt']);
+  });
+
+  it('asks for the capture of the iteration and the attempt that it shows', async () => {
+    renderPane({ stepId: 'call_each', iteration: undefined, node: looped });
+
+    await waitFor(() => expect(window.ipcRenderer.invoke).toHaveBeenCalled());
+    expect(window.ipcRenderer.invoke).toHaveBeenCalledWith('renderer:flow-read-capture', {
+      scopeRoot: '/w',
+      dir: '/runs/one',
+      stepId: 'call_each',
+      iteration: undefined,
+      loopIteration: 2,
+      attempt: 1
+    });
+  });
+
+  it('re-reads the response from the iteration chosen, on that iteration\'s final attempt', async () => {
+    renderPane({ stepId: 'call_each', iteration: undefined, node: looped });
+    expect(await screen.findByTestId('body')).toHaveTextContent('iteration 2 attempt 1');
+
+    fireEvent.change(screen.getByTestId('flow-step-iteration'), { target: { value: '1' } });
+
+    // Iteration 1 retried once, so it has two attempts, and the pane opens on the second.
+    await waitFor(() => expect(screen.getByTestId('body')).toHaveTextContent('iteration 1 attempt 2'));
+    const attempts = [...screen.getByTestId('flow-step-attempt').options].map((option) => option.text);
+    expect(attempts).toEqual(['Attempt 1', 'Attempt 2']);
+  });
+
+  it('gives each iteration its own attempts, where none retried', () => {
+    renderPane({
+      stepId: 'call_each',
+      iteration: undefined,
+      node: { ...looped, attempts: 3, loop: { count: 3, matched: true } }
+    });
+
+    expect([...screen.getByTestId('flow-step-attempt').options].map((option) => option.text)).toEqual(['Attempt 1']);
+  });
+
+  /** Only the deciding iteration's final attempt is the call that the step's own outcome was built from. */
+  it('shows the status of the step on the deciding iteration only', () => {
+    renderPane({ stepId: 'call_each', iteration: undefined, node: looped });
+    expect(document.querySelector('.detail-status')).toHaveTextContent('success');
+
+    fireEvent.change(screen.getByTestId('flow-step-iteration'), { target: { value: '0' } });
+
+    expect(document.querySelector('.detail-status')).toBeNull();
+  });
+
+  it('opens a failed loop on the iteration that failed', () => {
+    renderPane({
+      stepId: 'call_each',
+      iteration: undefined,
+      node: { ...looped, state: 'failed', reason: 'unexpected-status', loop: { count: 2, of: 3, matched: false, index: 1, value: 'b' } }
+    });
+
+    expect(screen.getByTestId('flow-step-iteration')).toHaveValue('1');
+  });
+
+  it('follows the iterations of a running loop until one is chosen', async () => {
+    const running = (iteration, attempts) => ({
+      state: 'running',
+      kind: 'operation',
+      assertions: [],
+      outputs: {},
+      iteration,
+      iterationOf: 5,
+      iterationAttempts: attempts
+    });
+    const { update } = renderPane({ stepId: 'call_each', iteration: undefined, node: running(2, { 0: 1, 1: 1, 2: 1 }) });
+
+    // Iteration 2 is in flight with its first attempt, so the newest capture is iteration 1's.
+    await waitFor(() => expect(screen.getByTestId('flow-step-iteration')).toHaveValue('1'));
+    expect([...screen.getByTestId('flow-step-iteration').options]).toHaveLength(3);
+
+    update({ node: running(3, { 0: 1, 1: 1, 2: 1, 3: 1 }) });
+    expect(screen.getByTestId('flow-step-iteration')).toHaveValue('2');
+
+    // Chosen, and it stops following.
+    fireEvent.change(screen.getByTestId('flow-step-iteration'), { target: { value: '0' } });
+    update({ node: running(4, { 0: 1, 1: 1, 2: 1, 3: 1, 4: 1 }) });
+    expect(screen.getByTestId('flow-step-iteration')).toHaveValue('0');
+  });
+
+  it('follows the earlier attempt of the iteration that is retrying', async () => {
+    renderPane({
+      stepId: 'call_each',
+      iteration: undefined,
+      node: { state: 'retrying', kind: 'operation', assertions: [], outputs: {}, iteration: 1, iterationAttempts: { 0: 1, 1: 2 } }
+    });
+
+    await waitFor(() => expect(screen.getByTestId('flow-step-iteration')).toHaveValue('1'));
+    expect(screen.getByTestId('flow-step-attempt')).toHaveValue('1');
+  });
+
+  it('says which iteration has not finished, rather than reading a capture that cannot exist yet', () => {
+    renderPane({
+      stepId: 'call_each',
+      iteration: undefined,
+      node: { state: 'running', kind: 'operation', assertions: [], outputs: {}, iteration: 0, iterationAttempts: { 0: 1 } }
+    });
+
+    expect(window.ipcRenderer.invoke).not.toHaveBeenCalled();
+    expect(screen.getByText('Iteration 1, attempt 1 has not finished')).toBeInTheDocument();
+  });
+
+  it('offers no iteration for a step with no loop, nor for a sub-flow that is looped', () => {
+    renderPane({ iteration: undefined });
+    expect(screen.queryByTestId('flow-step-iteration')).toBeNull();
+
+    renderPane({ stepId: 'auth', iteration: undefined, node: { ...looped, kind: 'subflow' } });
+    expect(screen.queryAllByTestId('flow-step-iteration')).toHaveLength(0);
+  });
+
+  it('offers no iteration for a loop that ran none', () => {
+    renderPane({
+      stepId: 'call_each',
+      iteration: undefined,
+      node: { state: 'success', attempts: 0, kind: 'operation', assertions: [], outputs: {}, loop: { count: 0, of: 0, matched: false } }
+    });
+
+    expect(screen.queryByTestId('flow-step-iteration')).toBeNull();
+  });
+});

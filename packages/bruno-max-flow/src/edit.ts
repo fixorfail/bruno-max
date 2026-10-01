@@ -30,6 +30,13 @@ import {
 } from './schema/v1';
 import { PARSE_OPTIONS, ensureBlock } from './serialize';
 
+/**
+ * The step keys that the schema declares and the builder has no editor for (006 §9).
+ * The read model lists them as opaque, so the editor shows "not editable here" for them.
+ * A patch that does not name them leaves them as they are.
+ */
+const KEYS_WITHOUT_EDITOR = ['loop'];
+
 export type EditValue
   = | null | boolean | number | string
     | EditValue[]
@@ -1287,7 +1294,7 @@ export const readFlowEditModel = (text: string): FlowEditModel | undefined => {
 
       const tag = tagUnder(pair.value);
       if (tag !== undefined) opaque.push({ key, tag });
-      else if (!STEP_KEY_ORDER.includes(key)) opaque.push({ key });
+      else if (!STEP_KEY_ORDER.includes(key) || KEYS_WITHOUT_EDITOR.includes(key)) opaque.push({ key });
       else fields[key] = declared[key] as EditValue;
     }
 

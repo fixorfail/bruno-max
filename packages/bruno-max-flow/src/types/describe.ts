@@ -46,6 +46,11 @@ export type FlowNode = {
     conditional: boolean;
     /** retry: (§11.1) */
     retryMaxAttempts?: number;
+    /**
+     * loop: (006). The most iterations the step can run. The graph stays static: the loop repeats
+     * inside one node, and this is the one fact about it that a node can show.
+     */
+    loopMaxIterations?: number;
     /** failOnStatusCode: false (§10.3) */
     allowsErrorStatus: boolean;
     /** (§9.1) */

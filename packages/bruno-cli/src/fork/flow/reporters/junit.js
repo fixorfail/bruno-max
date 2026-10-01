@@ -87,7 +87,8 @@ const testcaseFor = (step, flowId, decidedBy, file) => {
     ...metaProperties(step.meta),
     ['name', step.name],
     ['reason', step.reason],
-    ['attempts', step.attempts > 1 ? step.attempts : undefined]
+    // A loop (006 §4) sends one request for each iteration, so only the requests beyond that were retries.
+    ['attempts', step.attempts > (step.loop ? step.loop.count : 1) ? step.attempts : undefined]
   ]);
   if (props) testcase.properties = props;
 

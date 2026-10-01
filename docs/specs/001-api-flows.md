@@ -1141,6 +1141,7 @@ variable, and because a bare name could be shadowed by a user's:
 | `shared.*` | Cross-branch value slots declared in `shared:` (§9.1) |
 | `flow.*` | `flow.runId`, `flow.name`, `flow.iteration` |
 | `pre.*` | Values this step computed before its request (§8.7) — **step-local** |
+| `loop.*` | The iteration of a step with `loop:` — `loop.<as>`, `loop.index`, `loop.previous` ([006](./006-step-loops.md) §3) — **step-local**, and absent in a step with no loop |
 
 `row.*` and `params.*` stay namespaced even though a human named their contents, because both are
 **inputs crossing a boundary** — a dataset column entering an iteration, an argument entering a
@@ -1153,7 +1154,7 @@ step — which is why §8.7's values leave a step through `outputs:` rather than
 outside it. A namespace that resolved to a different step's values depending on where it was read
 would be the one thing this table exists to prevent.
 
-`steps`, `row`, `params`, `shared`, `flow`, `pre` and `process` are reserved at the top level. A variable in
+`steps`, `row`, `params`, `shared`, `flow`, `pre`, `loop` and `process` are reserved at the top level. A variable in
 any scope with one of those names is shadowed, and `bru flow validate` reports it as a warning.
 `process` is reserved by the same mechanism but not by this table — it is Bruno's existing
 `process.env` namespace (above), shadowing a bare variable in flows exactly as it already does in
@@ -1656,7 +1657,9 @@ Every position gets the same base: **every variable flat, `env` and `vars` as th
 §7.3 describes, and all seven namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`,
 `process` — as keys of their own.** `row` is empty outside a dataset and `pre` is empty outside the
 step's own materialization, and neither is *absent*, so a script never has to test for a namespace
-before reading it.
+before reading it. The eighth, `loop`, is the exception: a step with `loop:` carries it, and a step
+without one has no `ctx.loop` at all, because an empty `loop` would say that a step with no loop is
+in an iteration with no value ([006](./006-step-loops.md) §3).
 
 Two positions add to that base, and only two:
 
@@ -2637,10 +2640,10 @@ and `undefined` become those values, a numeric operand becomes a number, a quote
 string, and **anything else is a string**. Flows keep that unchanged, and add: **an unquoted operand
 whose first dot-segment is a reserved root resolves as a reference.**
 
-The reserved roots are `res`, `req`, `steps`, `row`, `params`, `shared`, `flow`, `pre` and
-`process` — §7.3's seven namespaces, which are already illegal as variable names, plus the two views
+The reserved roots are `res`, `req`, `steps`, `row`, `params`, `shared`, `flow`, `pre`, `loop` and
+`process` — §7.3's eight namespaces, which are already illegal as variable names, plus the two views
 of the exchange this section adds. That is what makes the rule decidable without a symbol table: the
-nine roots are fixed, so a reader classifies an operand by looking at its first segment and nothing
+ten roots are fixed, so a reader classifies an operand by looking at its first segment and nothing
 else. `res` and `req` are not namespaces and are not reserved as variable names; they are roots here
 because an assertion is written about an exchange.
 
@@ -2933,6 +2936,11 @@ assertion is what puts the awaited state in the failure message instead of a bar
 ```
 
 `retry:` is not permitted on a `uses:` step — see §12.4.
+
+**Retry sends the same request again.** The engine builds the request one time for a step, and every
+attempt sends it. A step that must send a different request for each value — each id of a list, each
+page of a cursor — has a `loop:` block, which builds the request again for each iteration. `retry:`
+then applies inside one iteration. [006](./006-step-loops.md) holds the semantics.
 
 **Timeouts.** `timeout` bounds **each attempt**, matching how HTTP clients — and Bruno's existing
 per-request timeout preference, which supplies the default — already behave. A retried step
@@ -3311,7 +3319,7 @@ the schema needs the full list rather than a rule per field discovered later:
 
 | | Fields |
 |---|---|
-| **Legal** | `id` `name` `uses` `with` `when` `depends` `outputs` `shared` `assert` `maxDuration` |
+| **Legal** | `id` `name` `uses` `with` `when` `depends` `loop` `outputs` `shared` `assert` `maxDuration` |
 | **Error** | `retry` `timeout` `failOnStatusCode` `validateRequest` `validateSchema` `strictSchema` `failOnUnresolved` `body` `bodyFile` `query` `headers` `pathParams` `contentType` `auth` |
 
 The division is one question: **does the field address a response?** A sub-flow has no single
@@ -3864,8 +3872,12 @@ type StepResult = {
   status: 'success' | 'failed' | 'skipped' | 'cancelled';
   reason?: StepReason;                 // §14.6 — the rule that fired
   message?: string;                    // §14.6 — the occurrence, in human words
-  attempts: number;
+  attempts: number;                    // for a `loop:` step, the requests of every iteration
   durationMs: number;
+  loop?: {                             // 006 §4 — a `loop:` step only
+    count: number; of?: number; matched: boolean; index?: number; value?: unknown;
+    attemptsPerIteration?: number[];   // present only where an iteration retried
+  };
   rateLimitWaitMs?: number;            // 004 §7 — the share of durationMs spent waiting on §6.2's rateLimit
   assertions: { expr: string; passed: boolean; expected?: unknown; actual?: unknown }[];
   validation?: {                       // §10.1's automatic checks — absent when both are off
@@ -3881,7 +3893,7 @@ type SchemaResult = { valid: boolean; errors: { path: string; message: string; k
 type StepReason =
   | 'unexpected-status' | 'invalid-request' | 'schema-validation-failed' | 'assertion-failed'
   | 'transport-error'   | 'retries-exhausted' | 'max-duration-exceeded'  | 'file-read-failed'
-  | 'script-error'      | 'subflow-failed'
+  | 'script-error'      | 'subflow-failed'   | 'loop-max-reached'
   | 'unmet-dependency'  | 'condition-false'  | 'unresolved-dependency'   | 'run-cancelled';
 ```
 
@@ -4077,7 +4089,8 @@ type FlowEvent =
   | { type: 'iteration:start'; index: number; row?: Vars }
   | { type: 'iteration:vars';  index: number; vars: Vars }
   | { type: 'step:start';      id: string; index: number; operation?: string; steps?: number }
-  | { type: 'step:attempt';    id: string; index: number; attempt: number; status: string; durationMs: number }
+  | { type: 'step:attempt';    id: string; index: number; iteration?: number; attempt: number; status: string; durationMs: number }
+  | { type: 'step:iteration';  id: string; index: number; iteration: number; of?: number; value: unknown }
   | { type: 'step:end';        id: string; index: number; result: StepResult;
                                preview?: { request?: string; response?: string } }
   | { type: 'iteration:end';   index: number; status: IterationResult['status'] }
@@ -4849,8 +4862,17 @@ ever tell the author.
 | `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
 | `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
 | `unknown-output-path` | A connector-file output's path names a field the operation's response schema does not have (§8.5) |
+| `loop-source-missing` | A `loop:` has neither `over` nor `start`, or has both ([006](./006-step-loops.md) §2) |
+| `loop-next-missing` | A `loop:` has `start` without `next`, or `next` without `start` (006 §2) |
+| `loop-max-missing` | A `loop:` has a `max` that is absent, is not an integer, or is outside 1 to 1000 (006 §2) |
+| `loop-concurrency-with-until` | A `loop:` has `concurrency` above 1 and an `until`, which needs the iterations in order (006 §6) |
+| `loop-concurrency-with-cursor` | A `loop:` has `concurrency` above 1 and a `start`, whose `next` needs the iteration before (006 §6) |
+| `loop-reference-outside-loop` | `{{loop.*}}`, or a `loop.` operand, in a step with no `loop:` — a sub-flow does not see the `loop` of its caller either (006 §3, §7) |
+| `loop-over-not-a-list` | A `loop.over` that is a literal that is not a list, or a string with text around a reference, which is always a string (006 §2) |
+| `loop-output-unguarded` *(warning)* | A step reads a declared output of a loop with `until` and has no `when:` on `matched`, so it is skipped when nothing matched (006 §4) |
+| `loop-output-never-published` *(warning)* | A step reads, or a `shared:` or `exports:` entry names, a declared output of a loop with no `until`, which publishes none — the reader is always skipped, the slot is never written, and the export is never produced (006 §4) |
 
-The last three are decided while resolving the graph rather than while reading the document, since
+The three stage rules above (`unknown-stage-step`, `stage-boundary-order`, `stage-out-of-order`) are decided while resolving the graph rather than while reading the document, since
 §5.5's rule is whether a boundary can be *drawn* — one implementation, shared with the drawing, so
 a suppressed rule and a warning about it can never disagree.
 
@@ -5156,6 +5178,12 @@ appears *only* when the flow declares a `dataset:`. A flow without one runs a si
 index is always `0` (§13.2), and an `iteration-0/` level that never has a sibling is a directory
 every reader would have to know to skip.
 
+**The iterations of a `loop:` step nest below the step** — `verify_ledger/iteration-2/attempt-1.json`
+— where `<index>` is `loop.index`. A dataset iteration repeats a whole flow and nests above its
+steps. A loop iteration repeats one step and stays next to it. The step directory is still the
+`capturePath` of the step. A step with no `loop:` keeps the paths that it had
+([006](./006-step-loops.md) §8).
+
 #### `run.json` and `summary.json`
 
 **`run.json` is written when the run starts; `summary.json` when it ends.** The first carries
@@ -5308,6 +5336,7 @@ about what it describes.
 | `file-read-failed` | failed | A `!file`, `bodyFile:` or `dataset:` source could not be read (§7.4) |
 | `script-error` | failed | A `script:` output, a `when:` condition or `shouldRetry` threw (§8.2) |
 | `subflow-failed` | failed | A step inside an invoked sub-flow failed (§12.4) |
+| `loop-max-reached` | failed | A `loop:` with no `until` ran `max` iterations and had more values ([006](./006-step-loops.md) §5) |
 | `unmet-dependency` | skipped | No parent outcome satisfied `depends` (§9.1) |
 | `condition-false` | skipped | `when:` evaluated false (§9.3) |
 | `unresolved-dependency` | skipped | A referenced output was never produced (§11.2) |

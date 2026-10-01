@@ -1,0 +1,53 @@
+# 006 §1's first loop (C1465): GET each vendor until one has a member, and create a vendor when none
+# has one. The loop stops at the first match, and `matched: false` is what the step below decides on.
+# `read_partner` is guarded on `matched`, as 006 §10's `loop-output-unguarded` asks of a reader.
+version: 1
+
+meta:
+  name: 006 — find a vendor with a member, or create one
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+steps:
+  - id: find_vendors
+    operation: loops-api#loopListVendors
+    query:
+      partnership_type: vendors
+    outputs:
+      candidateIds:
+        script: |
+          (res) => res.body.data
+            .filter((p) => !(p.attributes.is_customer && p.attributes.is_vendor))
+            .map((p) => p.id)
+
+  - id: find_vendor_with_member
+    operation: loops-api#loopGetVendor
+    loop:
+      over: "{{steps.find_vendors.candidateIds}}"
+      as: vendorId
+      until: |
+        (res, ctx) => res.body.data.members.length > 0
+      max: 25
+    pre:
+      label: |
+        (ctx) => ctx.loop.vendorId + '-' + ctx.loop.index
+    headers:
+      X-Label: "{{pre.label}}"
+    pathParams:
+      pk: "{{loop.vendorId}}"
+    outputs:
+      partnershipId: data.id
+
+  - id: create_vendor
+    operation: loops-api#loopCreateVendor
+    when: steps.find_vendor_with_member.matched eq false
+    body:
+      name: fresh
+
+  - id: read_partner
+    operation: loops-api#loopGetVendor
+    depends: [find_vendor_with_member]
+    when: steps.find_vendor_with_member.matched eq true
+    pathParams:
+      pk: "{{steps.find_vendor_with_member.partnershipId}}"

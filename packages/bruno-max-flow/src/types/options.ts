@@ -209,6 +209,8 @@ export type ReadCaptureOptions = {
   scopeRoot: string;
   stepId: string;
   iteration?: number;
+  /** `loop.index`, for an attempt of a `loop:` step (006 §8). */
+  loopIteration?: number;
   attempt: number;
   ports: { readFile: ReadFile };
 };

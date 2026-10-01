@@ -462,6 +462,19 @@ describe('a testcase', () => {
     ]);
     expect(propertiesIn(casesOf(suitesOf(xml)[0])[0])).toMatchObject({ attempts: '3' });
   });
+
+  // 006 §4: a loop of three iterations sends three requests, and none of them is a retry.
+  it('does not report one request for each iteration of a loop as retries', () => {
+    const looped = (over) => step({ attempts: 3, loop: { count: 3, of: 3, matched: true }, ...over });
+    const attributesOf = (candidate) => propertiesIn(
+      casesOf(suitesOf(format([
+        record({ result: run({ iterations: [{ index: 0, status: 'passed', steps: [candidate] }] }) })
+      ]))[0])[0]
+    );
+
+    expect(attributesOf(looped())).not.toHaveProperty('attempts');
+    expect(attributesOf(looped({ attempts: 4 }))).toMatchObject({ attempts: '4' });
+  });
 });
 
 describe('a flow that never ran', () => {

@@ -8,7 +8,17 @@
  * nobody wrote. `NormalizedFlow.raw` is the document before that happened, and these are its readers.
  */
 import { DROP, FileRef, OPERATORS, asRecord, type NormalizedFlow, type NormalizedStep } from '../document';
-import { readsOutput, referenceKind, type FlowReads, type Reference } from '../references';
+import { WHOLE_VALUE } from '../interpolate';
+import { MAX_LOOP_ITERATIONS, isValidLoopMax } from '../loop';
+import {
+  LOOP_BUILT_INS,
+  readsLoop,
+  readsOutput,
+  referenceKind,
+  referencesOf,
+  type FlowReads,
+  type Reference
+} from '../references';
 import { suggest, type Report } from './report';
 import { scriptPositions } from './scripts';
 
@@ -28,7 +38,7 @@ const MERGEABLE = ['body', 'query', 'headers', 'pathParams'];
 const BINDING_MERGEABLE = ['defaultHeaders', 'defaultQuery'];
 
 /** §7.3's namespaces. A variable of any of these names is shadowed by the namespace, in every scope. */
-const RESERVED = ['steps', 'row', 'params', 'shared', 'flow', 'pre', 'process'];
+const RESERVED = ['steps', 'row', 'params', 'shared', 'flow', 'pre', 'loop', 'process'];
 
 /**
  * §8.2's two named objects, and what each one holds.
@@ -428,6 +438,178 @@ const checkExports = (flow: NormalizedFlow, report: Report, published: Published
   }
 };
 
+/**
+ * 006 §10's checks on a `loop:` block, read from the document.
+ *
+ * Normalization fills the defaults, so it cannot tell a `max` that is absent from one that is a
+ * string. These checks ask what the file wrote. Each rule has a code of its own, because a loop
+ * that is wrong in two ways should name both.
+ */
+const checkLoops = (flow: NormalizedFlow, report: Report, published: Published) => {
+  rawSteps(flow).forEach((raw, index) => {
+    const step = flow.steps[index];
+    if (!step) return;
+
+    if (raw.loop === undefined || raw.loop === null) {
+      if (readsLoop(step)) {
+        report.error(
+          'loop-reference-outside-loop',
+          `${step.id} reads loop.*, and ${step.id} has no loop: — the namespace exists only in a step with a loop (006 §3)`,
+          step.id
+        );
+      }
+      return;
+    }
+
+    const loop = asRecord(raw.loop);
+    const node = ['steps', index, 'loop'];
+    const hasOver = loop.over !== undefined;
+    const hasStart = loop.start !== undefined;
+
+    if (hasOver === hasStart) {
+      report.error(
+        'loop-source-missing',
+        `${step.id}: loop: takes exactly one of over: and start: — this one carries ${hasOver ? 'both' : 'neither'}`,
+        step.id,
+        node
+      );
+    }
+
+    if (hasStart !== (loop.next !== undefined)) {
+      report.error(
+        'loop-next-missing',
+        `${step.id}: ${hasStart ? 'start: needs next:, which says how to get the value after it' : 'next: is only for a loop with start:'}`,
+        step.id,
+        node
+      );
+    }
+
+    if (!isValidLoopMax(loop.max)) {
+      report.error(
+        'loop-max-missing',
+        `${step.id}: loop.max is ${loop.max === undefined ? 'absent' : JSON.stringify(loop.max)} — a loop always has a bound, `
+        + `which is a whole number from 1 to ${MAX_LOOP_ITERATIONS}`,
+        step.id,
+        loop.max === undefined ? node : [...node, 'max']
+      );
+    }
+
+    const concurrent = typeof loop.concurrency === 'number' && loop.concurrency > 1;
+    if (concurrent && loop.until !== undefined) {
+      report.error(
+        'loop-concurrency-with-until',
+        `${step.id}: loop.concurrency above 1 cannot go with until: — a stop condition needs the iterations in order`,
+        step.id,
+        [...node, 'concurrency']
+      );
+    }
+    if (concurrent && hasStart) {
+      report.error(
+        'loop-concurrency-with-cursor',
+        `${step.id}: loop.concurrency above 1 cannot go with start: — next: needs the outputs of the iteration before`,
+        step.id,
+        [...node, 'concurrency']
+      );
+    }
+
+    if (hasOver) {
+      const { over } = loop;
+      if (!Array.isArray(over) && !(typeof over === 'string' && WHOLE_VALUE.test(over))) {
+        report.error(
+          'loop-over-not-a-list',
+          typeof over === 'string' && over.includes('{{')
+            ? `${step.id}: loop.over is a string with a reference inside it, which is always a string — write it as one whole reference to a list`
+            : `${step.id}: loop.over is not a list — it is a list, or one whole reference to a list`,
+          step.id,
+          [...node, 'over']
+        );
+      }
+    }
+  });
+
+  // A step that reads a declared output of a loop. With `until`, the output is absent when nothing
+  // matched, and the reader skips with `unresolved-dependency` where it should have chosen what to
+  // do. Without `until`, the output is never there (006 §4).
+  for (const [index, step] of flow.steps.entries()) {
+    const unguarded = new Set<string>();
+    const unpublished = new Map<string, string>();
+
+    for (const reference of referencesOf(step, flow)) {
+      if (reference.root !== 'steps' || reference.name === step.id) continue;
+      const producer = flow.steps.find((candidate) => candidate.id === reference.name);
+      if (!producer?.loop) continue;
+      if (referenceKind(reference, producer, published(producer)) !== 'declared') continue;
+      // A declared output with the name of a built-in is the built-in at run time, and it is there.
+      const output = (reference.field as string).split('.')[0].split('[')[0];
+      if (LOOP_BUILT_INS.includes(output)) continue;
+
+      if (!producer.loop.until) {
+        if (!unpublished.has(producer.id)) unpublished.set(producer.id, output);
+        continue;
+      }
+
+      const guarded = step.when.some((when) =>
+        (typeof when === 'string' ? when : when.script).includes(`steps.${producer.id}.matched`));
+      if (!guarded) unguarded.add(producer.id);
+    }
+
+    for (const producerId of unguarded) {
+      report.warn(
+        'loop-output-unguarded',
+        `${step.id} reads an output of ${producerId}, which has an until: and may not match — `
+        + `add a when: on steps.${producerId}.matched, or the read skips ${step.id} with unresolved-dependency`,
+        step.id,
+        ['steps', index]
+      );
+    }
+
+    for (const [producerId, output] of unpublished) {
+      report.warn(
+        'loop-output-never-published',
+        `${step.id} reads ${producerId}.${output}, and ${producerId} has no until: — a loop with no until: `
+        + `publishes no declared output, so the read skips ${step.id} with unresolved-dependency `
+        + `— read steps.${producerId}.iterations instead`,
+        step.id,
+        ['steps', index]
+      );
+    }
+
+    // A `shared:` entry is a read of the output of its own step. A loop with no `until` writes
+    // no slot, because it has no matching iteration to write it from.
+    if (step.loop && !step.loop.until) {
+      for (const { slot, output } of step.shared) {
+        if (LOOP_BUILT_INS.includes(output) || !published(step).includes(output)) continue;
+        report.warn(
+          'loop-output-never-published',
+          `${step.id} publishes ${output} into ${slot}, and ${step.id} has no until: — a loop with no until: `
+          + `publishes no declared output, so ${slot} is never written by it`,
+          step.id,
+          ['steps', index, 'shared', slot]
+        );
+      }
+    }
+  }
+
+  // An export is a read at the boundary of the flow, and its caller skips whatever reads one that
+  // was not produced (001 §12.1).
+  for (const [name, exported] of Object.entries(flow.exports)) {
+    const [root, target, output] = exported.split('.');
+    const producer = root === 'steps' ? flow.steps.find((candidate) => candidate.id === target) : undefined;
+    const field = output?.split('[')[0];
+    if (!producer?.loop || producer.loop.until || !field) continue;
+    if (LOOP_BUILT_INS.includes(field) || !published(producer).includes(field)) continue;
+
+    report.warn(
+      'loop-output-never-published',
+      `exports.${name} takes ${exported}, and ${producer.id} has no until: — a loop with no until: `
+      + 'publishes no declared output, so the export is never produced and the caller skips whatever reads it '
+      + `— export steps.${producer.id}.iterations instead`,
+      undefined,
+      ['exports', name]
+    );
+  }
+};
+
 /** §9.1's write side: a step publishes one of its own outputs into a slot the flow declares. */
 const checkSharedWrites = (flow: NormalizedFlow, report: Report, published: Published) => {
   for (const step of flow.steps) {
@@ -468,6 +650,8 @@ const checkUnused = (flow: NormalizedFlow, report: Report, reads: FlowReads) => 
     const inline = new Set(Object.keys(asRecord(raw[index]?.outputs)));
     for (const output of step.outputs) {
       if (!inline.has(output.name) || readsOutput(reads, step.id, output.name)) continue;
+      // The built-ins of a loop are published whatever the step declares, and a flow reads them or not.
+      if (step.loop && LOOP_BUILT_INS.includes(output.name)) continue;
       report.warn(
         'unused-output',
         `${step.id}.${output.name} is declared and nothing in this flow reads it`,
@@ -544,6 +728,7 @@ export const checkShape = (flow: NormalizedFlow, report: Report, options: Option
   checkExpressions(flow, report);
   checkExports(flow, report, options.published);
   checkSharedWrites(flow, report, options.published);
+  checkLoops(flow, report, options.published);
   checkUnused(flow, report, options.reads);
   checkReachability(flow, report);
 };

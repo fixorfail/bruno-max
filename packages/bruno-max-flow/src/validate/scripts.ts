@@ -19,7 +19,7 @@ export type ScriptPosition = { source: string; stepId?: string; node: (string | 
  * two languages' rules against each other.
  *
  * The flow's own `config.retry.shouldRetry` needs no entry: normalization folds it into every step,
- * so it arrives here as each step's own.
+ * so it arrives here as each step's own. The `next:` and `until:` of a loop are positions too.
  *
  * **`pre:` and `outputs:` are addressed by name, not by position.** Both normalize to a list, and
  * both are written as a mapping — so an index addresses nothing in the document, and a diagnostic
@@ -52,6 +52,11 @@ export const scriptPositions = (flow: NormalizedFlow): ScriptPosition[] => {
         stepId: step.id,
         node: ['steps', index, 'retry', 'shouldRetry']
       });
+    }
+    // 006 §3: the two scripts of a loop. `over:` and `start:` are values, not scripts.
+    for (const key of ['next', 'until'] as const) {
+      const source = step.loop?.[key];
+      if (source) scripts.push({ source, stepId: step.id, node: ['steps', index, 'loop', key] });
     }
   });
 

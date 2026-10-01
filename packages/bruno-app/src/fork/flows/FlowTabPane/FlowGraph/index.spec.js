@@ -1528,3 +1528,74 @@ describe('connector-supplied outputs (§5.1)', () => {
     expect(screen.queryByTestId('flow-node-marker-connector-bearer_check')).not.toBeInTheDocument();
   });
 });
+
+/**
+ * L13.4 — a loop's iteration is on its node as a poll's attempt is (006 §9).
+ *
+ * The graph is static and the loop repeats inside one node, so the node says how far the loop has
+ * gone and the footer says that it is one.
+ */
+describe('L13.4 — FlowGraph and the iterations of a loop', () => {
+  const looped = (extra = {}) => ({
+    ...description,
+    nodes: [node('bearer_check', 0), { ...node('echo', 1), markers: { ...markers(), loopMaxIterations: 25, ...extra } }]
+  });
+  const progress = (container) => container.querySelector('[data-testid="flow-node-progress-echo"]');
+
+  it('marks a looped step in the footer with the most iterations it can run, and no other', () => {
+    const { container } = renderGraphOf(looped(), {});
+
+    expect(container.querySelector('[data-testid="flow-node-marker-loop-echo"]')).toHaveTextContent('loop 25');
+    expect(container.querySelector('[data-testid="flow-node-marker-loop-bearer_check"]')).toBeNull();
+  });
+
+  it('says which iteration a running loop is on, out of how many', () => {
+    const { container } = renderGraphOf(looped(), { echo: { state: 'running', iteration: 2, iterationOf: 8 } });
+
+    expect(progress(container)).toHaveTextContent('iteration 3/8');
+  });
+
+  it('gives no total for a cursor, which cannot say how many there will be', () => {
+    const { container } = renderGraphOf(looped(), { echo: { state: 'running', iteration: 2 } });
+
+    expect(progress(container)).toHaveTextContent(/^iteration 3$/);
+  });
+
+  it('keeps the count on a node whose loop has ended', () => {
+    const { container } = renderGraphOf(looped(), {
+      echo: { state: 'success', attempts: 3, loop: { count: 3, of: 8, matched: true, index: 2, value: 'c' } }
+    });
+
+    expect(progress(container)).toHaveTextContent('iteration 3/8');
+  });
+
+  it('says so where the loop ran no iteration', () => {
+    const { container } = renderGraphOf(looped(), {
+      echo: { state: 'success', attempts: 0, loop: { count: 0, of: 0, matched: false } }
+    });
+
+    expect(progress(container)).toHaveTextContent('no iterations');
+  });
+
+  it('says both where an iteration of the loop is retrying, with the iteration first', () => {
+    const { container } = renderGraphOf(looped({ retryMaxAttempts: 3 }), {
+      echo: { state: 'retrying', attempt: 2, iteration: 1, iterationOf: 5, iterationAttempts: { 0: 1, 1: 2 } }
+    });
+
+    expect(progress(container)).toHaveTextContent('iteration 2/5 · attempt 2/3');
+  });
+
+  it('reads the attempt of the iteration that is retrying, and not the newest of any under concurrency', () => {
+    const { container } = renderGraphOf(looped({ retryMaxAttempts: 3 }), {
+      echo: { state: 'retrying', attempt: 1, iteration: 3, iterationOf: 5, iterationAttempts: { 3: 2, 2: 1 } }
+    });
+
+    expect(progress(container)).toHaveTextContent('iteration 4/5 · attempt 2/3');
+  });
+
+  it('says nothing about iterations of a step with no loop', () => {
+    const { container } = renderGraphOf(description, { echo: { state: 'success', attempts: 1 } });
+
+    expect(container.querySelector('[data-testid="flow-node-progress-echo"]')).toBeNull();
+  });
+});

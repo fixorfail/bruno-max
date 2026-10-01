@@ -110,6 +110,12 @@ steps:
     depends: [sign_in]                       # default: the step above
     when: steps.sign_in.status eq 200        # skip unless true
 
+    loop:                                    # send the request again for each value — see Loops
+      over: "{{steps.list.ids}}"             #   a list, or one whole reference to a list
+      as: id                                 #   {{loop.id}}; default `value`
+      until: "(res, ctx) => res.body.done"   #   optional: stop at the first true
+      max: 25                                #   required: 1 to 1000
+
     pre:                                     # computed before the request; read as {{pre.*}}
       nonce: |
         () => crypto.randomUUID()
@@ -544,6 +550,77 @@ sees the whole outcome — which is what makes polling first-class.
 **Without `shouldRetry`, retry fires only on a transport error or a 5xx** — never on a failed
 assertion, which means the server answered and the answer was wrong.
 
+Retry sends the **same** request again. To send a different request for each value, use a loop.
+
+## Loops
+
+A `loop:` builds the request again for each value. It ends when `until` is true or the values end.
+
+```yaml
+  - id: find_vendors
+    operation: partner-api#listVendors
+    outputs:
+      candidateIds:
+        script: "(res) => res.body.data.map((vendor) => vendor.id)"
+
+  - id: find_vendor_with_member
+    operation: partner-api#getVendor
+    loop:
+      over: "{{steps.find_vendors.candidateIds}}"   # a list, or one whole reference to a list
+      as: vendorId                                   # {{loop.vendorId}}; default `value`
+      until: |                                       # optional: stop at the first true
+        (res, ctx) => res.body.data.members.length > 0
+      max: 25                                        # required: a whole number from 1 to 1000
+    pathParams: { pk: "{{loop.vendorId}}" }
+    outputs: { vendorId: data.id }
+
+  - id: create_vendor
+    operation: partner-api#createVendor
+    when: steps.find_vendor_with_member.matched eq false
+```
+
+A **cursor loop** uses `start:` and `next:` in place of `over:`. `next` is
+`(previous, ctx) => value`, and `null` ends the loop. `previous` is the outputs of the iteration that
+just ran, and `ctx.loop` is that iteration too:
+
+```yaml
+    loop:
+      start: 1
+      next: "(previous, ctx) => previous.hasMore ? ctx.loop.page + 1 : null"
+      as: page
+      max: 50
+    query: { page: "{{loop.page}}" }
+    outputs: { hasMore: has_more }
+```
+
+**In scope:** `loop.<as>`, `loop.index` (from 0) and `loop.previous` (the outputs of the iteration
+before, `undefined` in the first). A script reads them as `ctx.loop`. They exist only in a step with
+a `loop:`.
+
+**A looped step publishes** `matched`, `iterations` (every iteration's outputs, in order) and
+`count`. Its declared outputs, and `index`, exist only when an `until` matched.
+
+| The loop ends because | Status | Declared outputs | `matched` |
+|---|---|---|---|
+| `until` is true | success | The matching iteration's | `true` |
+| The values end, or `max` runs, with an `until` | success | None | `false` |
+| The values end, with no `until` | success | None | `true` |
+| An iteration fails | failed | None | `false` |
+| `max` runs with values left, no `until` | failed, `loop-max-reached` | None | `false` |
+
+**No match is a success.** The next step decides with `when: steps.<id>.matched eq false`. A step
+that reads a declared output of a loop with `until` needs `when: steps.<id>.matched eq true`, or it
+is skipped when nothing matched.
+
+A failed iteration fails the step and ends the loop. The message names `loop.index` and the value.
+`retry:` retries the current iteration only. `timeout` bounds one attempt. `maxDuration` bounds the
+whole loop. `concurrency: 3` runs three at once, with `over:` and no `until:` only. A loop works on a
+`uses:` step too: `with:` is built again for each value, and `until` reads the sub-flow's exports.
+Each request is captured in `<step>/iteration-<n>/attempt-<n>.json`.
+
+A list that can be empty needs a `script:` output. An output written as a path that selects an empty
+array is not produced, so `over:` would skip the step.
+
 ## Scripts
 
 All three script fields take a **function expression**; the engine calls what you write.
@@ -756,6 +833,15 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `unknown-pre-value` | An output takes `from: pre` naming a value the step does not compute |
 | `unresolved-function-library` | A `functions.use:` entry did not resolve, or climbs outside the scope root |
 | `invalid-function-name` | A `functions:` name is not a JavaScript identifier — it becomes a declaration |
+| `loop-source-missing` | A `loop:` with neither `over:` nor `start:`, or with both |
+| `loop-next-missing` | `start:` without `next:`, or `next:` without `start:` |
+| `loop-max-missing` | `max:` absent, not a whole number, or outside 1 to 1000 |
+| `loop-concurrency-with-until` | `concurrency:` above 1 with an `until:` |
+| `loop-concurrency-with-cursor` | `concurrency:` above 1 with `start:` |
+| `loop-reference-outside-loop` | `{{loop.x}}` or a `loop.x` operand in a step with no `loop:`, or in a sub-flow |
+| `loop-over-not-a-list` | `over:` is not a list or one whole reference to a list |
+| `loop-output-unguarded` *(warning)* | A reader of a declared output of a loop with `until:` has no `when:` on `matched` |
+| `loop-output-never-published` *(warning)* | A reader, a `shared:` entry or an `exports:` entry of a declared output of a loop with no `until:` — it publishes none, so use `iterations` |
 | `invalid-api-color` *(warning)* | An `apis:` binding's `color:` is not `#rgb` or `#rrggbb` |
 | `invalid-rate-limit` | An `apis:` binding's `rateLimit.requests` or `rateLimit.burst` is not a whole number of at least 1 |
 | `invalid-auth-profile` | A `flows/connectors.yml` auth profile declares no `mode:`, or one that is not a scheme |
@@ -798,7 +884,7 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `external-schema-ref` *(warning)* | The operation's schema `$ref`s another file; only the bound document is read, so the body is unchecked and the run will fail the step |
 | `unseeded-drop` *(warning)* | A body `!...` on a key the seed never produces, so it removes nothing |
 | `required-param-without-library` *(warning)* | A `required` param with no `default` in a flow not marked `meta.library: true` |
-| `unused-output` *(warning)* | An output nothing in the flow reads |
+| `unused-output` *(warning)* | An output nothing in the flow reads. A loop's `iterations` read, and its `next:` and `until:` reading `previous.x` or `ctx.outputs.x`, count as reads |
 | `unused-slot` *(warning)* | A declared slot nothing reads — an `exports:` entry naming it counts as a read |
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into |
 | `unreachable-step` *(warning)* | A step nothing can make eligible |
@@ -819,7 +905,7 @@ engine, which reports the run as failed with no steps at all.
 | `unresolved-dependency` | Yes, unless `failOnUnresolved: false` |
 | `assertion-failed`, `unexpected-status`, `invalid-request`, `schema-validation-failed` | Yes |
 | `transport-error`, `max-duration-exceeded`, `retries-exhausted` | Yes |
-| `file-read-failed`, `script-error`, `subflow-failed` | Yes |
+| `file-read-failed`, `script-error`, `subflow-failed`, `loop-max-reached` | Yes |
 
 ## Specified but not built
 

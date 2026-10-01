@@ -1,0 +1,59 @@
+# 006 §1's second loop (C41424, C6869926): read vendor pages from the last to the first, and for each
+# candidate call the matching API until one is matched. The first loop is a cursor, and `next:`
+# follows `links.prev` until the API has none. The second loop is a list with a stop condition.
+version: 1
+
+meta:
+  name: 006 — a cursor over pages, then a list with a stop condition
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+steps:
+  - id: list_vendors
+    operation: loops-api#loopListVendors
+    outputs:
+      lastPage:
+        script: |
+          (res) => parseInt(decodeURIComponent(res.body.links.last).split('page[number]=')[1], 10)
+
+  - id: search_vendor_pages
+    operation: loops-api#loopListVendors
+    loop:
+      start: "{{steps.list_vendors.lastPage}}"
+      next: |
+        (previous, ctx) => previous.prevPage || null
+      as: page
+      until: |
+        (res, ctx) => ctx.outputs.candidates.length > 0
+      max: 50
+    query:
+      page[number]: "{{loop.page}}"
+    outputs:
+      prevPage:
+        script: |
+          (res) => parseInt(decodeURIComponent(res.body.links.prev || '').split('page[number]=')[1], 10) || null
+      candidates:
+        script: |
+          (res) => res.body.data.filter((p) => p.attributes.is_vendor).map((p) => p.id)
+
+  - id: match_candidate
+    operation: loops-api#loopMatchVendor
+    when: steps.search_vendor_pages.matched eq true
+    loop:
+      over: "{{steps.search_vendor_pages.candidates}}"
+      as: candidate
+      until: |
+        (res, ctx) => res.body.data.matched === true
+      max: 20
+    body:
+      vendor_id: "{{loop.candidate}}"
+    outputs:
+      matchedId: data.vendor_id
+
+  - id: confirm_match
+    operation: loops-api#loopGetVendor
+    depends: [match_candidate]
+    when: steps.match_candidate.matched eq true
+    pathParams:
+      pk: "{{steps.match_candidate.matchedId}}"

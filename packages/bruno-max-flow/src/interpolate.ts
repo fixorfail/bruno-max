@@ -27,8 +27,11 @@ import { get } from '@usebruno/query';
  * `pre` is the one that is not run-scoped (§8.7): it addresses the values *this* step computed, so a
  * scope built for one step carries different contents under it than the next step's, and outside a
  * step it carries none.
+ *
+ * `loop` is of the same kind as `pre` (006 §3). It addresses the iteration of the step that the
+ * engine builds. It exists only in a step that has `loop:`.
  */
-export const RESERVED_ROOTS = ['res', 'req', 'steps', 'row', 'params', 'shared', 'flow', 'pre', 'process'];
+export const RESERVED_ROOTS = ['res', 'req', 'steps', 'row', 'params', 'shared', 'flow', 'pre', 'loop', 'process'];
 
 export type Scope = {
   /** The flattened variable chain — what a bare `{{name}}` reads. */
@@ -56,7 +59,8 @@ export type Interpolated<T> = {
  */
 export const scopeVariables = (scope: Scope): Record<string, unknown> => ({ ...scope.vars, ...scope.namespaces });
 
-const WHOLE_VALUE = /^\{\{([^{}]+)\}\}$/;
+/** A string that is exactly one reference. Its value keeps its native type. */
+export const WHOLE_VALUE = /^\{\{([^{}]+)\}\}$/;
 const MOCK = /^\$(\w+)$/;
 
 const lookup = (reference: string, scope: Scope): { found: boolean; value: unknown } => {

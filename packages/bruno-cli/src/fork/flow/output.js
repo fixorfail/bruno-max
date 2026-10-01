@@ -58,6 +58,15 @@ const wantsColour = ({ tty, noColor, env = process.env }) => {
 const subFlowLabel = (steps) =>
   steps === undefined ? 'sub-flow' : `sub-flow (${steps} ${steps === 1 ? 'step' : 'steps'})`;
 
+/**
+ * 006 §9: how far a loop has gone — `iteration 3/8`, or `iteration 3` where the source cannot say
+ * how many values it holds, as a cursor cannot. A loop that ran nothing says that.
+ */
+const loopProgress = (count, of) => {
+  if (count === 0) return 'no iterations';
+  return of === undefined ? `iteration ${count}` : `iteration ${count}/${of}`;
+};
+
 const stemOf = (segments, depth) => segments.slice(-depth).join('/');
 
 /**
@@ -125,7 +134,10 @@ const createReporter = ({
     // A step that did not run has no duration worth printing, and one that ran and failed has no
     // use for the word "skipped" in front of its reason.
     const detail = step.status === 'skipped' ? `skipped · ${step.reason}` : duration(step.durationMs);
-    const attempts = step.attempts > 1 ? `  ${step.attempts} attempts` : '';
+    // A loop (006 §9) is one line. It sends one request per iteration, so only the requests beyond
+    // that are retries worth naming.
+    const attempts = step.attempts > (step.loop ? step.loop.count : 1) ? `  ${step.attempts} attempts` : '';
+    const looped = step.loop ? `  ${loopProgress(step.loop.count, step.loop.of)}` : '';
     // 004 §7: how much of the step's duration was its own politeness rather than the API's latency.
     // Dimmed and only when there was some — a flow that declares no `rateLimit:` never sees it.
     const paced = step.rateLimitWaitMs ? `  ${paint(90, `+${duration(step.rateLimitWaitMs)} paced`)}` : '';
@@ -137,12 +149,12 @@ const createReporter = ({
     // The operation, not a resolved URL, identifies a step (§14.7) — what the flow file names, not
     // what interpolation made of it. A step the reporter never saw start falls back to its id.
     const label = column || step.id;
-    return `  ${painted} ${step.id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} ${detail}${attempts}${paced}${why}${note}`;
+    return `  ${painted} ${step.id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} ${detail}${looped}${attempts}${paced}${why}${note}`;
   };
 
-  const inFlightLine = (id, label) => {
+  const inFlightLine = (id, label, progress = '') => {
     const mark = paint(90, unicode ? '⋯' : '.');
-    return `  ${mark} ${id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} running`;
+    return `  ${mark} ${id.padEnd(COLUMN)} ${label.padEnd(COLUMN)} running${progress ? `  ${progress}` : ''}`;
   };
 
   /**
@@ -203,6 +215,11 @@ const createReporter = ({
     // the same comparison the block expands underneath, and a block that says everything twice
     // stops being read.
     if (step.message && !failedAssertions.length) line(`    ${step.message}`);
+    // The message of a loop names the iteration. Where it is not shown, the block names it instead
+    // (006 §9), in the words that the flow and the capture directory use.
+    if (failedAssertions.length && step.loop && step.loop.index !== undefined) {
+      line(`    loop.index ${step.loop.index} · value ${JSON.stringify(step.loop.value)}`);
+    }
     for (const assertion of failedAssertions) {
       line(`    ${assertion.expr}`);
       line(`      expected  ${JSON.stringify(assertion.expected)}`);
@@ -231,6 +248,15 @@ const createReporter = ({
           liveRows.set(key, order.length);
           order.push(key);
           write(inFlightLine(event.id, label));
+        }
+      }
+      // 006 §8: a TTY row says which iteration is in flight. Off a TTY there is no row to rewrite,
+      // and the line of the step at its end says how far the loop went.
+      if (event.type === 'step:iteration' && tty && stepVisible(event.id)) {
+        const key = rowKey(event);
+        const position = liveRows.get(key);
+        if (position !== undefined) {
+          rewriteRow(position, inFlightLine(event.id, operations.get(key) || event.id, loopProgress(event.iteration + 1, event.of)));
         }
       }
       if (event.type === 'step:end') stepLine(event);
