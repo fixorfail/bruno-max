@@ -1,9 +1,8 @@
-import React, { forwardRef, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import path from 'path';
 import classnames from 'classnames';
 import { useDispatch, useSelector } from 'react-redux';
 import {
-  IconChevronDown,
   IconChevronRight,
   IconCursorText,
   IconDots,
@@ -26,8 +25,8 @@ import {
 } from '@tabler/icons';
 import escapeRegExp from 'lodash/escapeRegExp';
 import toast from 'react-hot-toast';
-import Dropdown from 'components/Dropdown';
 import SidebarSection from 'components/Sidebar/SidebarSection';
+import { useSidebarAccordion } from 'components/Sidebar/SidebarAccordionContext';
 import ActionIcon from 'ui/ActionIcon';
 import MenuDropdown from 'ui/MenuDropdown';
 import { addTab } from 'providers/ReduxStore/slices/tabs';
@@ -65,6 +64,7 @@ import FlowProperties from '../FlowProperties';
 import RenameScript from '../RenameScript';
 import { retargetFlowTabs } from '../retargetTabs';
 import DraggableFlowRow from './DraggableFlowRow';
+import IndentBlocks from './IndentBlocks';
 import useFlowDrop from './useFlowDrop';
 import StyledWrapper, { SuiteProgress } from './StyledWrapper';
 
@@ -189,49 +189,38 @@ const FlowSearch = ({ value, onChange }) => (
  * 002 §4.3's row menu — the way into raw YAML editing, §4.4's properties beside it, and §4.5's rename
  * on a script's own row.
  *
- * `Dropdown` with a forwarded-ref trigger is upstream's own sidebar-row menu shape (`ApiSpecItem`),
- * reused rather than re-invented so the hover reveal, the placement and the tippy behaviour match the
- * rows above it. Its clicks are stopped here: every one of them lands on a row whose job is to open
- * the flow, and opening the run view behind the menu you just opened is not what any of them mean.
+ * Upstream's sidebar-row menu, as the collection and API Spec rows build it: \`MenuDropdown\` on an
+ * \`ActionIcon\` trigger, opened below the trigger and held in the sidebar's dropdown container, so
+ * the trigger, the menu and its items look and behave as theirs do.
+ *
+ * **Each item's test id rides its label**, as the section header's menu does: \`MenuDropdown\` derives
+ * an item's id from the menu's own and lowercases it, and a row's id carries a file name.
+ *
+ * Its clicks and keys are stopped here. The menu renders through a portal, so React still bubbles its
+ * events to the row — whose click opens the flow and whose Enter opens or folds it, neither of which
+ * is what choosing a menu item means.
  */
-const MenuIcon = forwardRef((props, ref) => (
-  <div ref={ref} data-testid="flow-menu-trigger">
-    <IconDots size={16} strokeWidth={1.5} />
-  </div>
-));
-
 const RowMenu = ({ items }) => {
-  const dropdownRef = useRef();
-  // Tippy's own `aria-expanded` would do for the CSS, but only while it keeps setting it on the
-  // trigger; an open menu that vanished when the pointer left the row would be the failure.
-  const [open, setOpen] = useState(false);
+  const { dropdownContainerRef } = useSidebarAccordion();
 
   return (
-    <div className={`flow-menu${open ? ' is-open' : ''}`} onClick={(event) => event.stopPropagation()}>
-      <Dropdown
-        onCreate={(ref) => (dropdownRef.current = ref)}
-        onShow={() => setOpen(true)}
-        onHide={() => setOpen(false)}
-        icon={<MenuIcon />}
-        placement="bottom-end"
+    <div onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
+      <MenuDropdown
+        items={items.map((item) => ({
+          id: item.testId,
+          leftSection: item.icon,
+          label: <span data-testid={item.testId}>{item.label}</span>,
+          onClick: item.onClick
+        }))}
+        placement="bottom-start"
+        appendTo={dropdownContainerRef?.current || document.body}
+        popperOptions={{ strategy: 'fixed' }}
+        data-testid="flow-row-menu"
       >
-        {items.map((item) => (
-          <div
-            key={item.testId}
-            className="dropdown-item"
-            data-testid={item.testId}
-            onClick={() => {
-              dropdownRef.current.hide();
-              item.onClick();
-            }}
-          >
-            <span className="dropdown-icon">
-              <item.icon size={16} strokeWidth={1.5} />
-            </span>
-            {item.label}
-          </div>
-        ))}
-      </Dropdown>
+        <ActionIcon className="flow-menu-icon" data-testid="flow-menu-trigger">
+          <IconDots size={18} />
+        </ActionIcon>
+      </MenuDropdown>
     </div>
   );
 };
@@ -446,6 +435,7 @@ const runnableFlowsOf = (groups) =>
  */
 const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow, folderActions }) => {
   const expanded = isExpanded(folder.key);
+  const [isKeyboardFocused, setIsKeyboardFocused] = useState(false);
   const { isDropTarget, drop } = useFlowDrop({ directoryFor: () => folder.directory, onMove: folderActions.onMove });
 
   const toggle = () => onToggle(folder.key);
@@ -454,13 +444,14 @@ const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow, folderActi
     <>
       <div
         ref={drop}
-        className={classnames('flow-folder', { 'is-drop-target': isDropTarget })}
-        style={{ '--flow-depth': depth }}
+        className={classnames('flow-folder', { 'is-drop-target': isDropTarget, 'is-keyboard-focused': isKeyboardFocused })}
         data-testid={`flow-folder-${folder.path}`}
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
         onClick={toggle}
+        onFocus={() => setIsKeyboardFocused(true)}
+        onBlur={() => setIsKeyboardFocused(false)}
         onKeyDown={(event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
@@ -468,16 +459,22 @@ const FlowFolder = ({ folder, depth, isExpanded, onToggle, renderRow, folderActi
           }
         }}
       >
-        <span className="flow-folder-chevron">
-          {expanded ? <IconChevronDown size={12} stroke={1.5} /> : <IconChevronRight size={12} stroke={1.5} />}
-        </span>
-        <span className="flow-name">{folder.name}</span>
-        <div className="flow-row-actions">
-          <FolderMenu
-            testIdSuffix={folder.path}
-            onNewFolder={() => folderActions.onNewFolder(folder)}
-            onReveal={() => folderActions.onReveal(folder.directory)}
+        <IndentBlocks depth={depth} />
+        <div className="flow-row-body">
+          {/* Upstream's folder chevron: the same glyph, size and grey, turned a quarter when open. */}
+          <IconChevronRight
+            size={16}
+            strokeWidth={2}
+            className={classnames('flow-folder-chevron', { 'is-expanded': expanded })}
           />
+          <span className="flow-name">{folder.name}</span>
+          <div className="flow-row-actions">
+            <FolderMenu
+              testIdSuffix={folder.path}
+              onNewFolder={() => folderActions.onNewFolder(folder)}
+              onReveal={() => folderActions.onReveal(folder.directory)}
+            />
+          </div>
         </div>
       </div>
       {expanded ? (

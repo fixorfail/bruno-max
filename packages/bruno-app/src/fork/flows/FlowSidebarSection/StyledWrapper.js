@@ -1,5 +1,5 @@
 import styled from 'styled-components';
-import { rgba } from 'polished';
+import sidebarRowStyles from 'components/Sidebar/SidebarRowStyles';
 
 /**
  * 002 §10's suite progress, in the section header beside the header's controls — which is outside
@@ -79,9 +79,8 @@ const StyledWrapper = styled.div`
   }
 
   /*
-   * §4.1d: the label's typography is on its name, not on the row. The row's menu renders inside the
-   * row (tippy's \`appendTo: 'parent'\`), and on the row it would set the menu items in small muted
-   * capitals instead of the title case every other sidebar menu uses.
+   * §4.1d: the label's typography is on its name, not on the label, so the menu trigger beside the
+   * name is the same size and colour as every other row's.
    */
   .flow-group-label {
     display: flex;
@@ -113,51 +112,51 @@ const StyledWrapper = styled.div`
   }
 
   /*
-   * §4.1a: a row's indent is its depth in the folder tree. The custom property is 0 for everything
-   * sitting directly in a bucket, which is the indent every row had before folders existed.
+   * Upstream's sidebar rows, shared: \`sidebarRowStyles\` is what the collection and API Spec rows are
+   * built on — the row height, the hover and keyboard-focus colours, the colour of the row whose tab
+   * is active, and a menu trigger that shows on hover, on focus and while its menu is open.
    */
   .flow-row,
   .flow-folder {
+    ${sidebarRowStyles({ selectedClass: 'is-active', keyboardFocusedClass: 'is-keyboard-focused', actionsClass: 'flow-menu-icon' })}
     display: flex;
     align-items: center;
-    gap: 0.375rem;
-    padding: 0.1875rem 0.75rem 0.1875rem calc(1.5rem + var(--flow-depth, 0) * 0.75rem);
-    cursor: pointer;
-
-    &:hover {
-      background: ${(props) => props.theme.sidebar.collection.item.hoverBg};
-    }
   }
 
-  /* The chevron sits in the row's own indent step, so a folder's name lands close to the left edge
-     of the rows it holds rather than a further step out from them. */
-  .flow-folder {
-    padding-left: calc(0.75rem + var(--flow-depth, 0) * 0.75rem);
+  /*
+   * §4.1a: a row's depth is drawn as upstream's collection tree draws it — one 16px block per level,
+   * each with the tree's guide line on its right — and the name starts 8px after the last one.
+   */
+  .indent-block {
+    width: 16px;
+    min-width: 16px;
+    height: 100%;
+    border-right: 1px solid ${(props) => props.theme.sidebar.collection.item.indentBorder};
+  }
+
+  .flow-row-body {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    height: 100%;
+    padding-left: 8px;
   }
 
   .flow-folder-chevron {
-    display: flex;
-    align-items: center;
-    color: ${(props) => props.theme.sidebar.dropdownIcon.color};
+    color: rgb(160 160 160);
+    transition: transform 0.1s ease;
+
+    &.is-expanded {
+      transform: rotateZ(90deg);
+    }
   }
 
   .flow-name {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  /* The row's right edge — the run mark and the menu, which share it (§4.3). */
-  /*
-   * §4.1d: the row of the active tab, in the colour upstream gives a collection item whose tab is
-   * focused, so the two sidebars say "this is what you are looking at" the same way.
-   */
-  .flow-row.is-active {
-    background: ${(props) => rgba(props.theme.primary.text, 0.16)};
-
-    &:hover {
-      background: ${(props) => rgba(props.theme.primary.text, 0.16)};
-    }
   }
 
   .flow-row.is-dragging {
@@ -172,33 +171,27 @@ const StyledWrapper = styled.div`
     outline-offset: -1px;
   }
 
+  /* The row's right edge — the run mark and the menu, which share it (§4.3). */
   .flow-row-actions {
     display: flex;
     align-items: center;
     gap: 0.375rem;
     margin-left: auto;
+    padding-right: 0.5rem;
   }
 
   /*
-   * §4.3: the menu is revealed by hovering the row, the way upstream's own sidebar rows reveal
-   * theirs. Visibility rather than display, because the row already carries the run mark: a control
-   * that took its space only on hover would shift the mark sideways as the pointer crossed the row.
-   *
-   * An open menu stays visible wherever the pointer goes — reaching for an item in a popover means
-   * leaving the row that opened it.
+   * The labels are headings, not rows, so the mixin above does not style them; their menu trigger
+   * follows the same rule by hand.
    */
-  .flow-menu {
-    display: flex;
-    align-items: center;
+  .flow-group-label .flow-menu-icon,
+  .flow-subgroup-label .flow-menu-icon {
     visibility: hidden;
-    color: ${(props) => props.theme.sidebar.dropdownIcon.color};
   }
 
-  .flow-row:hover .flow-menu,
-  .flow-folder:hover .flow-menu,
-  .flow-group-label:hover .flow-menu,
-  .flow-subgroup-label:hover .flow-menu,
-  .flow-menu.is-open {
+  .flow-group-label:hover .flow-menu-icon,
+  .flow-subgroup-label:hover .flow-menu-icon,
+  .flow-menu-icon[aria-expanded='true'] {
     visibility: visible;
   }
 

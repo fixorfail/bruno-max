@@ -555,6 +555,14 @@ file has upstream's "focused in tab" colour. When a flow tab becomes active, the
 folders that hold its row. It does this one time for each activation. If the reader then closes one
 of those folders, it stays closed until a different file becomes active.
 
+**The rows are upstream's sidebar rows.** They use upstream's shared `sidebarRowStyles`: the row
+height, and the hover, keyboard-focus and active-tab colours, as on the collection and API Spec rows.
+A row's depth is drawn as the collection tree draws it: one 16 px block for each level, each with the
+tree's guide line. A row directly in a bucket is one level in. Each row's menu is upstream's
+`MenuDropdown` on an `ActionIcon` trigger with an 18 px `…`, which opens below the trigger in the
+sidebar's dropdown container. Rows and folders take keyboard focus, and Enter or Space opens a row
+or folds a folder. A key pressed in a row's menu belongs to the menu.
+
 **Not in this section:** a folder does not drag, and a folder has no rename and no delete. A folder
 move would rewrite every flow under it, and those flows can have open drafts of their own.
 

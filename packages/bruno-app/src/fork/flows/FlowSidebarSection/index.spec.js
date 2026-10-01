@@ -2140,4 +2140,44 @@ describe('FlowSidebarSection', () => {
       });
     });
   });
+
+  /** The rows are upstream's sidebar rows: indented as its tree is, focusable, and opened from the keyboard. */
+  describe('row shape', () => {
+    const root = '/home/dev/workspace-one';
+    const nested = (relativePath) => ({
+      pathname: `${root}/flows/${relativePath}`,
+      filename: relativePath.split('/').pop(),
+      workspaceRoot: root
+    });
+
+    it('draws one indent block per level, starting at one for a row directly in its bucket', () => {
+      renderSection({ flows: [nested('checkout.flow.yml'), nested('company/create.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+      fireEvent.click(screen.getByTestId('flow-folder-company'));
+
+      expect(screen.getByTestId('flow-row-checkout.flow.yml').querySelectorAll('.indent-block')).toHaveLength(1);
+      expect(screen.getByTestId('flow-folder-company').querySelectorAll('.indent-block')).toHaveLength(1);
+      expect(screen.getByTestId('flow-row-company/create.flow.yml').querySelectorAll('.indent-block')).toHaveLength(2);
+    });
+
+    it('opens a flow from Enter on its row, and not from a key pressed in its menu', () => {
+      const { store } = renderSection({ flows: [nested('checkout.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+      const row = screen.getByTestId('flow-row-checkout.flow.yml');
+
+      fireEvent.keyDown(within(row).getByTestId('flow-menu-trigger'), { key: 'Enter' });
+      expect(store.getState().tabs.tabs).toHaveLength(0);
+
+      fireEvent.keyDown(row, { key: 'Enter' });
+      expect(store.getState().tabs.tabs.map((tab) => tab.type)).toEqual(['flow']);
+    });
+
+    it('marks a focused row the way upstream marks one', () => {
+      renderSection({ flows: [nested('checkout.flow.yml')], workspaces, activeWorkspaceUid: 'one' });
+      const row = screen.getByTestId('flow-row-checkout.flow.yml');
+
+      fireEvent.focus(row);
+      expect(row).toHaveClass('is-keyboard-focused');
+      fireEvent.blur(row);
+      expect(row).not.toHaveClass('is-keyboard-focused');
+    });
+  });
 });
