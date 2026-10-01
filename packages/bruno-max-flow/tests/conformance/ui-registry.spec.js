@@ -27,11 +27,15 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', '..', '..', '..');
 const SPEC = path.join(ROOT, 'docs', 'specs', '002-api-flows-ui-conformance.md');
 
-/** Where a `U…` id can be cited: the e2e suite, and the two hosts' own specs. */
+/**
+ * Where a `U…` id can be cited: the e2e suite, and the two hosts' own specs. The watcher's spec is
+ * named on its own because it sits in bruno-electron's `src/app`, beside upstream's watchers.
+ */
 const SEARCHED = [
   path.join(ROOT, 'tests', 'flows'),
   path.join(ROOT, 'packages', 'bruno-app', 'src', 'fork'),
-  path.join(ROOT, 'packages', 'bruno-electron', 'src', 'ipc', 'flow')
+  path.join(ROOT, 'packages', 'bruno-electron', 'src', 'ipc', 'flow'),
+  path.join(ROOT, 'packages', 'bruno-electron', 'src', 'app', 'flowsWatcher.spec.js')
 ];
 
 /**
@@ -46,7 +50,7 @@ const UNCITED = [
   'U4.2', 'U4.3', 'U4.4a', 'U4.4b', 'U4.4c', 'U4.9', 'U4.9a', 'U4.10a', 'U4.10b',
   'U4.12', 'U4.13', 'U4.14', 'U4.15', 'U4.15a', 'U4.15b', 'U4.15c', 'U4.16', 'U4.16a',
   'U4.17', 'U4.18a', 'U4.19', 'U4.19a', 'U4.20', 'U4.21',
-  'U5.2', 'U5.6', 'U5.6a', 'U5.6b', 'U5.6c', 'U5.7', 'U5.7a', 'U5.14',
+  'U5.2', 'U5.6a', 'U5.6b', 'U5.7', 'U5.7a', 'U5.14',
   'U6.2', 'U6.3', 'U6.9', 'U6.10', 'U6.11'
 ];
 
@@ -54,12 +58,12 @@ const specIds = () => [...fs.readFileSync(SPEC, 'utf8').matchAll(/^### (U[\w.]*?
 
 const corpus = () => {
   const collected = [];
-  const walk = (dir) => {
-    if (!fs.existsSync(dir)) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const target = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(target);
-      else if (/\.(ts|tsx|js|jsx)$/.test(entry.name)) collected.push(fs.readFileSync(target, 'utf8'));
+  const walk = (target) => {
+    if (!fs.existsSync(target)) return;
+    if (fs.statSync(target).isDirectory()) {
+      for (const entry of fs.readdirSync(target)) walk(path.join(target, entry));
+    } else if (/\.(ts|tsx|js|jsx)$/.test(target)) {
+      collected.push(fs.readFileSync(target, 'utf8'));
     }
   };
   for (const root of SEARCHED) walk(root);

@@ -86,7 +86,7 @@ test.describe('B2 — the canvas edits the document', () => {
     await expect(flows.designer.readOnly()).toHaveCount(0);
   });
 
-  test('B2.1a a `+` between two steps shows only while the pointer is in the gap', async ({ restartApp }) => {
+  test('B2.3a a `+` between two steps shows only while the pointer is in the gap', async ({ restartApp }) => {
     const page = await launch(restartApp);
     const { flows } = buildCommonLocators(page);
 

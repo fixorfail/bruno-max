@@ -642,7 +642,7 @@ describe('the canvas edits the document (005 §5)', () => {
   });
 
   /**
-   * §5.1: a `+` between two steps waits for the pointer in the gap it sits in, and the two at the
+   * §5.1 (005-C B2.3a): a `+` between two steps waits for the pointer in the gap it sits in, and the two at the
    * ends of the chain do not. The hiding itself is CSS, which jsdom does not apply; what is pinned
    * here is which controls carry the hover area; `tests/flows/designer.spec.ts` reads the opacity.
    */

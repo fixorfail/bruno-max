@@ -477,7 +477,7 @@ describe('FlowsWatcher', () => {
   });
 
   /**
-   * §4.1d: a folder the sidebar can show while it is empty — the one a New Folder just made, which no
+   * 002-C U5.6d, §4.1d: a folder the sidebar can show while it is empty — the one a New Folder just made, which no
    * file entry would ever place.
    */
   describe('folders (§4.1d)', () => {

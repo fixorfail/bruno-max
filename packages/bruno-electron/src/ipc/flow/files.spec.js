@@ -6,7 +6,7 @@ const path = require('path');
 const { shell } = require('electron');
 const { createFlowFolderHandler, moveFlowEntryHandler, revealFlowPathHandler } = require('./files');
 
-/** 002 §4.1d — the sidebar's new folder and move, against a real directory. */
+/** 002 §4.1d (002-C U5.6e) — the sidebar's new folder and move, against a real directory. */
 describe('flow file management', () => {
   let workspaceRoot;
   let flowsDir;
