@@ -1,0 +1,29 @@
+# 006 §1's third loop, with a stop condition that counts across all the pages so far: read
+# ledger-object pages until the matching items on every page reach a count. `until:` adds the count
+# of each earlier iteration, which it reads from `ctx.loop.iterations`.
+version: 1
+
+meta:
+  name: 006 — a page cursor that stops on a total across pages
+
+apis:
+  loops-api: ../../specs/loops-v1.yml
+
+steps:
+  - id: read_pages
+    operation: loops-api#loopListObjects
+    loop:
+      start: 1
+      next: |
+        (previous, ctx) => previous.hasMore ? ctx.loop.page + 1 : null
+      as: page
+      until: |
+        (res, ctx) => ctx.loop.iterations.reduce((total, found) => total + found.matching, 0) >= 3
+      max: 10
+    query:
+      page: "{{loop.page}}"
+    outputs:
+      hasMore: has_more
+      matching:
+        script: |
+          (res) => res.body.data.filter((item) => item.kind === 'payable').length

@@ -1141,7 +1141,7 @@ variable, and because a bare name could be shadowed by a user's:
 | `shared.*` | Cross-branch value slots declared in `shared:` (§9.1) |
 | `flow.*` | `flow.runId`, `flow.name`, `flow.iteration` |
 | `pre.*` | Values this step computed before its request (§8.7) — **step-local** |
-| `loop.*` | The iteration of a step with `loop:` — `loop.<as>`, `loop.index`, `loop.previous` ([006](./006-step-loops.md) §3) — **step-local**, and absent in a step with no loop |
+| `loop.*` | The iteration of a step with `loop:` — `loop.<as>`, `loop.index`, `loop.previous`, `loop.iterations` ([006](./006-step-loops.md) §3) — **step-local**, and absent in a step with no loop |
 
 `row.*` and `params.*` stay namespaced even though a human named their contents, because both are
 **inputs crossing a boundary** — a dataset column entering an iteration, an argument entering a

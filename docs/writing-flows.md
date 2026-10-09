@@ -1466,9 +1466,10 @@ builds the request again for each iteration, with a `loop` namespace in scope. T
     when: steps.find_vendor_with_member.matched eq false
 ```
 
-**In scope during an iteration:** `loop.<as>` (the value), `loop.index` (it starts at 0) and
-`loop.previous` (the outputs of the iteration before, and `undefined` in the first). A script reads
-the same three as `ctx.loop`. You can use them in `pre:`, in `with:`, in an assertion
+**In scope during an iteration:** `loop.<as>` (the value), `loop.index` (it starts at 0),
+`loop.previous` (the outputs of the iteration before, and `undefined` in the first) and
+`loop.iterations` (the outputs of every iteration that finished, in order, and `[]` in the first). A
+script reads the same four as `ctx.loop`. You can use them in `pre:`, in `with:`, in an assertion
 (`res.body.id eq loop.vendorId`) and in any request field. They do not exist in a step with no
 `loop:`, and `bru flow validate` reports a read there.
 
@@ -1491,6 +1492,18 @@ the same three as `ctx.loop`. You can use them in `pre:`, in `with:`, in an asse
 `previous` holds the outputs of the iteration that just ran. `ctx.loop` is that iteration too, so
 `ctx.loop.page + 1` is the page after it. An iteration can collect results across pages by
 reading `ctx.loop.previous` in an output script.
+
+**A stop condition can use a total across all the earlier iterations.** `loop.iterations` holds the
+outputs of the iterations that finished. In `pre:` and in the request of iteration n, it holds
+iterations 0 to n-1. In `until` and in `next`, it holds iterations 0 to n. This `until` stops when
+the matching items on all the pages so far reach 3:
+
+```yaml
+      until: |
+        (res, ctx) => ctx.loop.iterations.reduce((total, found) => total + found.matching, 0) >= 3
+```
+
+`loop.previous` does not change, and `as: iterations` loses to the built-in.
 
 **What the step publishes.** A looped step always publishes `matched`, `iterations` and `count`.
 
@@ -1517,8 +1530,9 @@ cancelled run stops the loop between two iterations.
 
 **`concurrency: 3`** runs up to three iterations at the same time. It works with `over:` and without
 `until:` only, because a stop condition and a cursor both need the iteration before. `loop.previous`
-is `undefined` in each iteration, and `iterations` stays in index order. The first failure aborts the
-requests in flight, and the step reports the lowest index that failed.
+and `loop.iterations` are `undefined` in each iteration, and `steps.<id>.iterations` stays in index
+order. The first failure aborts the requests in flight, and the step reports the lowest index that
+failed.
 
 **A loop on a `uses:` step** invokes the sub-flow for each value. `with:` is built again with
 `loop.*` in scope, and the sub-flow sees its `params` and not the `loop` of its caller. `until` is

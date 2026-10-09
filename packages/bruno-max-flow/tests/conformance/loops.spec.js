@@ -510,6 +510,213 @@ describe('L4.3 — loop.previous carries values from one iteration to the next',
   });
 });
 
+/** The flow of one call for each item, with every place that can read `loop.iterations` reading it. */
+const readingIterations = (mutate = () => {}) =>
+  variant(flow('each-call.flow.yml'), (document) => {
+    const step = document.steps[0];
+    step.pre = { seen: '(ctx) => ctx.loop.iterations && ctx.loop.iterations.length' };
+    step.headers = { 'X-Seen': '{{pre.seen}}', 'X-Embedded': 'n={{loop.iterations}}' };
+    step.body.seen = '{{loop.iterations}}';
+    mutate(step);
+  });
+
+const seenBy = (run) => run.scripts.filter((script) => script.source.includes('ctx.loop.iterations.length'));
+
+describe('L4.3a — loop.iterations lists the iterations that finished, for pre: and the request', () => {
+  it('gives iteration n the outputs of iterations 0 to n-1, in index order', async () => {
+    const { entry, files } = readingIterations();
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    expect(run.status).toBe('passed');
+    expect(callsOf(run, 'call_each').map((call) => call.json.seen)).toEqual([
+      [],
+      [{ result: 'r1' }],
+      [{ result: 'r1' }, { result: 'r2' }]
+    ]);
+    expect(callsOf(run, 'call_each').map((call) => call.headers['X-Seen'])).toEqual(['0', '1', '2']);
+    expect(seenBy(run).map((script) => script.args[0].loop.iterations.length)).toEqual([0, 1, 2]);
+  });
+
+  it('keeps loop.previous equal to the last item of the list', async () => {
+    const { entry, files } = readingIterations();
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    const loops = seenBy(run).map((script) => script.args[0].loop);
+    expect(loops.map((loop) => loop.previous)).toEqual([undefined, { result: 'r1' }, { result: 'r2' }]);
+    loops.forEach((loop) => expect(loop.previous).toBe(loop.iterations[loop.iterations.length - 1]));
+  });
+});
+
+describe('L4.3b — an empty loop.iterations is a value, and not a missing reference', () => {
+  it('resolves a whole-value reference to [] in iteration 0, and does not skip the step', async () => {
+    const { entry, files } = readingIterations();
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    expect(run.outcome('call_each')).toBe('success');
+    const [first] = callsOf(run, 'call_each');
+    expect(first.json.seen).toEqual([]);
+    expect(first.headers['X-Embedded']).toBe('n=[]');
+  });
+
+  it('resolves an assertion operand to the list, in every iteration', async () => {
+    const { entry, files } = readingIterations((step) => {
+      step.assert.push('loop.iterations isArray', 'loop.iterations length {{loop.index}}');
+    });
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    expect(run.status).toBe('passed');
+    expect(callsOf(run, 'call_each')).toHaveLength(3);
+  });
+
+  it('fails an assertion on the list where it does not hold', async () => {
+    const { entry, files } = readingIterations((step) => {
+      step.assert.push('loop.iterations isEmpty');
+    });
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    // Empty in iteration 0, and holding one item in iteration 1.
+    expect(run.outcome('call_each')).toBe('failed:assertion-failed');
+    expect(callsOf(run, 'call_each')).toHaveLength(2);
+  });
+
+  it('leaves every other reference to an empty list as it was', async () => {
+    const { entry, files } = readingIterations((step) => {
+      step.body.other = '{{loop.previous.matches}}';
+    });
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    // `loop.previous` is undefined in iteration 0, so the placeholder stays, as it did before.
+    expect(callsOf(run, 'call_each')[0].json.other).toBe('{{loop.previous.matches}}');
+  });
+});
+
+/** Four pages of ledger objects. The `payable` items are 2, 0, 1 and 5. */
+const TOTAL_PAGES = {
+  1: { data: [{ kind: 'payable' }, { kind: 'payable' }, { kind: 'other' }], has_more: true },
+  2: { data: [{ kind: 'other' }], has_more: true },
+  3: { data: [{ kind: 'payable' }], has_more: true },
+  4: { data: Array.from({ length: 5 }, () => ({ kind: 'payable' })), has_more: false }
+};
+
+const totalPages = (pages = TOTAL_PAGES) => ({ loopListObjects: (request) => ok(pages[queryOf(request, 'page')]) });
+const pagesRead = (run) => callsOf(run, 'read_pages').map((call) => queryOf(call.request, 'page'));
+
+describe('L4.3c — until and next see the iterations up to the one that just ended', () => {
+  it('gives until iterations 0 to n, and gives ctx.outputs the iteration n alone', async () => {
+    const run = await runFlow(flow('ledger-totals.flow.yml'), { responses: totalPages() });
+
+    const untils = run.scripts.filter((script) => script.source.includes('ctx.loop.iterations.reduce'));
+    expect(untils.map((script) => script.args[1].loop.iterations.map((found) => found.matching))).toEqual([
+      [2],
+      [2, 0],
+      [2, 0, 1]
+    ]);
+    expect(untils.map((script) => script.args[1].outputs.matching)).toEqual([2, 0, 1]);
+  });
+
+  it('keeps loop.previous in until and next as the iteration before the one that ended', async () => {
+    const run = await runFlow(flow('ledger-totals.flow.yml'), { responses: totalPages() });
+
+    const untils = run.scripts.filter((script) => script.source.includes('ctx.loop.iterations.reduce'));
+    expect(untils.map((script) => (script.args[1].loop.previous || {}).matching)).toEqual([undefined, 2, 0]);
+  });
+
+  it('gives next iterations 0 to n', async () => {
+    const run = await runFlow(flow('ledger-totals.flow.yml'), { responses: totalPages() });
+
+    // `next` is asked after iterations 0 and 1. Iteration 2 matched, so the loop ended there.
+    const nexts = run.scripts.filter((script) => script.source.includes('ctx.loop.page + 1'));
+    expect(nexts.map((script) => script.args[1].loop.iterations.map((found) => found.matching))).toEqual([
+      [2],
+      [2, 0]
+    ]);
+    expect(nexts.map((script) => script.args[1].loop.page)).toEqual([1, 2]);
+  });
+});
+
+describe('L4.3d — a cursor stops on a total across all the pages so far', () => {
+  it('stops on the page where the total is reached, and sends no later page', async () => {
+    const run = await runFlow(flow('ledger-totals.flow.yml'), { responses: totalPages() });
+
+    expect(run.status).toBe('passed');
+    // 2 + 0 + 1 reach 3 on page 3. No single page does. Page 4 holds five more and is never sent.
+    expect(pagesRead(run)).toEqual(['1', '2', '3']);
+    expect(run.step('read_pages').loop).toEqual({ count: 3, matched: true, index: 2, value: 3 });
+    expect(run.step('read_pages').outputs.matching).toBe(1);
+  });
+
+  it('ends at the last page with matched: false where the total is never reached', async () => {
+    const { entry, files } = variant(flow('ledger-totals.flow.yml'), (document) => {
+      document.steps[0].loop.until = document.steps[0].loop.until.replace('>= 3', '>= 100');
+    });
+    const run = await runFlow(entry, { files, responses: totalPages() });
+
+    expect(pagesRead(run)).toEqual(['1', '2', '3', '4']);
+    expect(run.step('read_pages').loop).toEqual({ count: 4, matched: false });
+  });
+});
+
+describe('L4.3e — iterations that run together have no loop.iterations', () => {
+  it('is undefined in every iteration, as loop.previous is', async () => {
+    const { entry, files } = readingIterations((step) => {
+      step.loop.concurrency = 3;
+      step.pre.seen = '(ctx) => ctx.loop.iterations.length';
+      step.body.previous = '{{loop.previous}}';
+    });
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    // The pre: script reads `.length` of what is not there. It throws, as it does for `loop.previous`.
+    expect(run.outcome('call_each')).toBe('failed:script-error');
+  });
+
+  it('leaves both references as written in the request, with the same rule', async () => {
+    const { entry, files } = readingIterations((step) => {
+      step.loop.concurrency = 3;
+      delete step.pre;
+      step.headers = {};
+      step.body.previous = '{{loop.previous}}';
+    });
+    const run = await runFlow(entry, { files, responses: rpcResponses() });
+
+    expect(run.status).toBe('passed');
+    for (const call of callsOf(run, 'call_each')) {
+      expect(call.json.seen).toBe('{{loop.iterations}}');
+      expect(call.json.previous).toBe('{{loop.previous}}');
+    }
+  });
+});
+
+describe('L4.3f — as: iterations loses to the built-in, as as: previous does', () => {
+  const renamed = (name) =>
+    variant(flow('each-call.flow.yml'), (document) => {
+      const step = document.steps[0];
+      step.loop.as = name;
+      step.pre = { seen: `(ctx) => ctx.loop.${name}` };
+      step.body.key = 'k';
+    });
+
+  it('gives loop.iterations the list of earlier outputs, and not the value', async () => {
+    const { entry, files } = renamed('iterations');
+    const run = await runFlow(entry, { files, responses: { loopRpc: ok({ data: { ok: true, result: 'r' } }) } });
+
+    const seen = run.scripts.filter((script) => script.source === '(ctx) => ctx.loop.iterations');
+    expect(seen.map((script) => script.args[0].loop.iterations)).toEqual([
+      [],
+      [{ result: 'r' }],
+      [{ result: 'r' }, { result: 'r' }]
+    ]);
+  });
+
+  it('reports what it reports for as: previous', async () => {
+    const reported = async (name) => {
+      const { entry, files } = renamed(name);
+      return validate(entry, { files });
+    };
+
+    expect(await reported('iterations')).toEqual(await reported('previous'));
+  });
+});
+
 describe('L4.4 — a cursor that has not ended at max has not finished', () => {
   const unending = {
     loopListObjects: () => ok({ data: [{ id: 'p', kind: 'other' }], has_more: true }),
@@ -1104,6 +1311,7 @@ describe('L10.1 — the five loops of 006 §1 can be written as flows', () => {
     'retrieve-or-create.flow.yml',
     'cursor-pages.flow.yml',
     'ledger-pages.flow.yml',
+    'ledger-totals.flow.yml',
     'each-call.flow.yml',
     'per-key-subflow.flow.yml',
     'per-key-child.flow.yml'

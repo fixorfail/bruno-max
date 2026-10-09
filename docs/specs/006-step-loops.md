@@ -167,15 +167,35 @@ iteration, in order:
 | `loop.<as>` | The value of the iteration |
 | `loop.index` | The number of the iteration. It starts at 0 |
 | `loop.previous` | The outputs of the iteration before. It is `undefined` for the first one |
+| `loop.iterations` | The declared outputs of every iteration that finished, in index order. It is `[]` for the first one |
 
-`ctx.loop` holds the same three values in a script. `as: index` or `as: previous` loses to the
-built-in. `loop` is a reserved root (001 §7.3, §10.2), so a variable with that name is shadowed.
-`{{loop.previous.x}}` in the first iteration stays as it is written, as any name that nothing
-defines does. Guard it in `pre:`.
+`ctx.loop` holds the same four values in a script. `as: index`, `as: previous` or
+`as: iterations` loses to the built-in. `loop` is a reserved root (001 §7.3, §10.2), so a variable
+with that name is shadowed. `{{loop.previous.x}}` in the first iteration stays as it is written, as
+any name that nothing defines does. Guard it in `pre:`.
+
+**`loop.iterations` is the iterations that finished.** This is one rule, and the position decides
+the list. In `pre:` and in the request of iteration n, it holds iterations 0 to n-1. In `until` and
+in `next`, which run after iteration n ends, it holds iterations 0 to n. `loop.previous` does not
+change with the position: it stays the iteration before the one that is running or has just ended.
+In the request, `loop.previous` is the last item of `loop.iterations`. A loop that stops when a
+total across all the earlier iterations is large enough reads the list in `until`:
+`ctx.loop.iterations.reduce((total, found) => total + found.matching, 0) >= 3`.
+
+**`loop.iterations` holds outputs and not responses.** `max` is at most 1000, so the list is
+bounded. An iteration with no declared output adds `{}`. On a `uses:` step an item is the exports of
+the sub-flow.
+
+**`{{loop.iterations}}` in the first iteration is `[]`, and a step is not skipped for it.**
+`@usebruno/query` returns `undefined` for an empty array (§2), and the interpolator would leave the
+reference as written. The interpolator reads this one reference from the namespace, so every other
+reference to an empty list keeps its behavior. An assertion operand `loop.iterations` reads the same
+list.
 
 **In `next`, `ctx.loop` is the iteration that just ended.** This is how a cursor adds one to
 itself: `(previous, ctx) => ctx.loop.page + 1`. In `until`, `ctx.outputs` holds the outputs of the
-iteration, as it does in `shouldRetry`.
+iteration, as it does in `shouldRetry`. It is the iteration alone, and `ctx.loop.iterations` has it
+as the last item.
 
 **A reference that no step produced ends the loop before any request.** The scope that can miss a
 reference does not change between iterations, because no step publishes before the loop ends. So
@@ -256,7 +276,9 @@ not apply to `until`, because a stop condition needs the iterations in order. It
 
 - **Each iteration draws from the run-wide budget** (001 §9.2). The number of requests in flight is
   the lower of `concurrency` and what the budget allows.
-- **`loop.previous` is `undefined`** in every iteration, because no iteration waits for another.
+- **`loop.previous` and `loop.iterations` are `undefined`** in every iteration, because no
+  iteration waits for another. A reference to either stays as it is written, and `bru flow validate`
+  has no diagnostic for it.
 - **`iterations` is in index order,** whatever order the requests finish in.
 - **The first failure aborts the requests in flight** and stops the start of new iterations. The step
   reports the lowest index of the iterations that failed. An iteration that the loop itself aborted
@@ -343,7 +365,9 @@ The rules that exist already extend to loops:
   of a step with a loop, and they are not outputs. A step with no loop does not have them.
 - **`unused-output`** does not report the four names of a loop. It counts a read of `iterations` as
   a read of every declared output. It counts `previous.<name>` in `next` and `outputs.<name>` in
-  `until` as reads, because a cursor loop declares an output for this reason. The scan reads text.
+  `until` as reads, because a cursor loop declares an output for this reason. A `loop.iterations` in
+  `next` or `until` counts as a read of every declared output of the step, as `iterations` does. The
+  scan reads text.
   A script that destructures `previous` is not found, and 001 §8.2 has the same limit for `ctx.steps`.
 - **`unknown-property`** reports a key that the loop does not have, with the near miss. The schema
   gives the shape of each key. The rules between keys are the codes above. `over`, `start` and `max`
@@ -411,9 +435,10 @@ scripts, and a loop of 1000 iterations would block the steps beside it for a lon
 - **Editing a `loop:` in the builder (005).** The builder keeps the block. It does not edit it.
 - **A `shared:` entry on a loop with `until`.** With no match, the loop writes no slot, and the slot
   resolves empty (001 §11.2). The flow can intend this, so there is no check for it.
-- **`as:` is not checked.** `as: index` loses to the built-in with no diagnostic.
-- **`loop.previous` with `concurrency`** is `undefined` by design. A flow that needs both has no way
-  to say it.
+- **`as:` is not checked.** `as: index`, `as: previous` and `as: iterations` lose to the built-in
+  with no diagnostic.
+- **`loop.previous` and `loop.iterations` with `concurrency`** are `undefined` by design. A flow that
+  needs both has no way to say it.
 
 ## 13. Implementation status
 
@@ -422,6 +447,7 @@ scripts, and a loop of 1000 iterations would block the steps beside it for a lon
 | The block, and `NormalizedStep.loop` (§2) | `document.ts`, `schema/v1.ts` | **done** |
 | `loop` as a reserved root (§3) | `interpolate.ts` | **done** |
 | The iteration, the results and the budget (§3–§5) | `run.ts` — `executeLoop`, `loop.ts` | **done** |
+| `loop.iterations` (§3, §6) | `loop.ts` — `loopScope`; `run.ts` — `iterateInOrder`; `interpolate.ts` — `lookup` | **done** |
 | `until` (§3) | `step.ts` — `loopUntilMatches` | **done** |
 | Concurrency (§6) | `run.ts` — `iterateTogether` | **done** |
 | Sub-flows (§7) | `run.ts` — `executeSubflow` | **done** |

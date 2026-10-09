@@ -17,17 +17,26 @@ export const isValidLoopMax = (max: unknown): boolean =>
 
 /**
  * The `loop.*` namespace of one iteration (006 §3).
- * It holds the value under the name from `as:`, `loop.index`, and `loop.previous`.
- * `loop.previous` is the outputs of the iteration before. It is `undefined` on the first iteration.
+ * It holds the value under the name from `as:`, `loop.index`, `loop.previous` and `loop.iterations`.
+ * `earlier` is the outputs of the iterations that finished, in index order. `loop.iterations` is that
+ * list, and `loop.previous` is its last item. On the first iteration the list is empty and
+ * `loop.previous` is `undefined`. Iterations that run together have no `earlier`, and both names are
+ * `undefined` (006 §6).
  *
- * `index` and `previous` come after the value. If `as:` names one of them, the built-in wins.
+ * `index`, `previous` and `iterations` come after the value. If `as:` names one of them, the built-in
+ * wins.
  */
 export const loopScope = (
   spec: LoopSpec,
   value: unknown,
   index: number,
-  previous?: Record<string, unknown>
-): Record<string, unknown> => ({ [spec.as]: value, index, previous });
+  earlier?: Record<string, unknown>[]
+): Record<string, unknown> => ({
+  [spec.as]: value,
+  index,
+  previous: earlier?.[earlier.length - 1],
+  iterations: earlier
+});
 
 /**
  * Resolves `over:` or `start:` when the loop starts (006 §2).

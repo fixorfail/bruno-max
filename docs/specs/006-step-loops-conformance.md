@@ -197,6 +197,56 @@ at the last page, with fewer matches than it wants, succeeds with `matched: fals
 
 *Pins 006 §3, the table of scope and the paragraph on `next`.* This is the third loop of 006 §1.
 
+### L4.3a — `loop.iterations` lists the iterations that finished, for `pre:` and the request
+
+A loop of three calls reads `loop.iterations` in `pre:`, in a header and in the body. Iteration n
+sees n items: the outputs of iterations 0 to n-1, in index order. Iteration 0 sees `[]`.
+`loop.previous` is `undefined` in iteration 0, and after it is the last item of `loop.iterations`.
+
+*Pins 006 §3, the table of scope and the paragraph on `loop.iterations`.*
+
+### L4.3b — An empty `loop.iterations` is a value, and not a missing reference
+
+A whole-value `{{loop.iterations}}` in iteration 0 resolves to `[]`, and the step is not skipped. An
+embedded `n={{loop.iterations}}` resolves to `n=[]`. An assertion operand `loop.iterations` reads
+the same list in every iteration. A reference to a name that nothing defines stays as it was:
+`{{loop.previous.matches}}` in iteration 0 stays as it is written.
+
+*Pins 006 §3, the paragraph on the first iteration.*
+
+### L4.3c — `until` and `next` see the iterations up to the one that just ended
+
+In iteration n, `until` and `next` see iterations 0 to n in `loop.iterations`. `ctx.outputs` in
+`until` is iteration n alone. `loop.previous` in both is the iteration before iteration n, as it was
+before `loop.iterations` existed.
+
+*Pins 006 §3, the paragraph on `loop.iterations` and the paragraph on `next`.*
+
+### L4.3d — A cursor stops on a total across all the pages so far
+
+`start` is 1 and `next` adds one to `ctx.loop.page`. `until` adds the matching items of every page so
+far, and stops at 3. The pages hold 2, 0, 1 and 5 matching items. No single page reaches 3. The loop
+stops on page 3 with `matched: true`, and page 4 is not sent. With a count that no page total reaches,
+the loop reads the last page and ends with `matched: false`.
+
+*Pins 006 §3.* This is the third loop of 006 §1, with the stop condition of the backend helper
+`get_ledger_objects_for_line_items`.
+
+### L4.3e — Iterations that run together have no `loop.iterations`
+
+With `concurrency: 3`, `loop.iterations` is `undefined` in every iteration, as `loop.previous` is. A
+`pre:` that reads its length fails the step with `script-error`. A reference in the request stays as
+it is written, for both names. There is no diagnostic for either name.
+
+*Pins 006 §6.*
+
+### L4.3f — `as: iterations` loses to the built-in, as `as: previous` does
+
+A loop with `as: iterations` has the list of earlier outputs in `loop.iterations`, and not the value.
+`bru flow validate` reports the same for `as: iterations` and for `as: previous`.
+
+*Pins 006 §3, the paragraph on the scope names, and §12.*
+
 ### L4.4 — A cursor that has not ended at `max` has not finished
 
 An API that never ends and `max: 3`. With `until`, the step succeeds with `matched: false`. Without

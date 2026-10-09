@@ -23,6 +23,7 @@ const RETRIEVE = 'retrieve-or-create.flow.yml';
 const CURSOR = 'cursor-pages.flow.yml';
 const EACH = 'each-call.flow.yml';
 const LEDGER = 'ledger-pages.flow.yml';
+const TOTALS = 'ledger-totals.flow.yml';
 
 describe('L9.1 — loop-source-missing', () => {
   it('reports nothing for a loop with over:, and nothing for one with start:', async () => {
@@ -362,6 +363,18 @@ describe('L9.9 — the built-ins of a loop are not outputs nobody reads', () => 
     );
 
     expect(found.map((entry) => entry.message)).toEqual([expect.stringContaining('search_vendor_pages.prevPage')]);
+  });
+  it('counts a read of loop.iterations by until: as a read of every output the step declares', async () => {
+    expect(of(await validate(flow(TOTALS)), 'unused-output')).toEqual([]);
+  });
+
+  it('reports the output that only loop.iterations read once until: stops reading it', async () => {
+    const found = of(
+      await checked(TOTALS, (document) => { document.steps[0].loop.until = '() => false'; }),
+      'unused-output'
+    );
+
+    expect(found.map((entry) => entry.message)).toEqual([expect.stringContaining('read_pages.matching')]);
   });
 });
 

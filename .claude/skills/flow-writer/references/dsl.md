@@ -593,9 +593,12 @@ just ran, and `ctx.loop` is that iteration too:
     outputs: { hasMore: has_more }
 ```
 
-**In scope:** `loop.<as>`, `loop.index` (from 0) and `loop.previous` (the outputs of the iteration
-before, `undefined` in the first). A script reads them as `ctx.loop`. They exist only in a step with
-a `loop:`.
+**In scope:** `loop.<as>`, `loop.index` (from 0), `loop.previous` (the outputs of the iteration
+before, `undefined` in the first) and `loop.iterations` (the outputs of every iteration that
+finished, in order, `[]` in the first). A script reads them as `ctx.loop`. They exist only in a step
+with a `loop:`. In `pre:` and the request, `loop.iterations` holds iterations 0 to n-1. In `until`
+and `next`, it holds 0 to n, so `until` can stop on a total across pages. With `concurrency` above 1,
+`loop.previous` and `loop.iterations` are `undefined`. `as: iterations` loses to the built-in.
 
 **A looped step publishes** `matched`, `iterations` (every iteration's outputs, in order) and
 `count`. Its declared outputs, and `index`, exist only when an `until` matched.

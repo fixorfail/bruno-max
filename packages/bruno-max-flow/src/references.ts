@@ -176,6 +176,12 @@ const loopScriptReads = (step: NormalizedStep): string[] =>
   [step.loop?.next, step.loop?.until].flatMap((source) =>
     source ? [...source.matchAll(OUTPUT_READ)].map((match) => match[1] || match[2]) : []);
 
+/** `loop.iterations` in a script holds the outputs of every iteration that finished (006 §3). */
+const LOOP_ITERATIONS_READ = /\bloop\s*\??\.\s*iterations\b/;
+
+const loopScriptReadsIterations = (step: NormalizedStep): boolean =>
+  [step.loop?.next, step.loop?.until].some((source) => source !== undefined && LOOP_ITERATIONS_READ.test(source));
+
 /**
  * What one flow reads out of its own run state, indexed by what is read.
  *
@@ -214,6 +220,8 @@ export const readsOf = (flow: NormalizedFlow): FlowReads => {
     // Publishing an output into a slot is a use of it, whoever reads the slot afterwards.
     for (const { output } of step.shared) read(step.id, output);
     for (const name of loopScriptReads(step)) read(step.id, name);
+    // A script that reads `loop.iterations` can read any output of the step, as `steps.<id>.iterations` can.
+    if (loopScriptReadsIterations(step)) wholeSteps.add(step.id);
   }
   /**
    * §12.1: an export is a read. A library whose slot leaves only through the boundary reads it

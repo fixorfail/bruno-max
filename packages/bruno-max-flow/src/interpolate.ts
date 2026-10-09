@@ -74,6 +74,13 @@ const lookup = (reference: string, scope: Scope): { found: boolean; value: unkno
   if (Object.prototype.hasOwnProperty.call(source, reference)) {
     return { found: true, value: (source as Record<string, unknown>)[reference] };
   }
+
+  // `get` reads an empty array as absent. `loop.iterations` is empty in the first iteration of a
+  // loop, and that is a value (006 §3), so this one reference reads the namespace directly.
+  if (reference === 'loop.iterations') {
+    const { iterations } = (scope.namespaces.loop || {}) as { iterations?: unknown };
+    if (Array.isArray(iterations)) return { found: true, value: iterations };
+  }
   return { found: false, value: undefined };
 };
 

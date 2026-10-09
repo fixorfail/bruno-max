@@ -1209,10 +1209,10 @@ const executeFlow = async (
     const runIteration = async (
       index: number,
       value: unknown,
-      previous: Record<string, unknown> | undefined,
+      earlier: Record<string, unknown>[] | undefined,
       signal?: AbortSignal
     ): Promise<IterationRun> => {
-      const scope = loopScope(spec, value, index, previous);
+      const scope = loopScope(spec, value, index, earlier);
       const turn: LoopTurn = { index, scope, budgetEnds: loopEnds, signal };
 
       state.emit({
@@ -1275,7 +1275,16 @@ const executeFlow = async (
       message: `${spec.max} iterations ran, and the loop has more values`
     };
 
-    const nextValue = async (done: IterationRun): Promise<Upcoming> => {
+    /**
+     * The scope of an iteration after it ended, for `until` and `next`. `loop.iterations` then
+     * includes the iteration itself, and `loop.previous` is still the iteration before it (006 §3).
+     */
+    const endedScope = (done: IterationRun, finished: Record<string, unknown>[]) => ({
+      ...done.scope,
+      iterations: finished
+    });
+
+    const nextValue = async (done: IterationRun, finished: Record<string, unknown>[]): Promise<Upcoming> => {
       if (source.kind === 'list') {
         return done.index + 1 < source.items.length
           ? { present: true, value: source.items[done.index + 1] }
@@ -1284,7 +1293,10 @@ const executeFlow = async (
       // `loop.*` in this call is the iteration that just ended, so `ctx.loop.<as>` is the cursor
       // that a script can add to.
       return cursorValue(
-        await runScript(source.next, [done.result.outputs, evaluationContext(scopeFor(done.pre, done.scope))])
+        await runScript(source.next, [
+          done.result.outputs,
+          evaluationContext(scopeFor(done.pre, endedScope(done, finished)))
+        ])
       );
     };
 
@@ -1294,13 +1306,14 @@ const executeFlow = async (
       let upcoming: Upcoming = source.kind === 'list'
         ? (source.items.length ? { present: true, value: source.items[0] } : { present: false })
         : cursorValue(source.first);
-      let previous: Record<string, unknown> | undefined;
+      // The outputs of the iterations that finished. Each scope gets its own copy of the list.
+      const finished: Record<string, unknown>[] = [];
 
       while (upcoming.present) {
         if (interrupted()) return { verdict: { kind: 'cancelled' }, ran };
         if (overBudget()) return { verdict: exceeded(ran.length), ran };
 
-        const done = await runIteration(ran.length, upcoming.value, previous);
+        const done = await runIteration(ran.length, upcoming.value, [...finished]);
         const { result } = done;
 
         // A reference that no step produced is the same for every iteration, because no step
@@ -1312,6 +1325,7 @@ const executeFlow = async (
         ran.push(done);
         if (result.status === 'cancelled') return { verdict: { kind: 'cancelled', at: done }, ran };
         if (result.status === 'failed') return { verdict: failedAt(done), ran };
+        finished.push(result.outputs);
 
         if (spec.until) {
           let matched: boolean;
@@ -1320,7 +1334,7 @@ const executeFlow = async (
               spec.until,
               child ? result.outputs : responseView(done.response),
               result.outputs,
-              evaluationContext(scopeFor(done.pre, done.scope)),
+              evaluationContext(scopeFor(done.pre, endedScope(done, [...finished]))),
               runScript
             );
           } catch (cause) {
@@ -1332,14 +1346,13 @@ const executeFlow = async (
         }
 
         try {
-          upcoming = await nextValue(done);
+          upcoming = await nextValue(done, [...finished]);
         } catch (cause) {
           return { verdict: scriptFailed(done, 'next', cause), ran };
         }
         if (!upcoming.present) return { verdict: { kind: 'done', matched: !spec.until }, ran };
         // Without `until`, a loop that stops at `max` with values left has not done its work.
         if (ran.length >= spec.max) return { verdict: maxReached, ran };
-        previous = result.outputs;
       }
 
       return { verdict: { kind: 'done', matched: !spec.until }, ran };
@@ -1348,7 +1361,8 @@ const executeFlow = async (
     /**
      * Up to `concurrency` iterations at the same time (006 §6). The first failure aborts the
      * requests in flight and stops the start of new ones. The step reports the lowest index of the
-     * iterations that failed. `loop.previous` is `undefined` here, because no iteration waits.
+     * iterations that failed. `loop.previous` and `loop.iterations` are `undefined` here, because no
+     * iteration waits.
      */
     const iterateTogether = async (items: unknown[]): Promise<{ verdict: Verdict; ran: IterationRun[] }> => {
       const total = Math.min(items.length, spec.max);
