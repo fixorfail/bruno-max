@@ -19,6 +19,7 @@ import {
   type FlowReads,
   type Reference
 } from '../references';
+import { SKIP_REASONS } from '../schema/v1';
 import { suggest, type Report } from './report';
 import { scriptPositions } from './scripts';
 
@@ -147,6 +148,30 @@ const checkDepends = (flow: NormalizedFlow, report: Report) => {
           'invalid-dependency-status',
           `${stepId}: ${status} is not a step outcome — depends.status takes ${STATUSES.join(', ')}`
           + suggest(String(status), STATUSES),
+          stepId,
+          node
+        );
+      }
+
+      if (mapping.skipReason === undefined) continue;
+      // §9.1: `skipReason:` narrows which skip a `skipped` parent may have had. On an entry that does
+      // not accept `skipped` it narrows nothing, and the author meant something the entry does not say.
+      if (!statuses.includes('skipped')) {
+        report.error(
+          'skip-reason-without-skipped',
+          `${stepId}: depends on ${String(mapping.on)} with skipReason: but its status does not include skipped — `
+          + `skipReason: narrows a skipped parent, so add skipped to status or remove skipReason:`,
+          stepId,
+          node
+        );
+      }
+      const reasons = Array.isArray(mapping.skipReason) ? mapping.skipReason : [mapping.skipReason];
+      for (const reason of reasons) {
+        if (SKIP_REASONS.includes(String(reason))) continue;
+        report.error(
+          'invalid-skip-reason',
+          `${stepId}: ${reason} is not a skip reason — depends.skipReason takes ${SKIP_REASONS.join(', ')}`
+          + suggest(String(reason), SKIP_REASONS),
           stepId,
           node
         );

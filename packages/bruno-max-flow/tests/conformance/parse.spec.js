@@ -215,6 +215,29 @@ describe('R4p — reading meta without describing', () => {
   });
 });
 
+describe('R4p — a depends status written as one value is a list', () => {
+  /** §9.1 accepts `status:` singly or as a list, so the normalized entry is a list either way. */
+  it('normalizes a scalar status to a one-item list, and a list as written', () => {
+    const document = parse(`${wrap(`steps:
+  - id: primary
+    operation: regress-api#createThing
+  - id: fallback
+    operation: regress-api#createThing
+    depends:
+      - on: primary
+        status: failed
+  - id: audit
+    operation: regress-api#createThing
+    depends:
+      - on: primary
+        status: [success, failed]
+`)}`);
+
+    expect(document.steps[1].depends.entries).toEqual([{ on: 'primary', status: ['failed'] }]);
+    expect(document.steps[2].depends.entries).toEqual([{ on: 'primary', status: ['success', 'failed'] }]);
+  });
+});
+
 describe('R4p — positions', () => {
   const positioned = parse(`version: 1
 

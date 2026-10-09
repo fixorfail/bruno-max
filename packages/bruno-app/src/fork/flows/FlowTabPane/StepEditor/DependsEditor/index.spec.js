@@ -34,6 +34,21 @@ describe('reading and writing depends', () => {
       expect(writeDepends(readDepends(depends))).toEqual(depends);
     }
   });
+
+  it('reads a status written as one value as a list, so a write keeps it', () => {
+    expect(readDepends([{ on: 'a', status: 'failed' }])).toEqual({ join: 'all', entries: [{ on: 'a', status: ['failed'] }], root: false });
+    expect(writeDepends(readDepends([{ on: 'a', status: 'failed' }]))).toEqual([{ on: 'a', status: ['failed'] }]);
+    expect(writeDepends(readDepends([{ on: 'a', status: 'success' }]))).toEqual(['a']);
+  });
+
+  it('keeps skipReason, which it has no control for, through a read and a write', () => {
+    const narrowed = { on: 'a', status: ['success', 'skipped'], skipReason: ['condition-false'] };
+
+    expect(writeDepends(readDepends([narrowed, 'b']))).toEqual([narrowed, 'b']);
+    expect(writeDepends(readDepends({ any: [narrowed, { on: 'b' }] }))).toEqual({ any: [narrowed, { on: 'b' }] });
+    expect(writeDepends(readDepends([{ on: 'a', status: 'skipped', skipReason: 'condition-false' }])))
+      .toEqual([{ on: 'a', status: ['skipped'], skipReason: 'condition-false' }]);
+  });
 });
 
 describe('the depends editor', () => {
@@ -90,6 +105,15 @@ describe('the depends editor', () => {
     fireEvent.change(screen.getByTestId('flow-step-depends-join'), { target: { value: 'any' } });
 
     expect(onPatch).toHaveBeenCalledWith({ set: { depends: { any: [{ on: 'a' }, { on: 'b' }] } } });
+  });
+
+  it('keeps skipReason when another entry changes', () => {
+    const narrowed = { on: 'a', status: ['success', 'skipped'], skipReason: ['condition-false'] };
+    const onPatch = renderEditor([narrowed, 'b']);
+
+    fireEvent.click(screen.getByTestId('flow-step-depends-1-failed'));
+
+    expect(onPatch).toHaveBeenCalledWith({ set: { depends: [narrowed, { on: 'b', status: ['success', 'failed'] }] } });
   });
 
   it('removes an entry, and the key with the last one', () => {

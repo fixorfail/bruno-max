@@ -39,6 +39,7 @@ const controlEdges = (steps: NormalizedStep[], prefix: string): FlowEdge[] =>
       // Absent means the default [success]; a renderer labels only what it is given, and an
       // unlabeled [failed] edge tells the reader a branch runs when it does not (002 §5.3).
       status: entry.status.length === 1 && entry.status[0] === 'success' ? undefined : entry.status,
+      skipReason: entry.skipReasons,
       join: step.depends.entries.length > 1 ? step.depends.mode : undefined
     }))
   );

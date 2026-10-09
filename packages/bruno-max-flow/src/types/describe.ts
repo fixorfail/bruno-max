@@ -5,7 +5,7 @@
  * resolved DAG, so computing it in a renderer would be a second implementation of scheduling order.
  */
 import type { OutputOrigin } from '../connectors';
-import type { Diagnostic, StepStatus } from './result';
+import type { Diagnostic, SkipReason, StepStatus } from './result';
 
 export type FlowNode = {
   /** Sub-flow internals namespaced: "auth/login". */
@@ -72,6 +72,8 @@ export type FlowEdge = {
   kind: 'sequence' | 'depends' | 'data' | 'slot-write' | 'slot-read';
   /** depends edges, when not the default [success]. */
   status?: StepStatus[];
+  /** depends edges: the skip reasons a `skipped` parent must have had, when narrowed (§9.1). */
+  skipReason?: SkipReason[];
   /** depends edges. */
   join?: 'all' | 'any';
   /** data edges: the connector's name. */

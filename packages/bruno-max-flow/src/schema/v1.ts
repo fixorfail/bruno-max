@@ -41,6 +41,9 @@ export const AUTH_MODES = [
 /** §9.1's four outcomes, which is the whole of what a `depends.status` may name. */
 export const STATUSES = ['success', 'failed', 'skipped', 'cancelled'];
 
+/** §14.6's four reasons a step is `skipped`, which is the whole of what a `depends.skipReason` may name. */
+export const SKIP_REASONS = ['condition-false', 'unmet-dependency', 'unresolved-dependency', 'run-cancelled'];
+
 /** §12.4's table, error column: the fields addressing one response, which a sub-flow does not have. */
 const SUBFLOW_ERRORS = [
   'retry', 'timeout', 'failOnStatusCode', 'validateRequest', 'validateSchema', 'strictSchema',
@@ -152,6 +155,31 @@ const NAMED = {
     if: { type: 'array' },
     then: { items: { enum: STATUSES } },
     else: { enum: STATUSES }
+  },
+  /** §9.1: the skip reasons a `skipped` parent may have, written singly or as a list — branched as above. */
+  'invalid-skip-reason': {
+    $comment: '§9.1: the skip reasons a skipped parent may have been skipped for.',
+    if: { type: 'array' },
+    then: { items: { enum: SKIP_REASONS } },
+    else: { enum: SKIP_REASONS }
+  },
+  /**
+   * §9.1: `skipReason:` narrows `skipped`, so an entry whose `status` cannot accept `skipped` — the
+   * default `[success]` included — names reasons nothing will ever consult.
+   */
+  'skip-reason-without-skipped': {
+    $comment: '§9.1: skipReason: applies only to an entry whose status accepts skipped.',
+    if: { type: 'object', required: ['skipReason'] },
+    then: {
+      required: ['status'],
+      properties: {
+        status: {
+          if: { type: 'array' },
+          then: { contains: { const: 'skipped' } },
+          else: { const: 'skipped' }
+        }
+      }
+    }
   }
 };
 
@@ -166,10 +194,12 @@ const DEPENDENCY = {
   type: ['string', 'object'],
   properties: {
     on: { type: 'string' },
-    status: { $ref: '#/$defs/named/invalid-dependency-status' }
+    status: { $ref: '#/$defs/named/invalid-dependency-status' },
+    skipReason: { $ref: '#/$defs/named/invalid-skip-reason' }
   },
   required: ['on'],
-  additionalProperties: false
+  additionalProperties: false,
+  allOf: [{ $ref: '#/$defs/named/skip-reason-without-skipped' }]
 };
 
 /** §9.3: an expression, or the script form, with a list of either meaning implicit AND. */

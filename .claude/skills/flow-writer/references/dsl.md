@@ -407,6 +407,19 @@ Statuses: `success` (default), `failed`, `skipped`, `cancelled`. A dependency th
 the required status skips the step with `unmet-dependency`, which is not a failure. Declaring
 `depends:` replaces the implicit "step above" edge.
 
+A join after an optional branch names the skip reason it accepts, so a gate above the branch still
+stops it. Bare `skipped` also accepts the `unmet-dependency` skip of a closed gate:
+
+```yaml
+    depends:
+      - on: get_vendor
+        status: [success, skipped]
+        skipReason: [condition-false]  # get_vendor was not needed — not "the run was gated off"
+```
+
+`skipReason:` takes `condition-false`, `unmet-dependency`, `unresolved-dependency`, `run-cancelled`
+(one value or a list), and only on an entry whose `status` includes `skipped`.
+
 Conditions — several are ANDed, false skips with `condition-false`:
 
 ```yaml
@@ -861,6 +874,8 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `duplicate-step-id` | Two steps share an id; the second overwrites the first |
 | `invalid-depends` | A `depends:` mapping without exactly one non-empty `all:` or `any:` |
 | `invalid-dependency-status` | A `depends.status` that is not `success`, `failed`, `skipped` or `cancelled` |
+| `invalid-skip-reason` | A `depends.skipReason` that is not `condition-false`, `unmet-dependency`, `unresolved-dependency` or `run-cancelled` |
+| `skip-reason-without-skipped` | A `depends` entry with `skipReason:` whose `status` does not include `skipped` |
 | `unknown-output-reference` | `{{steps.x.y}}` where `x` produces no `y` |
 | `invalid-shared-entry` | A step's `shared:` names an undeclared slot, or an output the step does not produce |
 | `unknown-export` | An `exports:` entry does not name an internal step's output or a declared slot, or reaches into a slot with a sub-path |

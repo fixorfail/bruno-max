@@ -1206,6 +1206,19 @@ say — name the statuses:
 Valid statuses are `success`, `failed`, `skipped`, `cancelled`. A step whose dependencies did not
 reach the required status is skipped with `unmet-dependency`, which is not a failure.
 
+`skipped` accepts a parent skipped for any reason. To join after an optional branch, name the reason
+too, so that a gate higher in the flow still stops the join:
+
+```yaml
+    depends:
+      - on: get_vendor
+        status: [success, skipped]
+        skipReason: [condition-false]     # get_vendor was not needed — not "the run was gated off"
+```
+
+`skipReason:` takes `condition-false`, `unmet-dependency`, `unresolved-dependency` or
+`run-cancelled`, as one value or a list. It applies only when `status` includes `skipped`.
+
 Declaring `depends:` explicitly on a step also means it **no longer** waits for the step above it —
 the two are alternatives, not additions.
 
@@ -2499,6 +2512,8 @@ What it reports:
 | `duplicate-step-id` | Two steps share an id — the second overwrites the first's outputs and its capture directory |
 | `invalid-depends` | A `depends:` mapping without exactly one non-empty `all:` or `any:` — an empty list is not a join, it is a step that runs first |
 | `invalid-dependency-status` | A `depends.status` that is not `success`, `failed`, `skipped` or `cancelled` — a misspelling never matches, and the step waits forever |
+| `invalid-skip-reason` | A `depends.skipReason` that is not `condition-false`, `unmet-dependency`, `unresolved-dependency` or `run-cancelled` |
+| `skip-reason-without-skipped` | A `depends` entry has `skipReason:` but its `status` does not include `skipped`, so the reasons narrow nothing |
 | `unknown-output-reference` | `{{steps.x.y}}` where `x` produces no `y` — it resolves to nothing and skips whatever reads it. A step with a `loop:` also produces `matched`, `iterations`, `count` and `index` |
 | `loop-source-missing` | A `loop:` with neither `over:` nor `start:`, or with both |
 | `loop-next-missing` | A `loop:` with `start:` and no `next:`, or with `next:` and no `start:` |

@@ -16,8 +16,15 @@ import Button from 'ui/Button';
 
 const DEFAULT_STATUS = ['success'];
 
-const entryOf = (entry) =>
-  typeof entry === 'string' ? { on: entry, status: [] } : { on: entry.on, status: Array.isArray(entry.status) ? entry.status : [] };
+/**
+ * `skipReason:` (001 §9.1) has no control here, so it is carried through as the file wrote it — a
+ * change to the entry's step or status must not drop it.
+ */
+const entryOf = (entry) => {
+  if (typeof entry === 'string') return { on: entry, status: [] };
+  const status = Array.isArray(entry.status) ? entry.status : entry.status === undefined ? [] : [entry.status];
+  return entry.skipReason === undefined ? { on: entry.on, status } : { on: entry.on, status, skipReason: entry.skipReason };
+};
 
 export const readDepends = (depends) => {
   if (depends === undefined) return { join: 'all', entries: [], root: false };
@@ -29,7 +36,10 @@ export const readDepends = (depends) => {
 
 const isDefault = (status) => !status.length || (status.length === 1 && status[0] === DEFAULT_STATUS[0]);
 
-const writeEntry = ({ on, status }) => (isDefault(status) ? on : { on, status });
+const writeEntry = ({ on, status, skipReason }) => {
+  if (skipReason !== undefined) return { on, ...(status.length ? { status } : {}), skipReason };
+  return isDefault(status) ? on : { on, status };
+};
 
 export const writeDepends = ({ join, entries, root }) => {
   const named = entries.filter((entry) => entry.on);

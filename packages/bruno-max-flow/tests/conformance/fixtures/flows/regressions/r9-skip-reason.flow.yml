@@ -1,0 +1,39 @@
+# R9.14 — §9.1's `skipReason:`. A gate (`probe_cutoff`) closes after the cutoff and skips
+# `condition-false`; the optional branch below it (`get_vendor`) then skips `unmet-dependency`. The
+# join accepts a skipped `get_vendor` only when the branch was not needed (`condition-false`), so a
+# closed gate stops the join too. `clock` reports both decisions: `state` opens the gate, and
+# `active` says whether the vendor is needed.
+version: 1
+
+meta:
+  name: R9.14 — a join accepts a skipped parent only for the reasons it names
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: clock
+    operation: regress-api#getState
+    outputs:
+      window: data.state
+      vendorNeeded: data.active
+
+  - id: probe_cutoff
+    operation: regress-api#getState
+    when: steps.clock.window eq open
+
+  - id: get_vendor
+    operation: regress-api#getThing
+    when: steps.clock.vendorNeeded eq true
+    pathParams: { id: vendor-1 }
+
+  - id: create_payable
+    operation: regress-api#createThing
+    depends:
+      - on: get_vendor
+        status: [success, skipped]
+        skipReason: [condition-false]
+    body: { name: payable }

@@ -28,6 +28,9 @@ export type StepReason
     | 'unresolved-dependency'
     | 'run-cancelled';
 
+/** §14.6's reasons a `skipped` step carries, which a `depends` entry's `skipReason:` may name (§9.1). */
+export type SkipReason = Extract<StepReason, 'unmet-dependency' | 'condition-false' | 'unresolved-dependency' | 'run-cancelled'>;
+
 export type SchemaResult = {
   valid: boolean;
   errors: { path: string; message: string; keyword?: string }[];

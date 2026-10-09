@@ -8,7 +8,7 @@
  */
 import * as YAML from 'yaml';
 
-import type { StepStatus } from './types/result';
+import type { SkipReason, StepStatus } from './types/result';
 
 /** §7.2's removal token. `null` keeps its ordinary meaning and sends a literal JSON null. */
 export const DROP = Symbol('bruno.flow.drop');
@@ -132,9 +132,15 @@ export type ParsedDocument = {
   errors: ParseError[];
 };
 
+/**
+ * One `depends` entry (§9.1). `skipReasons` narrows what a `skipped` parent must have been skipped
+ * for; absent, every skip reason satisfies a `status` that includes `skipped`.
+ */
+export type DependencyEntry = { on: string; status: StepStatus[]; skipReasons?: SkipReason[] };
+
 export type Depends = {
   mode: 'all' | 'any';
-  entries: { on: string; status: StepStatus[] }[];
+  entries: DependencyEntry[];
   /**
    * The edge came from §9.1's implicit sequence rather than from the file. Normalization otherwise
    * erases the difference, and 002 §5.3 needs it: `depends: [previous]` and no `depends:` at all
@@ -425,12 +431,14 @@ const DEFAULT_STATUS: StepStatus[] = ['success'];
  * plain sequence and an author who never writes `depends` never has to think about the graph.
  */
 const normalizeDepends = (raw: unknown, previous?: string): Depends => {
-  const entry = (item: unknown): { on: string; status: StepStatus[] } => {
+  const entry = (item: unknown): DependencyEntry => {
     if (typeof item === 'string') return { on: item, status: DEFAULT_STATUS };
     const mapping = asRecord(item);
+    const status = asArray<StepStatus>(mapping.status);
     return {
       on: String(mapping.on),
-      status: (asArray<StepStatus>(mapping.status).length ? (mapping.status as StepStatus[]) : DEFAULT_STATUS)
+      status: status.length ? status : DEFAULT_STATUS,
+      ...(mapping.skipReason === undefined ? {} : { skipReasons: asArray<SkipReason>(mapping.skipReason) })
     };
   };
 

@@ -517,6 +517,12 @@ describe('R11.1 — The schema pass inside bru flow validate', () => {
     }],
     ['invalid-dependency-status', (document) => {
       step(document, 'read_back').depends.all[0].status = ['suceess'];
+    }],
+    ['invalid-skip-reason', (document) => {
+      Object.assign(step(document, 'read_back').depends.all[0], { status: 'skipped', skipReason: 'condition-fals' });
+    }],
+    ['skip-reason-without-skipped', (document) => {
+      step(document, 'read_back').depends.all[0].skipReason = ['condition-false'];
     }]
   ])('reports %s once, under its own name', async (code, mutate) => {
     const { entry, files, issues } = edit(mutate);

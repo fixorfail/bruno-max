@@ -767,3 +767,127 @@ describe('R9.12 — a uses: step announces how many steps its sub-flow runs', ()
     expect('steps' in events['inner/make']).toBe(false);
   });
 });
+
+describe('R9.14 — a join accepts a skipped parent only for the reasons its skipReason: names', () => {
+  /** `clock` decides both branches: `state` opens the gate, and `active` says the vendor is needed. */
+  const clock = ({ open, vendorNeeded }) => ({
+    status: 200,
+    body: { data: { state: open ? 'open' : 'closed', role: 'admin', count: 0, active: vendorNeeded } }
+  });
+  const responses = (decisions, getThing = { status: 200, body: { data: { id: 'vendor-1' } } }) => ({
+    getState: clock(decisions),
+    getThing,
+    createThing: { status: 201, body: { data: { id: 'payable-1' } } }
+  });
+  const fixture = flow('r9-skip-reason.flow.yml');
+  const withJoin = (depends) => variant(fixture, (document) => {
+    document.steps.find((step) => step.id === 'create_payable').depends = depends;
+  });
+  const run = (decisions, options = {}) => {
+    const { entry, files } = options.depends ? withJoin(options.depends) : { entry: fixture };
+    return runFlow(entry, { files, responses: responses(decisions, options.getThing) });
+  };
+
+  /** C1465: after the cutoff the gate closes, and the join must not run with values never produced. */
+  it('stops the join when the gate above the optional branch closes', async () => {
+    const result = await run({ open: false, vendorNeeded: true });
+
+    expect(result.table()).toEqual({
+      clock: 'success',
+      probe_cutoff: 'skipped:condition-false',
+      get_vendor: 'skipped:unmet-dependency',
+      create_payable: 'skipped:unmet-dependency'
+    });
+    expect(result.step('create_payable').message).toBe('get_vendor skipped (unmet-dependency)');
+    expect(result.callsFor('createThing')).toHaveLength(0);
+    expect(result.status).toBe('passed');
+  });
+
+  it('runs the join when the gate is open and the optional branch was not needed', async () => {
+    const result = await run({ open: true, vendorNeeded: false });
+
+    expect(result.outcome('get_vendor')).toBe('skipped:condition-false');
+    expect(result.outcome('create_payable')).toBe('success');
+  });
+
+  /** Absent, `skipped` accepts every reason — existing flows keep the behavior they were written for. */
+  it('accepts every skip reason when the entry names none', async () => {
+    const result = await run(
+      { open: false, vendorNeeded: true },
+      { depends: [{ on: 'get_vendor', status: ['success', 'skipped'] }] }
+    );
+
+    expect(result.outcome('get_vendor')).toBe('skipped:unmet-dependency');
+    expect(result.outcome('create_payable')).toBe('success');
+  });
+
+  describe('a parent that was not skipped', () => {
+    it('meets the entry on success', async () => {
+      const result = await run({ open: true, vendorNeeded: true });
+
+      expect(result.outcome('get_vendor')).toBe('success');
+      expect(result.outcome('create_payable')).toBe('success');
+    });
+
+    it('fails the entry on failed, as a status the entry does not accept, with no reason named', async () => {
+      const result = await run({ open: true, vendorNeeded: true }, { getThing: { status: 500, body: null } });
+
+      expect(result.outcome('get_vendor')).toBe('failed:unexpected-status');
+      expect(result.outcome('create_payable')).toBe('skipped:unmet-dependency');
+      expect(result.step('create_payable').message).toBe('get_vendor failed');
+    });
+
+    it('meets the entry on failed when the status accepts it', async () => {
+      const result = await run(
+        { open: true, vendorNeeded: true },
+        {
+          getThing: { status: 500, body: null },
+          depends: [{ on: 'get_vendor', status: ['success', 'failed', 'skipped'], skipReason: ['condition-false'] }]
+        }
+      );
+
+      expect(result.outcome('create_payable')).toBe('success');
+    });
+
+    /** §11.3: a cleanup step still answers to its parent's outcome, and `skipReason:` does not touch `cancelled`. */
+    it('meets the entry on cancelled when the status accepts it', async () => {
+      const result = await run(
+        { open: true, vendorNeeded: true },
+        {
+          getThing: (request, ctx, info) =>
+            new Promise((resolve, reject) => {
+              ctx.signal.addEventListener('abort', () => reject(new Error('the request was aborted')), { once: true });
+              info.abort();
+            }),
+          depends: [{ on: 'get_vendor', status: ['cancelled', 'skipped'], skipReason: ['condition-false'] }]
+        }
+      );
+
+      expect(result.outcome('get_vendor')).toBe('cancelled:run-cancelled');
+      expect(result.outcome('create_payable')).toBe('success');
+      expect(result.status).toBe('cancelled');
+    });
+  });
+
+  describe('under any:', () => {
+    const depends = {
+      any: [
+        { on: 'get_vendor', status: ['success', 'skipped'], skipReason: ['condition-false'] },
+        { on: 'clock', status: ['failed'] }
+      ]
+    };
+
+    it('refuses the narrowed skip, so the join waits on its other entries', async () => {
+      const result = await run({ open: false, vendorNeeded: true }, { depends });
+
+      expect(result.outcome('create_payable')).toBe('skipped:unmet-dependency');
+      expect(result.step('create_payable').message).toBe('get_vendor skipped (unmet-dependency), clock success');
+    });
+
+    it('accepts the skip the entry names', async () => {
+      const result = await run({ open: true, vendorNeeded: false }, { depends });
+
+      expect(result.outcome('create_payable')).toBe('success');
+    });
+  });
+});

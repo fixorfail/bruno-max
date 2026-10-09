@@ -14,6 +14,7 @@ import { describeFlow } from './describe';
 import {
   FileRef,
   normalizeFlow,
+  type DependencyEntry,
   type FlowConfig,
   parseAssertion,
   parseDocument,
@@ -505,14 +506,23 @@ const skip = (
   outputs: {}
 });
 
+/**
+ * Whether one parent's outcome meets one `depends` entry (§9.1). `skipReasons` narrows `skipped`
+ * only: a gate higher in the flow skips everything below it `unmet-dependency`, and a join written
+ * for an optional branch (`condition-false`) must not read that as "the branch was not needed".
+ */
+const accepts = (entry: DependencyEntry, parent: StepResult | undefined): boolean =>
+  Boolean(
+    parent
+    && entry.status.includes(parent.status)
+    && (parent.status !== 'skipped' || !entry.skipReasons || entry.skipReasons.some((reason) => reason === parent.reason))
+  );
+
 const dependenciesSatisfied = (step: NormalizedStep, outcomes: Map<string, StepResult>): boolean => {
   const { mode, entries } = step.depends;
   if (entries.length === 0) return true;
 
-  const met = entries.map((entry) => {
-    const parent = outcomes.get(entry.on);
-    return Boolean(parent && entry.status.includes(parent.status));
-  });
+  const met = entries.map((entry) => accepts(entry, outcomes.get(entry.on)));
 
   // `any` waits for every listed parent to reach a terminal outcome, then requires at least one to
   // be satisfied — firing on the first success would make it a race (§9.1).
@@ -522,14 +532,17 @@ const dependenciesSatisfied = (step: NormalizedStep, outcomes: Map<string, StepR
 /**
  * Which parents the skip is about, and what they did instead. A step whose four dependencies were
  * fine except one names that one; without it the reader is left diffing the graph against the run.
+ * A skip refused by `skipReason:` also names its reason, since `skipped` is a status the entry accepts.
  */
 const unmetBy = (step: NormalizedStep, outcomes: Map<string, StepResult>): string =>
   step.depends.entries
-    .filter((entry) => {
+    .filter((entry) => !accepts(entry, outcomes.get(entry.on)))
+    .map((entry) => {
       const parent = outcomes.get(entry.on);
-      return !parent || !entry.status.includes(parent.status);
+      if (!parent) return `${entry.on} never ran`;
+      const refusedSkip = parent.status === 'skipped' && entry.status.includes('skipped');
+      return refusedSkip ? `${entry.on} skipped (${parent.reason})` : `${entry.on} ${parent.status}`;
     })
-    .map((entry) => `${entry.on} ${outcomes.get(entry.on)?.status || 'never ran'}`)
     .join(', ');
 
 const executeFlow = async (

@@ -2166,6 +2166,45 @@ succeeded"; the expanded form states the accepted outcomes:
 A step whose dependencies are not satisfied is **skipped** with reason `unmet-dependency`; it is not
 a failure, and it does not by itself fail the flow.
 
+**`skipReason:` narrows `skipped`.** A parent is skipped for one of four reasons (§14.6), and
+`status: [success, skipped]` accepts all four. That is rarely what a join after an optional branch
+means. The author means "the branch was not needed" — `condition-false`. The author does not mean
+"the run was gated off above the branch" — `unmet-dependency`. An entry in the expanded form can say
+which:
+
+```yaml
+  - id: probe_cutoff
+    when: steps.clock.window eq open              # after the cutoff: skipped, condition-false
+
+  - id: get_vendor                                # implicitly after probe_cutoff
+    when: steps.clock.vendorNeeded eq true        # not needed: skipped, condition-false
+                                                  # gate closed: skipped, unmet-dependency
+  - id: create_payable
+    depends:
+      - on: get_vendor
+        status: [success, skipped]
+        skipReason: [condition-false]             # the branch was not needed — not the gate
+```
+
+With the gate open and no vendor needed, `get_vendor` skips `condition-false` and `create_payable`
+runs. After the cutoff, `get_vendor` skips `unmet-dependency`, the entry refuses that skip, and
+`create_payable` skips `unmet-dependency` too — its message names the refused reason,
+`get_vendor skipped (unmet-dependency)`. Without `skipReason:` the join would run after the cutoff,
+with values the branch never produced, and the only guard was a second, required parent on every
+join so that the gate reached it.
+
+- `skipReason:` takes one value or a list of §14.6's skip reasons: `condition-false`,
+  `unmet-dependency`, `unresolved-dependency`, `run-cancelled`.
+- It applies only to a parent whose outcome is `skipped`: that parent satisfies the entry only if its
+  reason is in the list. It changes nothing for `success`, `failed` or `cancelled`.
+- Absent, `skipped` accepts every skip reason. A flow written before the key behaves as it did.
+- It narrows which parent outcome counts as met, and nothing else: `all:` / `any:` (below), cleanup
+  steps and §11.3's handling of a stopped run are unchanged. A step is a cleanup step because its
+  `status` names `cancelled`, whatever its `skipReason:` says.
+- `skipReason:` on an entry whose `status` does not include `skipped` — the default `[success]`
+  included — is `skip-reason-without-skipped`; a value that is not a skip reason is
+  `invalid-skip-reason` (§14.3).
+
 **Join mode.** `depends` accepts either a bare list — implicitly `all` — or a mapping carrying
 exactly one of `all:` or `any:`:
 
@@ -2443,7 +2482,9 @@ A step whose `when` is false is **skipped, not failed** — the flow's exit stat
 
 So propagation past a skipped or failed parent is controlled by `depends`, not by `when`. A step
 that should survive its parent being skipped declares `status: [success, skipped]`, or depends on
-something further up the branch.
+something further up the branch. **After an optional branch, add `skipReason: [condition-false]`**
+(§9.1): the join then survives the branch's own `when` being false, and a gate higher in the flow
+still stops it. Bare `skipped` also accepts the `unmet-dependency` skip that a closed gate causes.
 
 ### 9.4 Dataset iteration
 
@@ -4719,6 +4760,7 @@ resolved graph or the bound OpenAPI documents, which is why it cannot:
   ancestor (§6.4); the same holds for a step whose binding `baseUrl`, `defaultHeaders` or
   `defaultQuery` reads `{{steps.*}}` (§6.3)
 - The graph is acyclic; every `depends` names a real step; step ids are unique; every `status` value is one of `success` / `failed` / `skipped` / `cancelled`
+- Every `skipReason` value is one of §14.6's skip reasons, and only an entry whose `status` includes `skipped` carries one (§9.1)
 - A `depends` mapping carries exactly one of `all:` or `any:`, and its list is non-empty
 - Every `{{steps.*}}` reference names a **transitive ancestor** (§8.4), and resolves to either one
   of that step's declared outputs or one of §8.3's built-in metadata fields. Naming a non-ancestor
@@ -4829,6 +4871,8 @@ ever tell the author.
 | `duplicate-step-id` | Two steps share an id (§5.3); the second overwrites the first's state and captures |
 | `invalid-depends` | A `depends:` mapping does not carry exactly one non-empty `all:` or `any:` — an empty one is an unconditional root (§9.1) |
 | `invalid-dependency-status` | A `depends.status` names something other than `success` / `failed` / `skipped` / `cancelled` (§9.1) |
+| `invalid-skip-reason` | A `depends.skipReason` names something other than `condition-false` / `unmet-dependency` / `unresolved-dependency` / `run-cancelled` (§9.1, §14.6) |
+| `skip-reason-without-skipped` | A `depends` entry carries `skipReason:` and its `status` does not include `skipped`, so the reasons narrow nothing (§9.1) |
 | `unreachable-step` *(warning)* | Nothing can make the step eligible: what it depends on is in a cycle or is not there (§9.1) |
 | `unknown-output-reference` | A `{{steps.*}}` reference names an output the ancestor does not produce (§8.1, §8.3) |
 | `invalid-shared-entry` | A step's `shared:` publishes into an undeclared slot, or publishes an output it does not produce (§9.1) |
@@ -5341,6 +5385,11 @@ about what it describes.
 | `condition-false` | skipped | `when:` evaluated false (§9.3) |
 | `unresolved-dependency` | skipped | A referenced output was never produced (§11.2) |
 | `run-cancelled` | skipped, or **cancelled** where the step had started | The run stopped (§11.3) |
+
+**The four `skipped` reasons are what a `depends` entry's `skipReason:` accepts** (§9.1):
+`condition-false`, `unmet-dependency`, `unresolved-dependency` and `run-cancelled`. A reason with
+status `failed` is not one, and `run-cancelled` there addresses a parent *skipped* by the stop — a
+parent the stop interrupted is `cancelled`, which `status:` addresses.
 
 A step that failed carries exactly one reason — the **first** check to fail, in §10's evaluation
 order: request validation, then status, then response schema, then assertions. Reporting the first
@@ -6392,6 +6441,8 @@ right.
 
 Each names what breaks while it stays open, and each is local to one code path. **Neither blocks
 anything shipped**: both wait on work that is scheduled rather than undecided (§19.1's `--dry-run`).
+The `skipReason:` warning under *Dependencies* is the exception to the second half: it waits on a
+decision, not on scheduled work, and `skipReason:` works without it.
 
 A note worth keeping from when this list was long: rows went stale here faster than anywhere else in
 the document. Several described a contradiction that a later revision had already fixed, or named a
@@ -6450,6 +6501,16 @@ run for a feature whose whole purpose is showing what *would* be sent. The premi
 defer the app's half on — that the engine already supports it — was never true and has been
 corrected there.
 
+### Dependencies
+
+**Should the validator warn when `status` has `skipped` and no `skipReason:`?** Bare `skipped`
+accepts the `unmet-dependency` skip a closed gate causes, which is the join-after-the-cutoff failure
+§9.1's `skipReason:` exists for — and nothing says so. A warning would name it at the line. Against
+it: a cleanup step's four-way list (§9.1) wants every reason, so the warning would fire on the
+pattern this spec recommends, and a rule needs an exemption before it is worth its noise. While open,
+a join that should stop with its gate has to be written with `skipReason:`, and nothing checks that
+it was.
+
 ### Left to implementation
 
 These do not change a contract:
@@ -6499,6 +6560,7 @@ in two tables is a UI deferral that will drift.
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
 | **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which `bru flow run` leaves empty by design (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
+| **A step that ends the whole run as skipped** — the equivalent of `pytest.skip` | §9.1's `skipReason:` stops a join when a gate closes, but the run still reports `passed`, and a CI reader cannot tell "nothing to do before the cutoff" from "it ran and passed". There is no run status for it: §14.6's run statuses are `passed`, `failed` and `cancelled` | A step form or field that ends the run, a run status for it in §14.6 (additive, so a new word, not a reuse of the step word `skipped`), its exit code in §14.2, and what each reporter writes for it (§14.8) |
 | **Real-world OpenAPI robustness** | The engine had never met a document that names its schemas rather than writing them out; R19.1–R19.6 closed `$ref` bodies, cycles, vendor extensions, composed bodies and the missing-`operationId` fallback, and `external-schema-ref` now names the one boundary left | **Reading the second document.** The warning says a `$ref` leaves the file; following it needs a second `readSpec` per binding, path resolution relative to the referrer, a cache, cross-file cycle detection, and an answer for what `rooted()` means with two sources. Worth doing when a real document forces it, not before. **Swagger 2** is the other gap: the machinery is there and no fixture is |
 
 Recorded so the reasoning survives: each row is a decision someone made with a reason, not an

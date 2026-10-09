@@ -74,6 +74,8 @@ tests/conformance/
   schema.spec.js              # R4m and R11.1 — §5.4's schema, and the pass bru flow validate runs first
   validation.spec.js          # R4h and R8.1-R8.10 — §14.3's checks, grouped by what each one reads
   runtime.spec.js             # R9.1-R9.8 — what a script, an assertion and an event see at run time
+                              # R9.14 — a join that narrows which skip it accepts
+  skip-reason.spec.js         # R9.15 — skipReason: through normalization, describeFlow and an edit
   connectors.spec.js          # R10.1-R10.5 — §8.5's files: matching, precedence, suppression, provenance
   collection-auth.spec.js     # R9.13 — the stored-auth → AuthProfile mapping, against materialize.ts directly
   subflow-resolution.spec.js  # R12.1 — §12.2's `uses:` targets, relative and `workspace:`-prefixed
@@ -2541,6 +2543,23 @@ Whether the host actually passes one through `RunOptions.authProfiles` stays a r
 | a flow that declares its own `authProfiles.collection` | that profile wins in either scope — resolution order (§6.4) is unchanged |
 | `auth:` naming any other profile no `authProfiles:` block declares | `unknown-auth-profile`, worded as before — this rule narrows only the `collection` case |
 
+### R8.15 — What a dependency's `skipReason:` may say
+
+**Pins:** §9.1's `skipReason:`, and §14.3's `invalid-skip-reason` and `skip-reason-without-skipped`.
+
+| Case | Expected |
+|---|---|
+| R9.14's fixture, which narrows a skip to `condition-false` | **no diagnostics at all** |
+| `skipReason: condition-false` — one value, not a list | accepted, exactly as `status:` accepts one value |
+| `skipReason:` on an entry whose `status` is `[success, failed]` | `skip-reason-without-skipped`, naming the parent |
+| `skipReason:` on an entry with no `status:` — the default `[success]` | `skip-reason-without-skipped` |
+| `skipReason: [assertion-failed]` | `invalid-skip-reason`, listing the four skip reasons; a reason with status `failed` is not one |
+| `skipReason: [condition-flase]` | `invalid-skip-reason` with a did-you-mean |
+| each of the two rules in the document schema | reported once, under its own code, and never also as `schema-violation` (R11.1) |
+
+The second rule is the one that saves a debugging session: a `skipReason:` on an entry that cannot
+accept a skip reads as a narrowed join and is not one.
+
 ### R9.13 — One mapping from a collection's stored auth to its profile
 
 **Pins:** §13.1 — the engine exists so the CLI and the app cannot diverge — over §6.4's implicit
@@ -2564,6 +2583,47 @@ format, and what to do when it will not parse.
 | auth that is `none`, `inherit`, absent, or not an auth block at all | `{ fields: { mode: 'none' } }` — §6.4's promise holds for a collection that authenticates with nothing |
 | a mode whose own block is missing or is not a mapping | that mode alone, with no fields invented |
 | both hosts | import it; neither keeps a flattening of its own, and each host's existing spec passes against the shared mapping unchanged |
+
+### R9.14 — A join accepts a skipped parent only for the reasons its `skipReason:` names
+
+**Pins:** §9.1's `skipReason:`; §9.3's join after an optional branch; §14.6's skip reasons.
+
+`fixtures/flows/regressions/r9-skip-reason.flow.yml` is the shape of a real flow (C1465): a gate,
+`probe_cutoff`, with a `when:` that is false after the cutoff; an optional branch, `get_vendor`,
+below it with a `when:` of its own; and a join, `create_payable`, that depends on the branch with
+`status: [success, skipped]` and `skipReason: [condition-false]`.
+
+| Case | Expected |
+|---|---|
+| the gate closed | `probe_cutoff` `skipped · condition-false`, `get_vendor` `skipped · unmet-dependency`, `create_payable` `skipped · unmet-dependency` with the message `get_vendor skipped (unmet-dependency)`; nothing is dispatched for the join, and the run passes |
+| the gate open, the vendor not needed | `get_vendor` `skipped · condition-false`, and `create_payable` runs |
+| the gate closed, and the join has no `skipReason:` | `create_payable` runs — the current behavior, kept on purpose |
+| `get_vendor` succeeds | the join runs; `skipReason:` does not touch `success` |
+| `get_vendor` fails, `status: [success, skipped]` | the join skips `unmet-dependency` with `get_vendor failed` — no reason named, since `failed` was never accepted |
+| `get_vendor` fails, `status: [success, failed, skipped]` | the join runs; `skipReason:` does not touch `failed` |
+| the run cancelled while `get_vendor` is in flight, `status: [cancelled, skipped]` | `get_vendor` `cancelled · run-cancelled`, and the join runs as a cleanup step (§11.3); `skipReason:` does not touch `cancelled` |
+| `any:` with a narrowed entry on `get_vendor` and `{ on: clock, status: [failed] }`, the gate closed | the join skips; the message names both, `get_vendor skipped (unmet-dependency), clock success` |
+| the same `any:`, the gate open and the vendor not needed | the join runs on the accepted skip |
+
+The first row is the reason the key exists. Without it the join ran after the cutoff with values
+that were never produced, and the guard was a second, required parent on every join.
+
+### R9.15 — `skipReason:` survives normalization, description and an edit
+
+**Pins:** §9.1's `skipReason:`; 002 §11.1's described edge; 005 §9.1's writer.
+
+| Case | Expected |
+|---|---|
+| R9.14's fixture, normalized | the join's entry carries `skipReasons: [condition-false]`; an entry with none carries no key |
+| `skipReason: condition-false` — one value | normalized to a list |
+| `describeFlow` | the `depends` edge into the join carries `skipReason`; the other edges carry none |
+| a `step.patch` on the join that names another field | `skipReason:` is still in the file, and no line is removed |
+| a `step.patch` that rewrites `depends:` with `skipReason:` | the file carries the new reasons |
+| a `step.duplicate` of the join | the copy carries `skipReason:` |
+
+The app's depends editor reads and rewrites whole entries, and has no control for the key. Its own
+spec (`DependsEditor/index.spec.js`) pins that a read and a write keep `skipReason:`. A key that a
+run obeys and an edit drops is a join that runs past a closed gate again after an unrelated change.
 
 ### R5 — Unresolved variables never reach the wire
 

@@ -1102,3 +1102,52 @@ describe('R8.14 — The implicit collection profile at validate time', () => {
     expect(complaint.message).toBe('on_step authenticates with nonexistent, which is not declared');
   });
 });
+
+describe('R8.15 — What a dependency\'s skipReason: may say', () => {
+  const narrowed = (entry) => variant(flow('graph.flow.yml'), (document) => {
+    document.steps[2].depends = [{ on: 'create', ...entry }];
+  });
+
+  it('accepts the runtime fixture, which narrows a skip to condition-false', async () => {
+    expect(await validate('regressions/r9-skip-reason.flow.yml')).toEqual([]);
+  });
+
+  it('accepts one value in place of a list', async () => {
+    const { entry, files } = narrowed({ status: ['success', 'skipped'], skipReason: 'condition-false' });
+    const diagnostics = await validate(entry, { files });
+
+    expect(of(diagnostics, 'invalid-skip-reason')).toEqual([]);
+    expect(of(diagnostics, 'skip-reason-without-skipped')).toEqual([]);
+    expect(of(diagnostics, 'schema-violation')).toEqual([]);
+  });
+
+  /** It narrows `skipped`, so on an entry that never accepts a skip it narrows nothing. */
+  it('reports skipReason: on an entry whose status does not include skipped', async () => {
+    const { entry, files } = narrowed({ status: ['success', 'failed'], skipReason: ['condition-false'] });
+    const [complaint] = of(await validate(entry, { files }), 'skip-reason-without-skipped');
+
+    expect(complaint.severity).toBe('error');
+    expect(complaint.message).toContain('create');
+  });
+
+  it('reports skipReason: on an entry with the default status', async () => {
+    const { entry, files } = narrowed({ skipReason: ['condition-false'] });
+
+    expect(of(await validate(entry, { files }), 'skip-reason-without-skipped')).toHaveLength(1);
+  });
+
+  it('reports a reason that is not a skip reason, and lists the ones there are', async () => {
+    const { entry, files } = narrowed({ status: ['skipped'], skipReason: ['assertion-failed'] });
+    const [complaint] = of(await validate(entry, { files }), 'invalid-skip-reason');
+
+    expect(complaint.severity).toBe('error');
+    expect(complaint.message).toContain('condition-false, unmet-dependency, unresolved-dependency, run-cancelled');
+  });
+
+  it('suggests the skip reason a near miss was reaching for', async () => {
+    const { entry, files } = narrowed({ status: ['skipped'], skipReason: ['condition-flase'] });
+
+    expect(of(await validate(entry, { files }), 'invalid-skip-reason')[0].message)
+      .toContain('did you mean condition-false?');
+  });
+});
