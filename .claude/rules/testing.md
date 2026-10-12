@@ -12,7 +12,7 @@ paths:
 ## Running Tests
 
 ```bash
-npm run test:e2e                           # default + system-pac projects (starts dev servers automatically)
+npm run test:e2e                           # default + system-pac + mock-server (starts dev servers automatically)
 npx playwright test tests/request/         # Run specific directory
 npx playwright test --project=default      # Run specific project
 npx playwright test --headed               # Watch mode
@@ -23,9 +23,9 @@ Electron has no headless mode, so every test launch opens a real window — but 
 (`packages/bruno-electron/src/fork/window.js`, called from one line in `src/index.js`'s
 `ready-to-show`), so a running suite never takes focus from you. `--headed` has no effect on Electron.
 
-Projects: `default` (main), `system-pac` (depends on `default`), `auth`, `ssl`.
-`npm run test:e2e` runs `default` + `system-pac`; the rest have their own
-`test:e2e:*` scripts. Config: `playwright.config.ts` — `fullyParallel: true`, `workers` unset
+Projects: `default` (main), `system-pac` (depends on `default`), `mock-server`, `auth`, `ssl`.
+`npm run test:e2e` runs `default` + `system-pac` + `mock-server`; `auth` and `ssl` have their own
+`test:e2e:*` scripts and CI jobs. Config: `playwright.config.ts` — `fullyParallel: true`, `workers` unset
 (Playwright default, not single-worker), retries 0 local / 2 CI.
 
 ## Test Fixtures (playwright/index.ts)
