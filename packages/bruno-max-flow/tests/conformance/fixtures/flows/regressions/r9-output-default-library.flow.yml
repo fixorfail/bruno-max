@@ -1,0 +1,22 @@
+# R9.16's library: the approvals half of a "create payable" flow. Its export is an output with a
+# default, so a company with no approval policy still hands its caller a value (§12.1).
+version: 1
+
+meta:
+  name: R9.16 — approvals library
+  library: true
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+exports:
+  approvalHash: steps.approvals.approvalHash
+
+steps:
+  - id: approvals
+    operation: regress-api#getState
+    outputs:
+      approvalHash: { path: meta.hash, default: '' }

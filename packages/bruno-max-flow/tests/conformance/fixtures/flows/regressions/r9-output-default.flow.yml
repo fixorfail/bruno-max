@@ -1,0 +1,52 @@
+# R9.16 — §8.1's `default:`. `approvals` reads an approval hash that a company with no approval policy
+# does not get; `approvalHash` declares the empty string as its value then, so `create_payable` runs.
+# `bareHash` reads the same path with no default, and its reader skips as it always has.
+version: 1
+
+meta:
+  name: R9.16 — an output default fills a value that was not produced
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: approvals
+    operation: regress-api#getState
+    outputs:
+      approvalHash: { path: meta.hash, default: '' }
+      bareHash: meta.hash
+      reviewer: { path: meta.reviewer, default: nobody }
+      nextCursor: { from: headers, path: x-next-cursor, default: null }
+      computed: { script: "(res) => undefined", default: fallback }
+      tags: { path: data.tags, default: [approved, pending] }
+      policy: { path: data.policy, default: { kind: none, steps: 0 } }
+
+  - id: create_payable
+    operation: regress-api#createThing
+    depends: [approvals]
+    body:
+      name: payable
+      ref: "{{steps.approvals.approvalHash}}"
+
+  - id: read_bare
+    operation: regress-api#createThing
+    depends: [approvals]
+    failOnUnresolved: false
+    body:
+      name: bare
+      ref: "{{steps.approvals.bareHash}}"
+
+  # §7.3: a whole-value reference injects a list or mapping default with its type.
+  - id: send_shapes
+    operation: regress-api#createThing
+    depends: [approvals]
+    headers:
+      X-Next-Cursor: "{{steps.approvals.nextCursor}}"
+      X-Reviewer: "{{steps.approvals.reviewer}}"
+    body:
+      name: "{{steps.approvals.computed}}"
+      tags: "{{steps.approvals.tags}}"
+      policy: "{{steps.approvals.policy}}"

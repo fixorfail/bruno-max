@@ -275,6 +275,18 @@ reason the position exists.
 
 `from` is `body` (default), `headers`, `status` or `pre`. A leading `$.` is stripped.
 
+An output that is optional by design takes a `default:` in the mapping form — any YAML value,
+`null` included — used when the output is not produced (a path selecting nothing, a script returning
+`undefined`), so its readers run instead of skipping `unresolved-dependency`:
+
+```yaml
+      approvalHash: { path: meta.hash, default: '' }
+```
+
+It is never interpolated (`{{` in it is `output-default-interpolated`), a `null` from the response is
+kept, a script that throws is still `script-error`, and the short form has none. Do not use it for a
+value the flow requires — leave that without a default, so its absence fails the run.
+
 For `from: pre`, `path:` names which computed value to take and **defaults to the output's own
 name**, so the ordinary case is one line; naming a value the step does not compute is
 `unknown-pre-value`. `shared:` does not change — it publishes an output into a slot whatever the
@@ -907,6 +919,7 @@ resolved per request against that step's variables. A collapsed sub-flow's conso
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into |
 | `unreachable-step` *(warning)* | A step nothing can make eligible |
 | `null-output` | An output written `name: null`, in a step or a connector file — `!...` is the removal token, `null` drops nothing |
+| `output-default-interpolated` | An output's `default:` holds `{{` — a default is a literal and is never interpolated |
 | `invalid-connector-entry` | A `connectors.yml` entry that is not a mapping of outputs |
 | `unknown-output-path` | A `connectors.yml` output path the operation's response schema does not have |
 

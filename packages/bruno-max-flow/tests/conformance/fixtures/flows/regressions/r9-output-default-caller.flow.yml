@@ -1,0 +1,22 @@
+# R9.16 — the caller of the approvals library. `create_payable` reads the library's export, which is
+# produced whether or not the company has an approval policy.
+version: 1
+
+meta:
+  name: R9.16 — a caller reads an export whose output has a default
+
+apis:
+  regress-api: ../../specs/regressions-v1.yml
+
+config:
+  baseUrl: "{{regressBaseUrl}}"
+
+steps:
+  - id: approvals
+    uses: ./r9-output-default-library.flow.yml
+
+  - id: create_payable
+    operation: regress-api#createThing
+    body:
+      name: payable
+      ref: "{{steps.approvals.approvalHash}}"

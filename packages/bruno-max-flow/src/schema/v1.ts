@@ -167,6 +167,15 @@ const NAMED = {
    * §9.1: `skipReason:` narrows `skipped`, so an entry whose `status` cannot accept `skipped` — the
    * default `[success]` included — names reasons nothing will ever consult.
    */
+  /**
+   * §8.1: a default is a literal and is never interpolated, so a `{{` in it is a reference its author
+   * expects and will not get. Any other value is a valid default.
+   */
+  'output-default-interpolated': {
+    $comment: '§8.1: an output default is a literal, never interpolated.',
+    if: { type: 'string' },
+    then: { not: { pattern: '\\{\\{' } }
+  },
   'skip-reason-without-skipped': {
     $comment: '§9.1: skipReason: applies only to an entry whose status accepts skipped.',
     if: { type: 'object', required: ['skipReason'] },
@@ -235,7 +244,9 @@ const OUTPUT = {
   properties: {
     from: { enum: ['body', 'headers', 'status', 'pre'] },
     path: { type: 'string' },
-    script: { type: 'string' }
+    script: { type: 'string' },
+    /** §8.1: any value, used as written when the output is not produced. */
+    default: { $ref: '#/$defs/named/output-default-interpolated' }
   },
   additionalProperties: false
 };

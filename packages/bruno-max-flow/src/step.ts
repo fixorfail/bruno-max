@@ -369,9 +369,13 @@ export class ScriptError extends Error {
 }
 
 /**
- * §8.1. A path that selects nothing, or a script returning `undefined`, means the output is **not
- * produced** — an answer the flow has a designed response to, and deliberately not the same thing
- * as a throw (§8.2).
+ * §8.1. A path that selects nothing, a `from: pre` value that is absent, or a script returning
+ * `undefined`, means the output is **not produced** — an answer the flow has a designed response to,
+ * and deliberately not the same thing as a throw (§8.2).
+ *
+ * An output that declares `default:` takes it in exactly that case, so it is always produced. A
+ * `null` the response or script gave is a value, and keeps it; a throw is still a `script-error`,
+ * with no default. The default is a literal, used as written and never interpolated.
  */
 const extractOutputs = async (
   outputs: OutputSpec[],
@@ -398,6 +402,7 @@ const extractOutputs = async (
                 output.path || ''
               );
       if (value !== undefined) values[output.name] = value;
+      else if (output.hasDefault) values[output.name] = output.default;
     } catch (cause) {
       // The remaining outputs are still extracted: diagnosing a script that threw needs the
       // response it threw on (§8.2).

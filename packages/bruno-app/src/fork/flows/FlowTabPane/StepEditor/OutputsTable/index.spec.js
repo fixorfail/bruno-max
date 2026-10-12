@@ -166,6 +166,37 @@ describe('the outputs table', () => {
     expect(onPatch).toHaveBeenCalledWith({ set: { outputs: { id: 'data.thing.id', trace: written } } });
   });
 
+  /** 001 §8.1's `default:` has no control here; changing the row must not drop it. */
+  it('keeps a default when the path changes, in the mapping form the shorthand cannot be', async () => {
+    const onPatch = renderTable({ hash: { path: 'meta.hash', default: '' } });
+
+    fireEvent.change(values()[0], { target: { value: 'meta.approval.hash' } });
+    await settle();
+
+    expect(onPatch).toHaveBeenCalledWith({ set: { outputs: { hash: { path: 'meta.approval.hash', default: '' } } } });
+  });
+
+  it('keeps a null default when the source changes', async () => {
+    const onPatch = renderTable({ cursor: { path: 'x-next-cursor', default: null } });
+
+    fireEvent.change(sources()[0], { target: { value: 'headers' } });
+    await settle();
+
+    expect(onPatch).toHaveBeenCalledWith({
+      set: { outputs: { cursor: { from: 'headers', path: 'x-next-cursor', default: null } } }
+    });
+  });
+
+  it('keeps a row with a default that nobody touched as the file wrote it', async () => {
+    const written = { script: '(res) => res.body.tags', default: [] };
+    const onPatch = renderTable({ id: 'data.id', tags: written });
+
+    fireEvent.change(values()[0], { target: { value: 'data.thing.id' } });
+    await settle();
+
+    expect(onPatch).toHaveBeenCalledWith({ set: { outputs: { id: 'data.thing.id', tags: written } } });
+  });
+
   it('unsets the block when every row is cleared', async () => {
     const onPatch = renderTable({ id: 'data.id' });
 

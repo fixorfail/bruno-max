@@ -76,6 +76,7 @@ tests/conformance/
   runtime.spec.js             # R9.1-R9.8 — what a script, an assertion and an event see at run time
                               # R9.14 — a join that narrows which skip it accepts
   skip-reason.spec.js         # R9.15 — skipReason: through normalization, describeFlow and an edit
+  output-default.spec.js      # R8.16, R9.16, R9.17, R10.9 — §8.1's default: on a declared output
   connectors.spec.js          # R10.1-R10.5 — §8.5's files: matching, precedence, suppression, provenance
   collection-auth.spec.js     # R9.13 — the stored-auth → AuthProfile mapping, against materialize.ts directly
   subflow-resolution.spec.js  # R12.1 — §12.2's `uses:` targets, relative and `workspace:`-prefixed
@@ -2465,6 +2466,16 @@ which of *this* flow's steps may write it is a fact about this graph, not about 
 | a profile declaring no `mode:` or an unknown one | `invalid-auth-profile` against the **connector file**, once |
 | a step's `auth: none` | still opts out — an inherited profile is a default, not an imposition |
 
+### R10.9 — A connector output carries its default, and a step entry replaces it whole
+
+**Pins:** §8.5's override by name, with §8.1's `default:`.
+
+| Case | Expected |
+|---|---|
+| a connector entry `{ path: data.name, default: none }`, and a response with no name | the step's output is `none`; the flow validates clean |
+| a step entry of the same name, `data.name`, with no default | the step entry wins whole: the output is absent |
+| a connector entry whose default holds `{{` | `output-default-interpolated`, anchored in the connector file |
+
 ### R11.1 — The schema pass inside `bru flow validate`
 
 **Pins:** §14.3's ordering, and §5.4's versioning read from the command's side rather than the
@@ -2560,6 +2571,17 @@ Whether the host actually passes one through `RunOptions.authProfiles` stays a r
 The second rule is the one that saves a debugging session: a `skipReason:` on an entry that cannot
 accept a skip reads as a narrowed join and is not one.
 
+### R8.16 — An output default is a literal
+
+**Pins:** §8.1's `default:`, and §14.3's `output-default-interpolated`.
+
+| Case | Expected |
+|---|---|
+| R9.16's fixture and its caller, which use every kind of default | **no diagnostics at all** |
+| `default: "{{steps.a.b}}"` | `output-default-interpolated`, quoting the value; reported once, never also as `schema-violation` |
+| `default: { tags: ["{{params.tag}}"] }` | `output-default-interpolated` — a reference at any depth is one the author expects and will not get |
+| a misspelt `defualt:` in the mapping form | `unknown-property` with a did-you-mean; the shorthand is the path itself, so a default can only be written in the mapping form |
+
 ### R9.13 — One mapping from a collection's stored auth to its profile
 
 **Pins:** §13.1 — the engine exists so the CLI and the app cannot diverge — over §6.4's implicit
@@ -2624,6 +2646,47 @@ that were never produced, and the guard was a second, required parent on every j
 The app's depends editor reads and rewrites whole entries, and has no control for the key. Its own
 spec (`DependsEditor/index.spec.js`) pins that a read and a write keep `skipReason:`. A key that a
 run obeys and an edit drops is a join that runs past a closed gate again after an unrelated change.
+
+### R9.16 — An output default fills a value that was not produced
+
+**Pins:** §8.1's `default:`; §11.2's `unresolved-dependency`; §12.1's exports; 006 §4.
+
+`fixtures/flows/regressions/r9-output-default.flow.yml` is the approvals half of a real "create
+payable" flow: `approvals` reads `meta.hash`, which a company with no approval policy does not get.
+`r9-output-default-library.flow.yml` exports the same output from a library, and
+`r9-output-default-caller.flow.yml` reads it.
+
+| Case | Expected |
+|---|---|
+| a path that selects nothing, `default: ''` | the output is `''`, and `create_payable` runs and sends `ref: ''` |
+| the same path with no default | not produced; its reader skips `unresolved-dependency`, as before |
+| a response value of `null`, with a default | the output is `null` — a produced value |
+| a response value that is present | that value, not the default |
+| `default: null` on a path that selects nothing | the output is `null`, and is produced |
+| a script that returns `undefined`, with a default | the default |
+| a script that throws, with a default | the step fails `script-error`, and the output is absent |
+| a whole-value reference to a list or a mapping default | the list or mapping, with its type (§7.3) |
+| a library export of an output with a default | the caller's step runs — the approvals-hash case |
+| the same library with no default | the caller's step skips `unresolved-dependency`, and the run fails |
+| a loop with `until` and no match, its output with a default | the output is absent and `matched` is `false` (006 §4) |
+| the same loop, matched on a response without the path | the matching iteration's default is published |
+
+The library rows are the reason for the key: an optional value inside a library could only cross the
+boundary through a script that returned a fallback, where the validator could not see the path.
+
+### R9.17 — `default:` survives normalization and an edit
+
+**Pins:** §8.1's `default:`; 005 §9.1's writer.
+
+| Case | Expected |
+|---|---|
+| R9.16's fixture, normalized | each `path`, `from:` and `script:` output carries `hasDefault` and `default`; `default: null` is a default of `null`; an output with none carries neither |
+| a `step.patch` that names another field | `default:` is still in the file, and no line is removed |
+| a `step.patch` that rewrites `outputs:` | the file carries the new defaults, `null` included |
+
+The app's outputs table writes a row back in its own form once its source or path changes, and has no
+control for the key. Its spec (`OutputsTable/index.spec.js`) pins that such a row keeps `default:`,
+in the mapping form when the row was a body shorthand.
 
 ### R5 — Unresolved variables never reach the wire
 

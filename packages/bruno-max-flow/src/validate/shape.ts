@@ -277,6 +277,39 @@ const checkNullOutputs = (flow: NormalizedFlow, report: Report) => {
   });
 };
 
+/**
+ * §8.1: an output's `default:` is a literal, used as written. A `{{` in it — at any depth of a list
+ * or mapping default — is a reference its author expects, and the engine will never resolve it.
+ */
+export const interpolatedIn = (value: unknown): string | undefined => {
+  if (typeof value === 'string') return value.includes('{{') ? value : undefined;
+  if (Array.isArray(value)) return value.map(interpolatedIn).find((found) => found !== undefined);
+  if (value && typeof value === 'object') {
+    return Object.values(value).map(interpolatedIn).find((found) => found !== undefined);
+  }
+  return undefined;
+};
+
+export const interpolatedDefaultMessage = (owner: string, name: string, found: string): string =>
+  `${owner}: outputs.${name} has the default ${JSON.stringify(found)}, and a default is used as written — `
+  + 'it is never interpolated, so the reference will not resolve (§8.1)';
+
+const checkOutputDefaults = (flow: NormalizedFlow, report: Report) => {
+  rawSteps(flow).forEach((raw, index) => {
+    const stepId = flow.steps[index]?.id;
+    for (const [name, value] of Object.entries(asRecord(raw.outputs))) {
+      const found = interpolatedIn(asRecord(value).default);
+      if (found === undefined) continue;
+      report.error(
+        'output-default-interpolated',
+        interpolatedDefaultMessage(String(stepId), name, found),
+        stepId,
+        ['steps', index, 'outputs', name, 'default']
+      );
+    }
+  });
+};
+
 /** §7.3: a variable named for a namespace is shadowed by it, and nothing at run time says so. */
 const checkReservedNames = (flow: NormalizedFlow, report: Report) => {
   for (const [block, names] of [
@@ -747,6 +780,7 @@ export const checkShape = (flow: NormalizedFlow, report: Report, options: Option
   checkSubflowSteps(flow, report, options.invoked);
   checkDropPlacement(flow, report);
   checkNullOutputs(flow, report);
+  checkOutputDefaults(flow, report);
   checkReservedNames(flow, report);
   checkBruUsage(flow, report);
   checkLibraryFlag(flow, report, options.supplied);

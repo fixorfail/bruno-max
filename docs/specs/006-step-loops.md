@@ -235,6 +235,13 @@ a read of every output that the loop declares, so `unused-output` stays quiet.
 
 **`shared:` publishes from the matching iteration only.** With no match, it writes nothing.
 
+**A declared output's `default:` (001 §8.1) fills each iteration's outputs**, because each comes from
+the same extraction a step without a loop has: an iteration whose path selects nothing has the
+default. It does **not** fill the published outputs of a loop that had no deciding iteration — the
+"Absent" rows of the table above. There is no extraction there to fill: no iteration decided, so there
+is no response the output was read from. `matched` stays the guard, and `loop-output-unguarded` and
+`loop-output-never-published` (§10) are unchanged by a default.
+
 **`StepResult.loop` carries the summary.** It holds `count`, `of` (the largest number of iterations
 that the source allows, when it can say), `matched`, and the `index` and `value` of the deciding
 iteration. The deciding iteration is the match or the failure. `attempts` is the total number of
@@ -437,6 +444,11 @@ scripts, and a loop of 1000 iterations would block the steps beside it for a lon
   resolves empty (001 §11.2). The flow can intend this, so there is no check for it.
 - **`as:` is not checked.** `as: index`, `as: previous` and `as: iterations` lose to the built-in
   with no diagnostic.
+- **Should a default fill the published output of a loop with no match?** §4 says no: the
+  default fills extraction, and a loop with no deciding iteration extracted nothing to publish. A
+  `default:` that also filled the "Absent" rows would make `matched` the only way to tell a match from
+  none, and a reader guarded on `matched` gains nothing. It stays open because a flow that wants "the
+  match, or this value" now needs `when:` on both sides.
 - **`loop.previous` and `loop.iterations` with `concurrency`** are `undefined` by design. A flow that
   needs both has no way to say it.
 

@@ -842,6 +842,26 @@ Another step then reads it by name:
       paymentId: "{{steps.create_payment.paymentId}}"
 ```
 
+### `default:` — an output that may be absent
+
+An output that is not produced — a path that selects nothing, or a script that returns `undefined` —
+skips every step that reads it with `unresolved-dependency`, and that fails the run. For a value
+that is optional by design, give the output a `default:` in the mapping form:
+
+```yaml
+    outputs:
+      approvalHash: { path: meta.hash, default: '' }     # a company with no approval policy: ''
+      nextCursor:   { from: headers, path: x-next-cursor, default: null }
+      tags:         { script: "(res) => res.body.tags", default: [] }
+```
+
+- The default is used as written. It is never interpolated, so `{{` in it is the error
+  `output-default-interpolated`.
+- It applies only when the output is not produced. A `null` from the response is a value, and is
+  kept. A script that throws still fails the step with `script-error`.
+- The short form `name: data.path` cannot have a default.
+- A connector entry can have a default. A step entry of the same name replaces it whole.
+
 ### `from: pre` — letting a computed value leave the step
 
 A value from [`pre:`](#values-computed-before-the-request) is step-local, so a later step that needs
@@ -2554,6 +2574,7 @@ What it reports:
 | `slot-without-writer` *(warning)* | A declared slot no step publishes into, so every read of it resolves empty |
 | `unreachable-step` *(warning)* | A step nothing can make eligible, because what it depends on is in a cycle or is not there |
 | `null-output` | An output written `name: null` — in a step or in a connector file. `null` drops nothing; `!...` is what removes an inherited connector entry |
+| `output-default-interpolated` | An output's `default:` holds `{{`, and a default is used as written — the reference will never resolve |
 | `invalid-connector-entry` | A `connectors.yml` entry that is not a mapping of outputs — each output is declared by name, as a step's `outputs:` does |
 | `unknown-output-path` | A `connectors.yml` output whose path names a field the operation's response schema does not have — it would be unset in every flow that targets the operation |
 

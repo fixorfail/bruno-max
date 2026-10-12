@@ -78,6 +78,16 @@ const writtenAs = ({ name, source, value }) => {
   return { from: source, path: value };
 };
 
+/**
+ * 001 §8.1's `default:` has no control here, so a row whose source or path changes keeps the one the
+ * file held. The body shorthand cannot carry it, so that row is written in the mapping form instead.
+ */
+const keepingDefault = (written, entry) => {
+  if (!entry || typeof entry !== 'object' || !('default' in entry)) return written;
+  const fallback = { default: entry.default };
+  return typeof written === 'string' ? { path: written, ...fallback } : { ...written, ...fallback };
+};
+
 const samePart = (left, right) => left.source === right.source && left.value === right.value;
 
 /** A row keeps its uid across a re-seed, for `KeyValueSection`'s reason: a remount under the caret drops keystrokes. */
@@ -128,7 +138,7 @@ const OutputsTable = ({ step, flow, model, onPatch }) => {
             const parts = { name: row.name.trim(), source: row.source, value: row.value };
             // Untouched: hand back what the file held, in the form it was written in.
             if (row.entry !== undefined && samePart(partsOf(row.entry), parts)) return [parts.name, row.entry];
-            return [parts.name, writtenAs(parts)];
+            return [parts.name, keepingDefault(writtenAs(parts), row.entry)];
           })
       );
       onPatch(Object.keys(mapping).length ? { set: { outputs: mapping } } : { unset: ['outputs'] });

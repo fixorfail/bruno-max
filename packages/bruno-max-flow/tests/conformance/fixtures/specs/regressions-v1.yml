@@ -23,6 +23,9 @@ paths:
                 # R4c asserts `count: "{{$randomInt}}"` arrives as a JSON number, which only means
                 # something against a field the spec types as one.
                 count: { type: integer }
+                # R9.16 sends a list and a mapping output default by whole-value reference (§7.3).
+                tags: { type: array, items: { type: string } }
+                policy: { type: object }
       responses:
         '201':
           description: Created

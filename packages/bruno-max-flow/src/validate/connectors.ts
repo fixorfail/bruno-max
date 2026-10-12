@@ -16,6 +16,7 @@ import { deref, resolveSpecSource, type ResolvedOperation } from '../openapi';
 import type { Diagnostic } from '../types/result';
 import { propertiesOf, type Schema } from './operation';
 import { suggest } from './report';
+import { interpolatedDefaultMessage, interpolatedIn } from './shape';
 
 /**
  * The paths this can hold a schema to: a property chain, with a numeric index where an array is
@@ -242,6 +243,15 @@ export const checkConnectors = (connectors: Connectors): Diagnostic[] => {
           'null-output',
           `${entry.key}: ${name} is null, which is not the removal token — an inherited entry is dropped with !... (§8.5)`,
           ['connectors', entry.key, name]
+        );
+      }
+      for (const output of entry.outputs) {
+        const found = output.hasDefault ? interpolatedIn(output.default) : undefined;
+        if (found === undefined) continue;
+        error(
+          'output-default-interpolated',
+          interpolatedDefaultMessage(entry.key, output.name, found),
+          ['connectors', entry.key, output.name, 'default']
         );
       }
       if (entry.resolved) checkEntry(file, entry, entry.resolved.operation, error);

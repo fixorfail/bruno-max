@@ -182,6 +182,12 @@ export type OutputSpec = {
   from: 'body' | 'headers' | 'status' | 'pre';
   path?: string;
   script?: string;
+  /**
+   * §8.1's `default:`, the value for an output that was not produced. `hasDefault` carries the
+   * presence: `default: null` is a default of `null`, and is not the same as no default.
+   */
+  hasDefault?: true;
+  default?: unknown;
 };
 
 /**
@@ -467,7 +473,9 @@ export const normalizeOutputs = (raw: unknown): { outputs: OutputSpec[]; suppres
   const outputs = entries.filter(([, value]) => value !== DROP).map(([name, value]): OutputSpec => {
     if (typeof value === 'string') return { name, from: 'body' as const, path: value.replace(/^\$\./, '') };
     const mapping = asRecord(value);
-    if (typeof mapping.script === 'string') return { name, from: 'body' as const, script: mapping.script };
+    // `in`, not `!== undefined`: a YAML `default: null` is a default, and an absent key is none.
+    const fallback = 'default' in mapping ? { hasDefault: true as const, default: mapping.default } : {};
+    if (typeof mapping.script === 'string') return { name, from: 'body' as const, script: mapping.script, ...fallback };
     const from = (mapping.from as OutputSpec['from']) || 'body';
     return {
       name,
@@ -477,7 +485,8 @@ export const normalizeOutputs = (raw: unknown): { outputs: OutputSpec[]; suppres
       path:
         mapping.path === undefined
           ? (from === 'pre' ? name : undefined)
-          : String(mapping.path).replace(/^\$\./, '')
+          : String(mapping.path).replace(/^\$\./, ''),
+      ...fallback
     };
   });
   return { outputs, suppressed: entries.filter(([, value]) => value === DROP).map(([name]) => name) };

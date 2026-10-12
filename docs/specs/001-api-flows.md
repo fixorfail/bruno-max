@@ -1552,6 +1552,38 @@ rather than proceeding with a missing id. Under the default `failOnUnresolved` t
 the run, so a filter matching nothing is reported rather than quietly skipped past — which is what
 the flag exists for.
 
+**`default:` is the opt-out for one optional output.** Some values are absent by design: an approvals
+response carries `meta.hash` only for a company with an approval policy, and a company with none is a
+valid result. The mapping form of an output takes a `default:`, which the output takes when it is not
+produced:
+
+```yaml
+    outputs:
+      approvalHash: { path: meta.hash, default: '' }       # no approval policy: ''
+      nextCursor:   { from: headers, path: x-next-cursor, default: null }
+      tags:         { script: "(res) => res.body.tags", default: [] }
+```
+
+Without it the only fix was a script returning a fallback —
+`(res) => (res.body.meta && res.body.meta.hash) || ''` — which hides a simple path where the validator
+cannot see it.
+
+- **Any YAML value**: a string, number, boolean, list, mapping, or `null`. `default: null` is a
+  default of `null`, not "no default".
+- **A literal.** It is used as written and never interpolated, so a `{{` in it — at any depth — is
+  `output-default-interpolated` (§14.3): its author expects a reference that will not resolve.
+- **Only for "not produced"**: a path that selects nothing, an absent `from: pre` value (§8.7), or a
+  script returning `undefined`. A `null` the response or the script gave is a produced value and is
+  kept.
+- **Not for a failure.** A script that throws is still `script-error` (§8.2), and a step that was
+  skipped, was cancelled or got no response (§11.2) extracts nothing, so nothing is filled.
+- **The shorthand has none.** `name: data.path` is the path itself; an output with a default is
+  written in the mapping form.
+
+An output with a default is always produced, so it never skips a reader as `unresolved-dependency`
+(§11.2). That is the whole of what it changes: a value that *must* be there keeps no default, and its
+absence still fails the run.
+
 A leading `$.` is accepted and stripped, because it is what most authors will type out of habit —
 `$.data.id` and `data.id` are the same path. This is an ergonomic affordance only; the canonical
 form written by the app is without the prefix.
@@ -1814,7 +1846,10 @@ Connector-supplied outputs are declarations like any other: they satisfy §8.4's
 are drawn as graph edges, and their paths are checked against the operation's response schema by
 `bru flow validate`. **Every form §8.1 gives an output is available here** — the short path, `from:
 headers | status | pre`, and `script:` — because a connector entry is read by the same rule a step's
-own block is. A `script:` output is the one a flow has to be careful with: §8.6's library belongs to
+own block is — `default:` included, so a connector entry can declare an optional output once. A
+step's entry of the same name **replaces the connector entry whole**, default and all: a step that
+writes `hint: data.hint` over a connector's `hint: { path: data.hint, default: none }` has no default,
+because override is by name and not by key. A `script:` output is the one a flow has to be careful with: §8.6's library belongs to
 the flow the script runs in, and a connector file supplies none, so a connector script calling a
 shared helper fails at run time (`script-error`, naming the identifier) in any flow that does not
 declare it.
@@ -3056,6 +3091,11 @@ saying what the flow requires.
 **`config.failOnUnresolved` (default `true`) fails the flow when a step is skipped as
 `unresolved-dependency`.** It is overridable per step.
 
+**An output with a `default:` (§8.1) is never the cause of that skip**, because it is always produced
+once the step has a response. The two answer different questions: `failOnUnresolved: false` is the
+*reader* saying it can do without a value, and `default:` is the *producer* saying what the value is
+when the response has none.
+
 It is named for the skip reason it acts on rather than for skipping in general, because only one of
 the four reasons means something went wrong:
 
@@ -3249,7 +3289,10 @@ boundary. An output already selects into a response where the shape is known, wh
 belongs.
 
 An unwritten slot exports `''`, per §11.2's rule for the root, where an export whose step produced
-nothing is absent and skips the reader at the call site. The two rules cross the boundary unchanged
+nothing is absent and skips the reader at the call site. **An output with a `default:` (§8.1) is
+produced**, so its export is too: a library whose approvals step reads an optional `meta.hash` with
+`default: ''` hands its caller `''` for a company with no approval policy, and the caller's step runs.
+`exports:` itself takes no default — the output it names is where one is declared. The two rules cross the boundary unchanged
 rather than being reconciled at it: absence means a step did not do what it was for, and empty means
 a value the run knows is empty.
 
@@ -4904,6 +4947,7 @@ ever tell the author.
 | `unseeded-drop` *(warning)* | A step's `body:` puts `!...` on a key §7.1's seed does not produce — an optional property with no `example` or `default`, or any key inside an array item, since an array replaces the seed wholesale. The key is absent already, so the tag removes nothing (§7.2) |
 | `required-param-without-library` *(warning)* | A flow declares a `required` param with no `default` and is not marked `meta.library: true` (§12.5) |
 | `null-output` | An output — in a step's `outputs:` or a connector file — is `null`, which is not the removal token; `!...` drops an inherited entry (§8.5) |
+| `output-default-interpolated` | An output's `default:` — in a step's `outputs:` or a connector file — holds `{{`, and a default is a literal that is never interpolated (§8.1) |
 | `invalid-connector-entry` | A connector-file entry is not a mapping of outputs (§8.5) |
 | `unknown-output-path` | A connector-file output's path names a field the operation's response schema does not have (§8.5) |
 | `loop-source-missing` | A `loop:` has neither `over` nor `start`, or has both ([006](./006-step-loops.md) §2) |
@@ -6560,6 +6604,7 @@ in two tables is a UI deferral that will drift.
 | **Reading a file into flow state mid-run** (§7.4) | `!file` and `bodyFile:` cover selecting and sending a fixture; reading a file *written during the run* had no concrete case | A step form that loads into `steps.*`, and a decision on what it means for a flow to depend on out-of-band state |
 | **A scope `.env` for `bru flow run`** (§7.3) | The app reads `<scope>/.env` into its tiers and the CLI does not, so a flow that resolves in the app can fail under `bru` with nothing saying which tier went missing. Not urgent because `--env-var` and the process environment cover the same values explicitly, and CI usually sets them that way anyway | The CLI reading the same file from the same root the app does, and a decision about the collection tier it would sit in — which `bru flow run` leaves empty by design (§14.1) |
 | **A validator heuristic for implicit-sequence rewiring** | Finding 2: inserting a conditional branch silently rewires the next step's implicit parent. The second instance arrived in audit — §16's own worked example had it — so the evidence bar this row set is met and only the false-positive rate is still open | A rule narrow enough to be worth the noise. The cheapest form is already specified: §14.3 errors on the non-ancestor reference the rewiring produces, so the heuristic is only needed for a rewiring that stays *valid*. [002](./002-api-flows-ui.md) §5.3 draws the implicit edge, which answers the same problem without a rule |
+| **A default on an `exports:` entry or a `shared:` slot** (§12.1, §9.1) | `default:` on an output (§8.1) covers the case that came up — a library whose optional value has to cross the boundary — and an export of that output is produced. A slot already resolves empty when nobody wrote it (§11.2) | A case an output default does not answer: an export of an output a library cannot give a default to, or a slot whose empty value is the wrong one. Then the same rules as §8.1 — a literal, filling only "not written" |
 | **A step that ends the whole run as skipped** — the equivalent of `pytest.skip` | §9.1's `skipReason:` stops a join when a gate closes, but the run still reports `passed`, and a CI reader cannot tell "nothing to do before the cutoff" from "it ran and passed". There is no run status for it: §14.6's run statuses are `passed`, `failed` and `cancelled` | A step form or field that ends the run, a run status for it in §14.6 (additive, so a new word, not a reuse of the step word `skipped`), its exit code in §14.2, and what each reporter writes for it (§14.8) |
 | **Real-world OpenAPI robustness** | The engine had never met a document that names its schemas rather than writing them out; R19.1–R19.6 closed `$ref` bodies, cycles, vendor extensions, composed bodies and the missing-`operationId` fallback, and `external-schema-ref` now names the one boundary left | **Reading the second document.** The warning says a `$ref` leaves the file; following it needs a second `readSpec` per binding, path resolution relative to the referrer, a cache, cross-file cycle detection, and an answer for what `rooted()` means with two sources. Worth doing when a real document forces it, not before. **Swagger 2** is the other gap: the machinery is there and no fixture is |
 
