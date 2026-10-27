@@ -4,7 +4,7 @@ import process from 'node:process';
 import * as path from 'path';
 import * as fs from 'fs';
 import AdmZip from 'adm-zip';
-import { buildCommonLocators, buildScriptErrorLocators, buildGrpcCommonLocators, PresetRequestType } from './locators';
+import { buildCommonLocators, buildResponseErrorsLocators, buildGrpcCommonLocators, PresetRequestType } from './locators';
 import { waitForCollectionMount } from './mounting';
 import { buildPreferencesLocators, openPreferences, selectPreferencesTab } from './preferences';
 import { EmptyStateRequestType, revealFolderRow } from './sidebar';
@@ -2690,9 +2690,9 @@ const addCollectionScript = async (
 const sendAndWaitForErrorCard = async (page: Page) => {
   await test.step('Send request and wait for error card', async () => {
     const { request } = buildCommonLocators(page);
-    const scriptErrorLocators = buildScriptErrorLocators(page);
+    const responseErrorsLocators = buildResponseErrorsLocators(page);
     await request.sendButton().click();
-    await scriptErrorLocators.card().waitFor({ state: 'visible', timeout: 15000 });
+    await responseErrorsLocators.card().waitFor({ state: 'visible', timeout: 15000 });
   });
 };
 
@@ -2782,51 +2782,6 @@ const readField = async (page: Page, labelText: string): Promise<string> => {
   const editor = fieldEditor(page, labelText).first();
   await editor.waitFor({ state: 'visible' });
   return editor.evaluate((el: any) => (el as any).CodeMirror?.getValue() ?? '');
-};
-
-export type CollectionProxyField = 'hostname' | 'port' | 'username' | 'password';
-
-const COLLECTION_PROXY_FIELD_TEST_IDS: Record<CollectionProxyField, string> = {
-  hostname: 'collection-proxy-hostname',
-  port: 'collection-proxy-port',
-  username: 'collection-proxy-username',
-  password: 'collection-proxy-password'
-};
-
-const collectionProxyFieldRoot = (page: Page, field: CollectionProxyField) =>
-  page.getByTestId(COLLECTION_PROXY_FIELD_TEST_IDS[field]);
-
-/** Read a collection proxy hostname, port, username, or password field. */
-const readCollectionProxyField = async (page: Page, field: CollectionProxyField): Promise<string> => {
-  const root = collectionProxyFieldRoot(page, field);
-  await root.waitFor({ state: 'visible' });
-
-  if (field === 'port') {
-    return root.inputValue();
-  }
-
-  const editor = root.locator('.CodeMirror').first();
-  await editor.waitFor({ state: 'visible' });
-  return editor.evaluate((el: any) => (el as any).CodeMirror?.getValue() ?? '');
-};
-
-/** Set a collection proxy hostname, port, username, or password field. */
-const writeCollectionProxyField = async (page: Page, field: CollectionProxyField, value: string) => {
-  const root = collectionProxyFieldRoot(page, field);
-  await root.waitFor({ state: 'visible' });
-
-  if (field === 'port') {
-    await root.fill(value);
-    await expect.poll(() => root.inputValue()).toBe(value);
-    return;
-  }
-
-  const editor = root.locator('.CodeMirror').first();
-  await editor.waitFor({ state: 'visible' });
-  await editor.evaluate((el: any, nextValue: string) => {
-    el.CodeMirror?.setValue(nextValue);
-  }, value);
-  await expect.poll(() => readCollectionProxyField(page, field)).toBe(value);
 };
 
 const openFolderSettings = async (page: Page, collectionName: string, folderName = 'api') => {
@@ -2956,6 +2911,19 @@ const createExampleFromSidebar = async (page: Page, requestName: string, example
   if (description) {
     await expect(page.getByTestId('response-example-description-input')).toHaveValue(description);
   }
+};
+
+/**
+ * Expand or collapse a request's examples in the sidebar. No-op if already in the requested state.
+ */
+const toggleRequestExamples = async (page: Page, requestName: string, expand: boolean) => {
+  await test.step(`${expand ? 'Expand' : 'Collapse'} examples of request "${requestName}"`, async () => {
+    const locators = buildCommonLocators(page);
+    const chevron = locators.sidebar.requestExamplesToggle(requestName);
+    await chevron.waitFor({ state: 'visible', timeout: 5000 });
+    const isExpanded = await chevron.evaluate((el: HTMLElement) => el.classList.contains('rotate-90'));
+    if (isExpanded !== expand) await chevron.click();
+  });
 };
 
 const openExampleFromSidebar = async (page: Page, requestName: string, exampleName: string, index: number = 0) => {
@@ -4116,10 +4084,9 @@ export {
   typeIntoField,
   writeFieldValue,
   readField,
-  writeCollectionProxyField,
-  readCollectionProxyField,
   createExampleFromSidebar,
   openExampleFromSidebar,
+  toggleRequestExamples,
   openWorkspaceFromDialog,
   setCodeMirrorValue,
   expectTransientRequestOpened,
