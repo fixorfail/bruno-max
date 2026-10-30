@@ -362,6 +362,39 @@ const requestView = (request: MaterializedRequest, sentHeaders?: Record<string, 
   };
 };
 
+/**
+ * §8.2's `res.base64`: the raw response body, for an output script that reads binary data.
+ *
+ * The QuickJS runner copies each argument into the sandbox before the script starts, so a lazy
+ * getter cannot keep the encoding cost away from a script that does not read the field. The engine
+ * reads the source text instead. A step encodes the body only when one of its output scripts, or
+ * the flow's `functions:` library, contains the word `base64`. A false match costs one encoding,
+ * and a missed spelling (for example a computed key) gives a script with no `res.base64`.
+ */
+const READS_BASE64 = /\bbase64\b/;
+
+export const outputScriptsReadBase64 = (outputs: OutputSpec[], library: string): boolean => {
+  const scripts = outputs.flatMap((output) => (output.script ? [output.script] : []));
+  return scripts.length > 0 && (READS_BASE64.test(library) || scripts.some((script) => READS_BASE64.test(script)));
+};
+
+/**
+ * The value of `res.base64`, or the reason that it is absent.
+ *
+ * It is absent with no reason when the host did not report `bytes`. A body above the limit has no
+ * `res.base64`, and the step message tells the author which limit to change.
+ */
+const scriptBody = (response: ExecutedResponse, limit: number | undefined): { base64?: string; note?: string } => {
+  if (limit === undefined || !response.bytes) return {};
+  if (response.bytes.length > limit) {
+    return {
+      note: `res.base64 is absent: the body is ${response.bytes.length} bytes, `
+        + `above config.scriptBytesLimit (${limit} bytes)`
+    };
+  }
+  return { base64: response.bytes.toString('base64') };
+};
+
 export class ScriptError extends Error {
   constructor(readonly position: string, cause: unknown) {
     super(`${position} threw: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -457,6 +490,8 @@ export type AttemptOutcome = {
   validation?: { request?: SchemaResult; response?: SchemaResult };
   reason?: StepReason;
   message?: string;
+  /** Why `res.base64` was absent for this attempt. It is set on a passed attempt too. */
+  note?: string;
 };
 
 export type AttemptInput = {
@@ -468,6 +503,11 @@ export type AttemptInput = {
   scope: Scope;
   dispatch: () => Promise<ExecutedResponse>;
   runScript: ScriptRunner;
+  /**
+   * `config.scriptBytesLimit`, for a step whose output scripts read `res.base64`
+   * (`outputScriptsReadBase64`). Absent means that the engine does not encode the body.
+   */
+  scriptBytesLimit?: number;
 };
 
 export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> => {
@@ -521,9 +561,16 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
     }
   });
 
+  // Only the output scripts get `res.base64`. An assertion reads the same `res` as before.
+  const body = scriptBody(response, input.scriptBytesLimit);
+  const scriptContext = body.base64 === undefined
+    ? context
+    : { ...context, res: { ...(context.res as Record<string, unknown>), base64: body.base64 } };
+  const noted = (outcome: AttemptOutcome): AttemptOutcome => (body.note ? { ...outcome, note: body.note } : outcome);
+
   // Outputs are extracted whenever a response arrived, even when a check below then fails — which
   // is precisely what makes cleanup work (§11.2).
-  const extracted = await extractOutputs(step.outputs, response, context, runScript, input.pre);
+  const extracted = await extractOutputs(step.outputs, response, scriptContext, runScript, input.pre);
   const outputs = extracted.values;
 
   const selfScope: Scope = {
@@ -543,27 +590,27 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
   }
 
   if (step.flags.failOnStatusCode && response.status >= 400) {
-    return {
+    return noted({
       response,
       assertions,
       outputs,
       validation,
       reason: 'unexpected-status',
       message: `expected a successful status, got ${response.status}`
-    };
+    });
   }
 
   if (step.flags.validateSchema) {
     const declared = responseSchema(resolved, response.status);
     if (!declared.documented && step.flags.strictSchema) {
-      return {
+      return noted({
         response,
         assertions,
         outputs,
         validation,
         reason: 'schema-validation-failed',
         message: `the spec documents no ${response.status} response`
-      };
+      });
     }
     if (declared.schema) {
       validation.response = validateAgainst(
@@ -573,7 +620,7 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
         step.strictNulls === false
       );
       if (!validation.response.valid) {
-        return {
+        return noted({
           response,
           assertions,
           outputs,
@@ -582,7 +629,7 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
           message: `response does not match the ${response.status} schema: ${validation.response.errors
             .map((error) => `${error.path} ${error.message}`)
             .join(', ')}`
-        };
+        });
       }
     }
   }
@@ -590,12 +637,12 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
   // An output script runs between response-schema validation and assertions, so its throw is
   // reported here rather than overriding an earlier failure (§14.6).
   if (extracted.error) {
-    return { response, assertions, outputs, validation, reason: 'script-error', message: extracted.error.message };
+    return noted({ response, assertions, outputs, validation, reason: 'script-error', message: extracted.error.message });
   }
 
   const failed = assertions.filter((assertion) => !assertion.passed);
   if (failed.length) {
-    return {
+    return noted({
       response,
       assertions,
       outputs,
@@ -604,10 +651,10 @@ export const runAttempt = async (input: AttemptInput): Promise<AttemptOutcome> =
       message: failed
         .map((assertion) => `${assertion.expr} — expected ${JSON.stringify(assertion.expected)}, got ${JSON.stringify(assertion.actual)}`)
         .join('; ')
-    };
+    });
   }
 
-  return { response, assertions, outputs, validation };
+  return noted({ response, assertions, outputs, validation });
 };
 
 /**

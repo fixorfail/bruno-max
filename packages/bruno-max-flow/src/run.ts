@@ -35,6 +35,7 @@ import {
   loopUntilMatches,
   lowerCasedKeys,
   responseView,
+  outputScriptsReadBase64,
   runAttempt,
   retryDelay,
   runPreScripts,
@@ -926,6 +927,7 @@ const executeFlow = async (
         // §8.7: step-local, so an assertion and an output script inside this step see it too.
         scope: scope(),
         runScript,
+        scriptBytesLimit: outputScriptsReadBase64(step.outputs, library) ? flow.config.scriptBytesLimit : undefined,
         dispatch: async () => {
           const bound = beginDispatch();
           try {
@@ -1100,7 +1102,7 @@ const executeFlow = async (
         // exhausted its retries is explained by what the final attempt did, not by the cap.
         message: exceeded
           ? `the step's ${step.maxDuration}ms budget elapsed after ${attemptsRun} attempts`
-          : outcome.message || predicateError,
+          : [outcome.message || predicateError, outcome.note].filter(Boolean).join(' — ') || undefined,
         attempts: attemptsRun,
         durationMs: state.clock.now() - startedAt,
         /**

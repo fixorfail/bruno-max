@@ -217,6 +217,7 @@ config:
     delay: 1000
   redactHeaders: [X-Legacy-Key]   # added to the built-in denylist; see §14.4
   capturePreviewBytes: 8192       # inline preview cap; see §14.5
+  scriptBytesLimit: 10485760      # largest body an output script gets as res.base64; see §8.2
 
 authProfiles:                  # named, reusable auth configs — see §6.4
   user-token:
@@ -1697,12 +1698,83 @@ Two positions add to that base, and only two:
 
 | Position | Adds |
 |---|---|
-| an **output** script | `req` and `res` — §10.2's views of what went out and what came back |
+| an **output** script | `req` and `res` — §10.2's views of what went out and what came back — and `res.base64`, the raw body (below) |
 | **`shouldRetry`** | `failures` and `outputs`, the attempt's own (§11.1) — and neither `req` nor `res`, the response it is judging being its own first argument |
 | `when:` and `pre:` | nothing, for §9.3's reason: they run before the request |
 
 A key added to a script's context changes what every script can see, so it is a change to this table
 before it is a change to any code.
+
+#### The raw bytes of a response: `res.base64`
+
+`res.body` is the value that the host parsed, or the text that it decoded (§13.2). For a ZIP, a PDF
+or an image, that text has lost every byte that is not valid UTF-8. An output script that must read
+such a body reads `res.base64` instead: the raw body as a base64 string. `ctx.res.base64` is the
+same value.
+
+**A string, because a string crosses into both sandboxes in the same way.** The QuickJS runner
+copies each argument into the sandbox, and `node:vm` passes it by reference. A `Buffer` keeps its
+bytes in `node:vm` only, so a script that worked in `developer` mode would fail in `safe` mode.
+
+**`res.base64` is present only when all of these are true:**
+
+1. The host reported `bytes` (§13.2). Both hosts report them for a body that is not empty.
+2. The body is not larger than `config.scriptBytesLimit`, in bytes. The default is 10 MB
+   (10485760). A sub-flow inherits the value of its caller as a default, as §12.3 says for `config:`.
+3. An output script of the step, or the flow's `functions:` library (§8.6), contains the word
+   `base64`.
+
+The third condition is a text scan, as the `ctx.pre` scan of §14.3 is. The QuickJS runner copies
+every argument before the script starts, so a lazy value cannot keep the encoding cost away from a
+script that does not read it. The scan keeps that cost away from every step that does not name the
+field. A false match costs one encoding. A spelling that the scan does not find, for example a
+computed key, gives a script with no `res.base64`.
+
+**Above the limit, `res.base64` is absent and the step tells why.** The step's `message` gets
+`res.base64 is absent: the body is <n> bytes, above config.scriptBytesLimit (<limit> bytes)`. This is
+also true on a step that passes, so a script that allows the absence does not hide it. If the script
+throws because the field is absent, the step fails `script-error`, and the message carries both
+texts.
+
+Only an output script gets the field. `when:` and `pre:` run before the request, and `shouldRetry`
+and a loop's `until` get §11.1's view of the response, which does not have it. An assertion reads
+`res` (§10.2) without it.
+
+**The engine does not unzip, decompress or parse.** A ZIP, a CSV and a PDF are formats of the
+API's data, and a parser for each one would make the engine a library of file formats. The flow
+brings its own helpers in a `functions: use:` file (§8.6), and the helpers run in the sandbox like
+any other script.
+
+**What the sandbox gives a helper.** The globals differ between the two sandboxes:
+
+| Global | QuickJS (`safe`, the default) | `node:vm` (`developer`) |
+|---|---|---|
+| `Uint8Array`, `ArrayBuffer`, `DataView` | yes | yes |
+| `String.fromCharCode`, `decodeURIComponent` | yes | yes |
+| `atob`, `btoa` | no | yes |
+| `TextDecoder`, `TextEncoder` | no | yes |
+| `Buffer`, `require`, `URL` | no | yes |
+
+A helper that must work in both sandboxes therefore brings its own base64 decoder, its own UTF-8
+decoder, and, for a deflated ZIP entry, its own inflate implementation. The conformance fixture
+`fixtures/flows/regressions/lib/binary.js` (001-C R9.18) is an example: it decodes base64, reads
+the stored entries of a ZIP, and parses a CSV, with only the QuickJS globals above.
+
+```yaml
+functions:
+  use:
+    - ./lib/binary.js            # base64ToBytes, zipText, parseCsv
+
+steps:
+  - id: download
+    operation: exports-api#downloadTaxExport
+    outputs:
+      firstRecipient:
+        script: |
+          (res) => parseCsv(zipText(base64ToBytes(res.base64), '.csv'))[0].recipient_id
+    assert:
+      - steps.download.firstRecipient eq "{{steps.start.recipientId}}"
+```
 
 #### `bru` is not in scope
 
@@ -3740,7 +3812,7 @@ type ExecutedResponse = {
   statusText?: string;
   headers: Record<string, string | string[]>;
   body: unknown;                       // parsed when the host could parse it, else a string
-  bytes?: Buffer;                      // raw, for binary capture (§14.5) and byte assertions
+  bytes?: Buffer;                      // raw, for binary capture (§14.5) and §8.2's res.base64
   responseTimeMs: number;
   size?: { body: number; headers: number };
   requestHeaders?: Record<string, string>;  // what the host actually wrote — see below
@@ -3758,6 +3830,11 @@ exempt than one the flow declared.
 
 It is optional, and a host that omits it leaves the capture with the declared headers — the behaviour
 before this field existed.
+
+**`bytes` is the body as it arrived, not the decoded text encoded again.** A host that reads the
+body as a string and then converts that string to a `Buffer` reports different bytes for every
+body that is not valid UTF-8. Both hosts read the body as bytes, and decode `body` from them. A host
+that does not report `bytes` gives scripts no `res.base64` (§8.2).
 
 `headers` admits `string[]` because `Set-Cookie` genuinely repeats and §7.6 depends on it. `body`
 mirrors what both hosts already produce — parsed JSON where parsing succeeded, the decoded string

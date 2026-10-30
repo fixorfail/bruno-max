@@ -110,7 +110,9 @@ const CONFIG = {
     /** §14.4's additions to the built-in denylist. */
     redactHeaders: { type: 'array', items: { type: 'string' } },
     /** §14.5's inline preview cap, in bytes. */
-    capturePreviewBytes: { type: 'integer', minimum: 0 }
+    capturePreviewBytes: { type: 'integer', minimum: 0 },
+    /** §8.2's largest body, in bytes, that an output script gets as `res.base64`. */
+    scriptBytesLimit: { type: 'integer', minimum: 0 }
   },
   additionalProperties: false
 };

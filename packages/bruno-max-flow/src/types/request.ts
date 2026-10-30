@@ -56,7 +56,7 @@ export type ExecutedResponse = {
   headers: Record<string, string | string[]>;
   /** Parsed when the host could parse it, else the decoded string. */
   body: unknown;
-  /** Raw, for binary capture (§14.5) and byte assertions. */
+  /** Raw, as the body arrived — for binary capture (§14.5) and §8.2's `res.base64`. */
   bytes?: Buffer;
   /** What §10.2's `res.responseTime` reads. */
   responseTimeMs: number;

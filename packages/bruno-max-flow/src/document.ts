@@ -359,6 +359,8 @@ export type FlowConfig = StepFlags & {
   redactHeaders: string[];
   /** §14.5's inline preview cap, in bytes; 8 KB unless the flow says otherwise (§5.2). */
   capturePreviewBytes: number;
+  /** §8.2's largest body, in bytes, that an output script gets as `res.base64`; 10 MB by default. */
+  scriptBytesLimit: number;
 };
 
 /**
@@ -680,6 +682,9 @@ const normalizeFunctions = (raw: unknown): FunctionLibrary => {
 const declaredText = (value: unknown): string | undefined =>
   value === undefined || value === null ? undefined : String(value).trim() || undefined;
 
+/** 10 MB, as a byte count. The base64 text of such a body is about 13.4 MB. */
+const DEFAULT_SCRIPT_BYTES_LIMIT = 10 * 1024 * 1024;
+
 /**
  * §12.3: `config:` is configuration, so a sub-flow inherits its caller's — as *defaults*. A key the
  * sub-flow declares itself still wins, which is what keeps a shared login flow that declares
@@ -715,7 +720,8 @@ const normalizeConfig = (raw: unknown, inherited?: FlowConfig): FlowConfig => {
     cleanupGrace: value('cleanupGrace', () => Number(mapping.cleanupGrace), 30000),
     retry: value('retry', () => asRecord(mapping.retry) as Partial<RetryPolicy>, undefined),
     redactHeaders: value('redactHeaders', () => asArray<string>(mapping.redactHeaders).map(String), []),
-    capturePreviewBytes: value('capturePreviewBytes', () => Number(mapping.capturePreviewBytes), 8192)
+    capturePreviewBytes: value('capturePreviewBytes', () => Number(mapping.capturePreviewBytes), 8192),
+    scriptBytesLimit: value('scriptBytesLimit', () => Number(mapping.scriptBytesLimit), DEFAULT_SCRIPT_BYTES_LIMIT)
   };
 };
 

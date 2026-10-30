@@ -13,6 +13,13 @@ const path = require('path');
 
 const BRU = path.join(__dirname, '..', '..', '..', 'bin', 'bru.js');
 
+/** R7.9 reads the engine's own R9.18 fixtures: a stored ZIP and the helpers that open it in QuickJS. */
+const ENGINE_FIXTURES = path.join(__dirname, '..', '..', '..', '..', 'bruno-max-flow', 'tests', 'conformance', 'fixtures');
+const EXPORT_ZIP = fs.readFileSync(path.join(ENGINE_FIXTURES, 'flows', 'regressions', 'files', '1099-export.zip'));
+const BINARY_HELPERS = fs.readFileSync(path.join(ENGINE_FIXTURES, 'flows', 'regressions', 'lib', 'binary.js'), 'utf8');
+/** Bytes that are not valid UTF-8, so a body decoded to text and encoded again is not equal. */
+const NOT_UTF8 = Buffer.from([0x00, 0x01, 0x80, 0xfe, 0xff, 0xc3, 0x28, 0x7f]);
+
 const write = (root, file, body) => {
   fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
   fs.writeFileSync(path.join(root, file), body);
@@ -72,6 +79,20 @@ describe('the CLI transport for flows', () => {
           'content-type': 'application/json'
         });
         response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      if (route === '/exports/export-1') {
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({
+          data: { attributes: { recipientId: 'vendor-1', url: `http://127.0.0.1:${port}/files/1099-export.zip` } }
+        }));
+        return;
+      }
+
+      if (route === '/files/1099-export.zip' || route === '/forms/vendor-1') {
+        response.writeHead(200, { 'content-type': route.endsWith('.zip') ? 'application/zip' : 'application/octet-stream' });
+        response.end(route.endsWith('.zip') ? EXPORT_ZIP : NOT_UTF8);
         return;
       }
 
@@ -310,6 +331,119 @@ describe('the CLI transport for flows', () => {
       expect(sent('login')).toHaveLength(2);
       const carried = sent('whoami').map((request) => request.headers.cookie).sort();
       expect(carried).toEqual(['sid=session-1; flavour=chocolate', 'sid=session-2; flavour=chocolate']);
+    }, 60000);
+  });
+
+  describe('R7.9 §13.2 the raw bytes of a response', () => {
+    /** A `GET` with one path parameter, which the route names in braces. */
+    const getOne = (route, name, mediaType, schema) =>
+      [
+        `  ${route}:`,
+        '    get:',
+        `      operationId: ${name}`,
+        '      parameters:',
+        `        - { name: ${route.match(/\{(\w+)\}/)[1]}, in: path, required: true, schema: { type: string } }`,
+        '      responses:',
+        '        \'200\':',
+        '          description: OK',
+        '          content:',
+        `            ${mediaType}:`,
+        `              schema: ${schema}`,
+        ''
+      ].join('\n');
+    const BINARY = '{ type: string, format: binary }';
+
+    /**
+     * The 1099 export case: one step gets the URL of the file, and the next step downloads it. The
+     * URL is a backend URL with no signed query, because a signed URL does not survive §6.3's join of
+     * `baseUrl` and the operation path. Its origin is the binding's `baseUrl`, and its file name is a
+     * path parameter.
+     */
+    const exportFlow = [
+      'version: 1',
+      '',
+      'apis:',
+      '  exports-api: ../apispec/exports-v1.yml',
+      '  files-api:',
+      '    source: ../apispec/files-v1.yml',
+      '    baseUrl: "{{steps.poll.fileOrigin}}"',
+      '    auth: none',
+      '',
+      'functions:',
+      '  use:',
+      '    - ./lib/binary.js',
+      '',
+      'steps:',
+      '  - id: poll',
+      '    operation: exports-api#getTaxExport',
+      '    pathParams: { exportId: export-1 }',
+      '    outputs:',
+      '      recipientId: data.attributes.recipientId',
+      '      fileOrigin:',
+      '        script: "(res) => res.body.data.attributes.url.split(\'/\').slice(0, 3).join(\'/\')"',
+      '      fileName:',
+      '        script: "(res) => res.body.data.attributes.url.split(\'/\').pop()"',
+      '',
+      '  - id: download',
+      '    operation: files-api#downloadFile',
+      '    depends: [poll]',
+      '    pathParams: { name: "{{steps.poll.fileName}}" }',
+      '    outputs:',
+      '      firstRecipient:',
+      '        script: "(res) => parseCsv(zipText(base64ToBytes(res.base64), \'.csv\'))[0].recipient_id"',
+      '    assert:',
+      '      - steps.download.firstRecipient eq "{{steps.poll.recipientId}}"',
+      '',
+      '  - id: form',
+      '    operation: exports-api#downloadTaxForm',
+      '    depends: [poll]',
+      '    pathParams: { formId: "{{steps.poll.recipientId}}" }',
+      '    outputs:',
+      '      hex:',
+      '        script: "(res) => bytesToHex(base64ToBytes(res.base64))"',
+      '    assert:',
+      `      - steps.form.hex eq "${NOT_UTF8.toString('hex')}"`,
+      ''
+    ].join('\n');
+
+    const exportRoot = () => {
+      const root = stage('bytes');
+      write(root, 'workspace.yml', 'name: bytes\n');
+      write(root, 'apispec/exports-v1.yml', spec([
+        getOne('/exports/{exportId}', 'getTaxExport', 'application/json', '{ type: object }'),
+        getOne('/forms/{formId}', 'downloadTaxForm', 'application/octet-stream', BINARY)
+      ]));
+      // No `servers:` — the host comes from the response, through the binding's `baseUrl`.
+      write(root, 'apispec/files-v1.yml', [
+        'openapi: 3.0.3',
+        'info: { title: Files, version: 1.0.0 }',
+        'paths:',
+        getOne('/files/{name}', 'downloadFile', 'application/zip', BINARY)
+      ].join('\n'));
+      write(root, 'flows/lib/binary.js', BINARY_HELPERS);
+      write(root, 'flows/export.flow.yml', exportFlow);
+      return root;
+    };
+
+    it('validates a flow that downloads a file from a URL in a response', async () => {
+      const result = await run(['flow', 'validate', 'flows/export.flow.yml'], exportRoot());
+
+      expect(result.output).not.toMatch(/error/i);
+      expect(result.status).toBe(0);
+    }, 60000);
+
+    /**
+     * QuickJS — the default sandbox — has no `atob`, `TextDecoder` or `Buffer`, so the helpers decode
+     * with `Uint8Array` and `DataView`. Both assertions pass only when the host reported the bytes
+     * as they arrived: a body decoded to text first has lost the bytes that are not UTF-8.
+     */
+    it('gives an output script the bytes of that file, in the default sandbox', async () => {
+      const result = await run(['flow', 'run', 'flows/export.flow.yml', '--no-capture'], exportRoot());
+
+      expect(result.output).toContain('0 failed · 3 passed');
+      expect(result.status).toBe(0);
+      expect(sent('files/1099-export.zip')).toHaveLength(1);
+      expect(sent('forms/vendor-1')).toHaveLength(1);
     }, 60000);
   });
 

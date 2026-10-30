@@ -1,0 +1,59 @@
+# R9.18 — §8.2's `res.base64`. The 1099 export case: start an export, poll it, download the ZIP, and
+# compare a CSV column to a value from an earlier response. The engine does not unzip and does not
+# parse CSV: `lib/binary.js` brings those helpers, written for what the QuickJS sandbox has.
+version: 1
+
+meta:
+  name: R9.18 — an output script reads the raw bytes of a response
+
+apis:
+  exports-api: ../../specs/exports-v1.yml
+
+functions:
+  use:
+    - ./lib/binary.js
+
+steps:
+  - id: start
+    operation: exports-api#startTaxExport
+    outputs:
+      exportId: data.id
+      recipientId: data.attributes.recipientId
+
+  - id: poll
+    operation: exports-api#getTaxExport
+    depends: [start]
+    pathParams:
+      exportId: "{{steps.start.exportId}}"
+    outputs:
+      state: data.attributes.state
+      scriptedState:
+        script: "(res) => res.body.data.attributes.state"
+      rawJson:
+        script: "(res) => utf8Decode(base64ToBytes(res.base64))"
+
+  - id: download
+    operation: exports-api#downloadTaxExport
+    depends: [poll]
+    pathParams:
+      exportId: "{{steps.start.exportId}}"
+    outputs:
+      rows:
+        script: "(res) => parseCsv(zipText(base64ToBytes(res.base64), '.csv'))"
+      firstRecipient:
+        script: "(res) => parseCsv(zipText(base64ToBytes(res.base64), '.csv'))[0].recipient_id"
+    assert:
+      - steps.download.firstRecipient eq "{{steps.start.recipientId}}"
+
+  - id: form
+    operation: exports-api#downloadTaxForm
+    depends: [poll]
+    pathParams:
+      formId: "{{steps.start.recipientId}}"
+    outputs:
+      hex:
+        script: "(res) => bytesToHex(base64ToBytes(res.base64))"
+      text:
+        script: "(res) => res.body"
+      sameInCtx:
+        script: "(res, ctx) => ctx.res.base64 === res.base64"

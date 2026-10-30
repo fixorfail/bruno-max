@@ -1,0 +1,49 @@
+openapi: 3.0.3
+# R9.18 — the shape of a tax-form export: start it, poll it until it is ready, then download the
+# file. The file is a ZIP, and a form is a PDF, so neither body is text that `res.body` keeps whole.
+info: { title: Export API, version: 1.0.0 }
+servers:
+  - url: https://exports.example.com
+paths:
+  /exports:
+    post:
+      operationId: startTaxExport
+      responses:
+        '202':
+          description: Started
+          content:
+            application/json:
+              schema: { type: object }
+  /exports/{exportId}:
+    get:
+      operationId: getTaxExport
+      parameters:
+        - { name: exportId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The export and its state
+          content:
+            application/json:
+              schema: { type: object }
+  /exports/{exportId}/file:
+    get:
+      operationId: downloadTaxExport
+      parameters:
+        - { name: exportId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The export file
+          content:
+            application/zip:
+              schema: { type: string, format: binary }
+  /forms/{formId}:
+    get:
+      operationId: downloadTaxForm
+      parameters:
+        - { name: formId, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: One form
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }

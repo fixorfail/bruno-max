@@ -77,6 +77,7 @@ tests/conformance/
                               # R9.14 — a join that narrows which skip it accepts
   skip-reason.spec.js         # R9.15 — skipReason: through normalization, describeFlow and an edit
   output-default.spec.js      # R8.16, R9.16, R9.17, R10.9 — §8.1's default: on a declared output
+  binary-response.spec.js     # R9.18 — §8.2's res.base64, the raw bytes of a response
   connectors.spec.js          # R10.1-R10.5 — §8.5's files: matching, precedence, suppression, provenance
   collection-auth.spec.js     # R9.13 — the stored-auth → AuthProfile mapping, against materialize.ts directly
   subflow-resolution.spec.js  # R12.1 — §12.2's `uses:` targets, relative and `workspace:`-prefixed
@@ -121,6 +122,7 @@ The exceptions are listed rather than allowed to accumulate silently:
 | R7.6 | `bruno-cli/tests/fork/flow/sandbox.spec.js`, and `sandbox.integration.spec.js` for the end-to-end proof | §14.1's `--sandbox` is a flag on a command the engine has never heard of; R7.5's reason, one layer up |
 | R7.7 | `bruno-cli/tests/fork/flow/collection-auth.spec.js`, and `collection-auth.integration.spec.js` for the end-to-end proof | §6.4's implicit `collection` profile is host-supplied by construction — the engine is handed `RunOptions.authProfiles` and never opens a collection to build one, so only a host's own reader can show which credential the collection contributed |
 | R7.8 | `bruno-cli/tests/fork/flow/scope.spec.js`, and `scope.integration.spec.js` for the end-to-end proof | Locating a collection root on disk is host discovery (§14.1) the engine never performs — it is handed a scope already resolved (§13.2), so only a host's own directory walk can show it recognises both on-disk formats |
+| R7.9 | `bruno-cli/tests/fork/flow/transport.integration.spec.js` | §13.2's `bytes` are what the host read off the wire. The conformance suite stubs the transport, so only a real host can show that it reports them as they arrived and not as text encoded again |
 | R13.3 | `bruno-cli/tests/fork/flow/schema.spec.js`, and `schema.integration.spec.js` for the command line itself | The engine owns the schema and pins its contents in `schema.spec.js`; which version an invocation emits and where it lands are §14's, and only the CLI has them |
 | R4k | Asserted throughout, by every scenario that names an outcome | §14.6's vocabulary is a property of every reason string in the suite; a dedicated scenario would restate what forty assertions already pin |
 
@@ -1673,7 +1675,7 @@ a loaded CI machine and a laptop resolve the same flow to the same value.
 | `ctx.<name>` — the guide's flat form | still resolves; the named halves are additive |
 | `ctx.env.<a flow var>` and `ctx.vars.<an environment variable>` | `undefined` — the two halves are disjoint |
 | the keys of `ctx` that are not a variable, in a `pre:` and a `when:` script | exactly `env`, `vars` and §7.3's namespaces — `steps`, `row`, `params`, `shared`, `flow`, `pre`, `process` — and nothing else |
-| the same, in an output script | the set above plus `req` and `res` (§10.2), since a request has gone out |
+| the same, in an output script | the set above plus `req` and `res` (§10.2), since a request has gone out. `res.base64` is a key of `res`, not of `ctx` (R9.18) |
 | the same, in `shouldRetry` | the set above plus `failures` (§11.1) and neither `req` nor `res` — the response is that script's own first argument |
 
 The disjointness row is a reading rather than a quotation: §8.7's sample puts the flow var under
@@ -2030,6 +2032,24 @@ unresolved, §7.4's containment boundary drawn one level too high, and the captu
 `collectionPath` both pointed at the wrong directory. The fix reads the same predicate `bru run`
 already uses rather than inventing a second one, so the two commands agree about what a collection
 is for the same tree.
+
+### R7.9 — The host reports the raw bytes of a response
+
+**Pins:** §13.2's `bytes`; §8.2's `res.base64` in the default sandbox. CLI-level — §2's table says
+where.
+
+| Case | Expected |
+|---|---|
+| `bru flow validate` on a flow whose second step downloads from a URL that the first response gives | no error |
+| `bru flow run` on that flow, in the default QuickJS sandbox | the file is requested once; an output script reads the CSV out of the ZIP through `res.base64`, and the assertion against the first response passes |
+| the same run, eight bytes that are not valid UTF-8 | the output script decodes `res.base64` to the same eight bytes |
+
+The URL in the response is a backend URL with no signed query. Its origin is the binding's `baseUrl`
+(§6.3), and its file name is a path parameter. A signed storage URL does not survive §6.3's join of
+`baseUrl` and the operation path, so this case does not use one.
+
+Before this case, the CLI read each body as UTF-8 text and converted the text back to bytes. The
+second row fails on that host: every byte that is not valid UTF-8 became `ef bf bd`.
 
 ### R13.1 — Verbose previews, the operation column, and TTY in-place updates
 
@@ -2687,6 +2707,34 @@ boundary through a script that returned a fallback, where the validator could no
 The app's outputs table writes a row back in its own form once its source or path changes, and has no
 control for the key. Its spec (`OutputsTable/index.spec.js`) pins that such a row keeps `default:`,
 in the mapping form when the row was a body shorthand.
+
+### R9.18 — An output script reads the raw bytes of a response
+
+**Pins:** §8.2's `res.base64`; §5.2's `config.scriptBytesLimit`; §13.2's `bytes`.
+
+`fixtures/flows/regressions/r9-binary-response.flow.yml` is the 1099 export case: `start` begins an
+export, `poll` reads it, `download` gets a real ZIP (`files/1099-export.zip`, two stored entries) and
+compares the first CSV row to a value from `start`. `form` gets eight bytes that are not valid UTF-8.
+The helpers are in `lib/binary.js` and use only the globals that QuickJS has.
+
+| Case | Expected |
+|---|---|
+| `form`: a body that is not valid UTF-8 | the script decodes `res.base64` to the same eight bytes; `res.body` encoded again does not give them |
+| `form`: `ctx.res.base64` | the same string as `res.base64` |
+| `download`: the ZIP | the CSV rows, and the assertion against `start`'s value passes |
+| the same, with a CSV value that differs from `start`'s | the step fails `assertion-failed` |
+| `poll`: a JSON response | `res.body` is parsed as before, by a path and by a script; `res.base64` decodes to the JSON text |
+| `config.scriptBytesLimit` one byte below the ZIP's size | `res.base64` is absent for `download`, which fails `script-error`; its message names the size and the limit; `form` still gets its bytes |
+| a limit below the ZIP, and a script that allows the absence | the step passes, and its message names the size and the limit |
+| a limit equal to the ZIP's size | `res.base64` is present, and the step has no message |
+| a host that reports no `bytes` | `res.base64` is absent, and the step has no message |
+| no output script and no library contains `base64` | `res` has no `base64` key |
+| the flow's library contains `base64` | `res` has a `base64` key |
+| no `scriptBytesLimit` | 10485760 |
+| `scriptBytesLimit: -1` | `schema-violation` |
+
+The no-message rows are as important as the limit rows. A note on every step that has no bytes, or
+a body at the limit, is text that a reader learns to skip.
 
 ### R5 — Unresolved variables never reach the wire
 

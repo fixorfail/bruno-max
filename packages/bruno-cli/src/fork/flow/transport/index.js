@@ -48,6 +48,9 @@ const createExecuteRequest = ({ collectionPath }) => {
       // The engine judges the status (§10.1); axios treating a 4xx as a rejection would turn a
       // negative test into a transport error. A challenge mode is the one exception — see `auth.js`.
       validateStatus: needsChallenge(request.auth) ? (status) => status !== 401 : () => true,
+      // The body arrives as bytes, so `bytes` below is the body as sent. A body that axios decodes
+      // to a string first has lost every byte that is not valid UTF-8 (001 §8.2's `res.base64`).
+      responseType: 'arraybuffer',
       transformResponse: (raw) => raw
     };
 
@@ -73,8 +76,10 @@ const createExecuteRequest = ({ collectionPath }) => {
       response = error.response;
     }
 
-    const text = typeof response.data === 'string' ? response.data : '';
-    let parsed = response.data;
+    const bytes = Buffer.from(response.data || '');
+    // The text axios gave before `responseType` was set: UTF-8, with a byte order mark removed.
+    const text = bytes.toString('utf8').replace(/^\uFEFF/, '');
+    let parsed = text;
     if (text && String(response.headers['content-type'] || '').includes('json')) {
       try {
         parsed = JSON.parse(text);
@@ -93,7 +98,7 @@ const createExecuteRequest = ({ collectionPath }) => {
       statusText: response.statusText,
       headers: response.headers,
       body: parsed,
-      bytes: text ? Buffer.from(text) : undefined,
+      bytes: bytes.length ? bytes : undefined,
       responseTimeMs: Date.now() - startedAt,
       size: { body: text.length, headers: 0 },
       requestHeaders: Object.keys(sentHeaders).length ? sentHeaders : undefined
