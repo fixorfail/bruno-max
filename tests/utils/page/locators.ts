@@ -29,6 +29,7 @@ import { buildCreateWorkspaceModalLocators } from './workspace/create-workspace-
 import { buildTitleBarLocators } from './title-bar';
 import { buildCloneGitRepositoryLocators } from './git/clone-git-repository';
 import { buildResponseExampleLocators } from './response-example';
+import { buildAuthLocators } from './auth';
 
 export type PresetRequestType = 'http' | 'graphql' | 'grpc' | 'ws';
 
@@ -107,6 +108,7 @@ export const buildCommonLocators = (page: Page) => ({
     overflowTrigger: (root?: Locator) => (root ?? page).locator('.tabs .more-tabs'),
     // menu is rendered via portal, hence it rooted to page.
     overflowItem: (key: string) => page.getByTestId(`menu-dropdown-${key}`),
+    scriptSubTabsOverflowTrigger: () => page.getByTestId('script-sub-tabs').getByTestId('tabs-overflow-trigger'),
     collectionSettingsTab: (key: string) => page.getByTestId(`collection-settings-tab-${key}`),
     folderSettingsTab: (key: string) => page.getByTestId(`folder-settings-tab-${key}`),
     folderScriptTab: (key: 'pre-request' | 'post-response') => page.getByTestId(`tab-trigger-${key}`),
@@ -208,22 +210,7 @@ export const buildCommonLocators = (page: Page) => ({
     addToCreateEnvSubmit: (popup: Locator) => popup.getByTestId('var-info-add-to-create-env-submit'),
     addToError: (popup: Locator) => popup.getByTestId('var-info-add-to-error')
   },
-  auth: {
-    apiKey: {
-      placementSelector: () => page.getByTestId('auth-placement-selector'),
-      placementLabel: () => page.getByTestId('auth-placement-label')
-    },
-    oauth2: {
-      grantTypeDropdown: () => page.getByTestId('grant-type-dropdown'),
-      tokenHeaderPrefixField: () => page.getByTestId('token-header-prefix'),
-      tokenQueryParamKeyField: () => page.getByTestId('token-query-param-key')
-    },
-    modeSelector: () => page.getByTestId('auth-mode-selector'),
-    modeLabel: () => page.getByTestId('auth-mode-label'),
-    inheritedMode: () => page.getByTestId('inherited-auth-mode'),
-    inheritedFields: () => page.getByTestId('inherited-auth-fields'),
-    dropdownItem: (id: string) => page.getByTestId(`auth-mode-dropdown-${id}`)
-  },
+  auth: buildAuthLocators(page),
   presets: {
     requestType: (type: PresetRequestType) =>
       page.getByTestId(`presets-request-type-${type}`),
@@ -278,7 +265,7 @@ export const buildCommonLocators = (page: Page) => ({
     tooltip: (text: string) => page.locator('.react-tooltip').filter({ hasText: text }),
     includeTagsInput: () => page.locator('.bruno-modal').getByLabel('Include Tags'),
     excludeTagsInput: () => page.locator('.bruno-modal').getByLabel('Exclude Tags'),
-    tagChip: (name: string) => page.locator('.bruno-modal .docs-tag-item').filter({ hasText: name }),
+    tagChip: (name: string) => page.locator('.bruno-modal').getByTestId('tag-picker-item').filter({ hasText: name }),
     gitLinkLabel: () => page.locator('.bruno-modal').getByTestId('docs-git-link')
   },
   runnerResults: {
