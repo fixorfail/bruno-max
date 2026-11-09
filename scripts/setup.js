@@ -108,6 +108,7 @@ async function setup() {
     execCommand('npm run build:bruno-requests', 'Building bruno-requests');
     execCommand('npm run build:schema-types', 'Building schema-types');
     execCommand('npm run build:bruno-filestore', 'Building bruno-filestore');
+    execCommand('npm run build:bruno-io', 'Building bruno-io');
     execCommand('npm run build:bruno-sqlite', 'Building bruno-sqlite');
     // `bruno-electron` requires @bruno-max/flow at startup and resolves it through `dist/`, which
     // is gitignored — without this the app fails to boot on a fresh clone.
