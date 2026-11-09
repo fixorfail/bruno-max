@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import Modal from 'components/Modal';
-import { matchLoadedApiSpecs } from 'components/Sidebar/ApiSpecs/matchLoadedApiSpecs';
+import { matchLoadedApiSpecs } from 'utils/api-specs/matchLoadedApiSpecs';
 import { aliasFor, uniqueAlias } from '../../../CreateFlow/flowDocument';
 
 /**

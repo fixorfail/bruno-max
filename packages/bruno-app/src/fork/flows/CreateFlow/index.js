@@ -5,7 +5,7 @@ import * as Yup from 'yup';
 import toast from 'react-hot-toast';
 import Modal from 'components/Modal';
 import { browseDirectory } from 'providers/ReduxStore/slices/collections/actions';
-import { matchLoadedApiSpecs } from 'components/Sidebar/ApiSpecs/matchLoadedApiSpecs';
+import { matchLoadedApiSpecs } from 'utils/api-specs/matchLoadedApiSpecs';
 import { createFlow, duplicateFlow } from '../actions';
 import { kebabCase, fileNameStem, flowFileNameError } from '../flowFileName';
 import { aliasFor, apiBindingsFor } from './flowDocument';
